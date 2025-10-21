@@ -27,12 +27,15 @@ spec:
                   name:
                     type: string
                 description: Secret with token/SSH key for private repository access
-              configurationPath:
+              flake:
                 type: string
                 description: Flake reference (e.g., .#worker or github:owner/repo#hostname)
-              onRemoveConfigurationPath:
+              onRemoveFlake:
                 type: string
                 description: Flake reference to apply when removing (optional)
+              configurationSubdir:
+                type: string
+                description: Subdirectory within the repository where the Nix configuration is located
               fullInstall:
                 type: boolean
                 default: false
@@ -105,10 +108,10 @@ spec:
       type: string
       description: Git repository URL
       jsonPath: .spec.gitRepo
-    - name: Config Path
+    - name: Flake
       type: string
-      description: Configuration path
-      jsonPath: .spec.configurationPath
+      description: Flake reference
+      jsonPath: .spec.flake
     - name: Target Machine
       type: string
       description: Target machine name

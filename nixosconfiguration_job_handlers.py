@@ -126,15 +126,19 @@ async def create_nixos_job(
 ) -> bool:
     """Создать Job для применения конфигурации NixOS"""
     try:
+        # Определение пути к конфигурации с учетом поддиректории
+        config_subdir = config_spec.get('configurationSubdir', '')
+        config_base_path = f"/config/{config_subdir}" if config_subdir else "/config"
+        
         # Определяем команду в зависимости от режима
         if config_spec.get('fullInstall', False):
             # Полная установка с nixos-anywhere
-            config_path = config_spec['onRemoveConfigurationPath'] if is_remove else config_spec['configurationPath']
-            cmd = f"nixos-anywhere --target-host {machine_spec['ipAddress']} --kexec {config_path}"
+            flake = config_spec['onRemoveFlake'] if is_remove else config_spec['flake']
+            cmd = f"nixos-anywhere --target-host {machine_spec['ipAddress']} --kexec {config_base_path}/{flake}"
         else:
             # Обновление существующей системы с nixos-rebuild
-            config_path = config_spec['onRemoveConfigurationPath'] if is_remove else config_spec['configurationPath']
-            cmd = f"nixos-rebuild switch --flake {config_path} --target-host {machine_spec['ipAddress']}"
+            flake = config_spec['onRemoveFlake'] if is_remove else config_spec['flake']
+            cmd = f"nixos-rebuild switch --flake {config_base_path}/{flake} --target-host {machine_spec['ipAddress']}"
         
         # Создаем Job
         job = {
@@ -389,7 +393,7 @@ async def handle_configuration_delete_with_job(body, spec, name, namespace, **kw
         )
         
         # Если указана конфигурация для удаления, применить её через Job
-        if 'onRemoveConfigurationPath' in spec:
+        if 'onRemoveFlake' in spec:
             # Подготавливаем tarball с конфигурацией удаления
             tarball_path, commit_hash = await prepare_configuration_tarball(spec, namespace)
             temp_dir = os.path.dirname(tarball_path)

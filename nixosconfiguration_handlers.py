@@ -17,13 +17,18 @@ async def apply_nixos_configuration(machine_spec: dict, config_spec: dict,
                                   repo_path: str, commit_hash: str) -> bool:
     """Применить конфигурацию NixOS к машине с использованием --target-host"""
     try:
+        # Определение пути к конфигурации с учетом поддиректории
+        config_path = repo_path
+        if config_spec.get('configurationSubdir'):
+            config_path = f"{repo_path}/{config_spec['configurationSubdir']}"
+        
         # Определение команды в зависимости от режима с --target-host
         if config_spec.get('fullInstall', False):
             # Полная установка с nixos-anywhere
-            cmd = f"nixos-anywhere --target-host {machine_spec['ipAddress']} --kexec {repo_path}/{config_spec['configurationPath']}"
+            cmd = f"nixos-anywhere --target-host {machine_spec['ipAddress']} --kexec {config_path}/{config_spec['flake']}"
         else:
             # Обновление существующей системы с nixos-rebuild
-            cmd = f"nixos-rebuild switch --flake {repo_path}/{config_spec['configurationPath']} --target-host {machine_spec['ipAddress']}"
+            cmd = f"nixos-rebuild switch --flake {config_path}/{config_spec['flake']} --target-host {machine_spec['ipAddress']}"
         
         # Выполнение команды локально (внутри контейнера оператора)
         logger.info(f"Executing command: {cmd}")
@@ -158,7 +163,7 @@ async def handle_configuration_delete(body, spec, name, namespace, **kwargs):
         )
         
         # Если указана конфигурация для удаления, применить её
-        if 'onRemoveConfigurationPath' in spec:
+        if 'onRemoveFlake' in spec:
             repo_path, commit_hash = await clone_git_repo(
                 spec['gitRepo'],
                 spec.get('credentialsRef'),
@@ -170,7 +175,7 @@ async def handle_configuration_delete(body, spec, name, namespace, **kwargs):
                 
                 # Применение конфигурации удаления
                 remove_spec = spec.copy()
-                remove_spec['configurationPath'] = spec['onRemoveConfigurationPath']
+                remove_spec['flake'] = spec['onRemoveFlake']
                 
                 await apply_nixos_configuration(
                     machine['spec'],

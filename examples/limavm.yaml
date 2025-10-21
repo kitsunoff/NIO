@@ -1,0 +1,31 @@
+# ubuntu-40g.yaml
+name: ubuntu-40g
+guest: Linux
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+disk: 40GiB
+memory: 4GiB
+cpus: 2
+ssh:
+  localPort: 60023
+  # Load your public SSH keys from ~/.ssh/*.pub
+  loadDotSSHPubKeys: true
+  # Alternatively, explicitly list keys like:
+  keys:
+     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWD3lRQNvGsjO12gv0+NPZbTZXgkYBPIZgJJTHGd08a flake-example-key"
+
+networks:
+- vzNAT: true
+
+mounts:
+  - location: "~"
+    writable: true
+  - location: /tmp/lima
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      # Ensure cloud-init doesn't block SSH on first boot
+      echo 'datasource_list: [None]' > /etc/cloud/cloud.cfg.d/99-disable-cloud-init.cfg

@@ -1,0 +1,27 @@
+apiVersion: nixos.infra/v1alpha1
+kind: NixosConfiguration
+metadata:
+  name: ultra-flake-config
+  namespace: default
+spec:
+  # Использование флейка из репозитория
+  gitRepo: "https://github.com/your-org/nixos-flake-configs.git"
+  flake: ".#custom-server"
+  onRemoveFlake: ".#minimal"
+  configurationSubdir: "nixos-configs"  # Поддиректория с Nix конфигурациями
+  
+  # Ссылка на машину
+  machineRef:
+    name: ultra-server-01
+  
+  # Настройки для флейков
+  fullInstall: true 
+  
+
+  
+  # # Только приватный ключ для SSH
+  # additionalFiles:
+  # - path: "secrets/ssh-private-key"
+  #   valueType: SecretRef
+  #   secretRef:
+  #     name: ssh-private-key-secret

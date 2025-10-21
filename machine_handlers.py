@@ -23,6 +23,7 @@ async def check_machine_discoverable(machine_spec: Dict, body=None, machine_name
         }
         
         has_credentials = False
+        ssh_key_temp_file = None
         
         # Попытка подключения по SSH ключу
         if 'sshKeySecretRef' in machine_spec:
@@ -32,7 +33,15 @@ async def check_machine_discoverable(machine_spec: Dict, body=None, machine_name
                     machine_spec['sshKeySecretRef'].get('namespace', 'default')
                 )
                 if 'ssh-privatekey' in secret_data and secret_data['ssh-privatekey']:
-                    ssh_config['client_keys'] = [secret_data['ssh-privatekey']]
+                    # Создаем временный файл для SSH ключа
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='_ssh_key') as temp_file:
+                        temp_file.write(secret_data['ssh-privatekey'])
+                        ssh_key_temp_file = temp_file.name
+                    
+                    # Устанавливаем правильные права доступа для SSH ключа
+                    os.chmod(ssh_key_temp_file, 0o600)
+                    
+                    ssh_config['client_keys'] = [ssh_key_temp_file]
                     has_credentials = True
                     logger.info("Using SSH key for authentication")
                 else:
@@ -94,13 +103,22 @@ async def check_machine_discoverable(machine_spec: Dict, body=None, machine_name
             # Продолжаем без дополнительных параметров аутентификации
         
         # Попытка подключения
-        async with asyncssh.connect(**ssh_config) as conn:
-            # Простая команда для проверки доступности
-            result = await conn.run('echo "machine_available"', check=True)
-            return result.stdout.strip() == "machine_available"
+        try:
+            async with asyncssh.connect(**ssh_config) as conn:
+                # Простая команда для проверки доступности
+                result = await conn.run('echo "machine_available"', check=True)
+                return result.stdout.strip() == "machine_available"
+        finally:
+            # Удаляем временный файл SSH ключа, если он был создан
+            if ssh_key_temp_file and os.path.exists(ssh_key_temp_file):
+                try:
+                    os.unlink(ssh_key_temp_file)
+                    logger.debug(f"Deleted temporary SSH key file: {ssh_key_temp_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary SSH key file {ssh_key_temp_file}: {e}")
             
     except Exception as e:
-        logger.warning(f"Machine {machine_spec.get('hostname', machine_spec['ipAddress'])} is not discoverable: {e}")
+        logger.warning(f"Machine {machine_spec.get('hostname')} is not discoverable: {e}")
         return False
 
 
@@ -114,6 +132,7 @@ async def scan_machine_hardware(machine_spec: Dict, body=None, machine_name: str
         }
         
         has_credentials = False
+        ssh_key_temp_file = None
         
         # Попытка подключения по SSH ключу
         if 'sshKeySecretRef' in machine_spec:
@@ -123,7 +142,15 @@ async def scan_machine_hardware(machine_spec: Dict, body=None, machine_name: str
                     machine_spec['sshKeySecretRef'].get('namespace', 'default')
                 )
                 if 'ssh-privatekey' in secret_data and secret_data['ssh-privatekey']:
-                    ssh_config['client_keys'] = [secret_data['ssh-privatekey']]
+                    # Создаем временный файл для SSH ключа
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='_ssh_key') as temp_file:
+                        temp_file.write(secret_data['ssh-privatekey'])
+                        ssh_key_temp_file = temp_file.name
+                    
+                    # Устанавливаем правильные права доступа для SSH ключа
+                    os.chmod(ssh_key_temp_file, 0o600)
+                    
+                    ssh_config['client_keys'] = [ssh_key_temp_file]
                     has_credentials = True
                     logger.info("Using SSH key for hardware scan")
             except Exception as e:
@@ -152,46 +179,55 @@ async def scan_machine_hardware(machine_spec: Dict, body=None, machine_name: str
             logger.info("No SSH key or password provided, attempting hardware scan without authentication")
         
         # Подключение и выполнение сканирования
-        async with asyncssh.connect(**ssh_config) as conn:
-            # Передаем скрипт сканирования по SCP
-            scanner_path = os.path.join(os.path.dirname(__file__), 'scripts', 'hardware_scanner.sh')
-            
-            if not os.path.exists(scanner_path):
-                logger.error(f"Hardware scanner script not found at {scanner_path}")
-                return {}
-            
-            # Читаем содержимое скрипта
-            with open(scanner_path, 'r') as f:
-                scanner_content = f.read()
-            
-            # Создаем временный файл на удаленной машине
-            remote_script_path = "/tmp/hardware_scanner.sh"
-            
-            # Передаем скрипт по SCP
-            async with conn.start_sftp_client() as sftp:
-                async with sftp.open(remote_script_path, 'w') as remote_file:
-                    await remote_file.write(scanner_content)
-            
-            # Делаем скрипт исполняемым и выполняем его
-            await conn.run(f"chmod +x {remote_script_path}", check=True)
-            result = await conn.run(f"{remote_script_path}", check=True)
-            
-            # Получаем сырой вывод сканера
-            facts_output = result.stdout.strip()
-            if not facts_output:
-                logger.warning("Hardware scanner returned empty output")
-                return {}
-            
-            # Парсим результат локально
-            from scripts.facts_parser import parse_facts
-            
-            # Разбиваем вывод на строки и парсим
-            lines = facts_output.split('\n')
-            hardware_facts = parse_facts(lines)
-            
-            logger.info(f"Successfully scanned hardware for machine {machine_spec['hostname']}")
-            return hardware_facts
+        try:
+            async with asyncssh.connect(**ssh_config) as conn:
+                # Передаем скрипт сканирования по SCP
+                scanner_path = os.path.join(os.path.dirname(__file__), 'scripts', 'hardware_scanner.sh')
+                
+                if not os.path.exists(scanner_path):
+                    logger.error(f"Hardware scanner script not found at {scanner_path}")
+                    return {}
+                
+                # Читаем содержимое скрипта
+                with open(scanner_path, 'r') as f:
+                    scanner_content = f.read()
+                
+                # Создаем временный файл на удаленной машине
+                remote_script_path = "/tmp/hardware_scanner.sh"
+                
+                # Передаем скрипт по SCP
+                async with conn.start_sftp_client() as sftp:
+                    async with sftp.open(remote_script_path, 'w') as remote_file:
+                        await remote_file.write(scanner_content)
+                
+                # Делаем скрипт исполняемым и выполняем его
+                await conn.run(f"chmod +x {remote_script_path}", check=True)
+                result = await conn.run(f"{remote_script_path}", check=True)
+                
+                # Получаем сырой вывод сканера
+                facts_output = result.stdout.strip()
+                if not facts_output:
+                    logger.warning("Hardware scanner returned empty output")
+                    return {}
+                
+                # Парсим результат локально
+                from scripts.facts_parser import parse_facts
+                
+                # Разбиваем вывод на строки и парсим
+                lines = facts_output.split('\n')
+                hardware_facts = parse_facts(lines)
+                
+                logger.info(f"Successfully scanned hardware for machine {machine_spec['hostname']}")
+                return hardware_facts
+        finally:
+            # Удаляем временный файл SSH ключа, если он был создан
+            if ssh_key_temp_file and os.path.exists(ssh_key_temp_file):
+                try:
+                    os.unlink(ssh_key_temp_file)
+                    logger.debug(f"Deleted temporary SSH key file: {ssh_key_temp_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary SSH key file {ssh_key_temp_file}: {e}")
             
     except Exception as e:
-        logger.warning(f"Failed to scan hardware for machine {machine_spec.get('hostname', machine_spec['ipAddress'])}: {e}")
+        logger.warning(f"Failed to scan hardware for machine {machine_spec.get('hostname')}: {e}")
         return {}
