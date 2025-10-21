@@ -13,8 +13,13 @@ in
   networking.hostName = "ultra-server";
   time.timeZone = "Europe/Moscow";
 
-  # Только root пользователь с SSH доступом
+  # Пользователи с SSH доступом
   users.users.root.openssh.authorizedKeys.keys = [ sshPublicKey ];
+  users.users.kitsunoff = {
+    isNormalUser = true;
+    extraGroups = [ "wheel" ];
+    openssh.authorizedKeys.keys = [ sshPublicKey ];
+  };
 
   # SSH сервер
   services.openssh = {

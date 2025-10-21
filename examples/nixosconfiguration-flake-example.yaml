@@ -5,14 +5,14 @@ metadata:
   namespace: default
 spec:
   # Использование флейка из репозитория
-  gitRepo: "https://github.com/your-org/nixos-flake-configs.git"
+  gitRepo: "https://github.com/homystack/NIO"
   flake: ".#custom-server"
   onRemoveFlake: ".#minimal"
-  configurationSubdir: "nixos-configs"  # Поддиректория с Nix конфигурациями
+  configurationSubdir: "examples/nix"  # Поддиректория с Nix конфигурациями
   
   # Ссылка на машину
   machineRef:
-    name: ultra-server-01
+    name: test
   
   # Настройки для флейков
   fullInstall: true 

@@ -12,6 +12,11 @@ in
   users.users.root.openssh.authorizedKeys.keys = [
     sshPublicKey
   ];
+  users.users.kitsunoff = {
+    isNormalUser = true;
+    extraGroups = [ "wheel" ];
+    openssh.authorizedKeys.keys = [ sshPublicKey ];
+  };
 
   # Включение SSH сервера
   services.openssh = {

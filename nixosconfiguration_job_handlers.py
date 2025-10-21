@@ -98,7 +98,7 @@ def copy_file_to_pod(namespace: str, pod_name: str, source_file: pathlib.Path, d
 
     # Copying file
     exec_command = ['tar', 'xzvf', '-', '-C', '/']
-    resp = stream.stream(core_v1.connect_get_namespaced_pod_exec, pod_name, namespace,
+    resp = stream(core_v1.connect_get_namespaced_pod_exec, pod_name, namespace,
                          command=exec_command,
                          stderr=True, stdin=True,
                          stdout=True, tty=False,
@@ -130,18 +130,21 @@ async def create_nixos_job(
         config_subdir = config_spec.get('configurationSubdir', '')
         config_base_path = f"/config/{config_subdir}" if config_subdir else "/config"
         
+        # Получаем SSH пользователя из machine_spec
+        ssh_user = machine_spec.get('sshUser', 'root')
+        
         # Определяем команду в зависимости от режима
         if config_spec.get('fullInstall', False):
             # Полная установка с nixos-anywhere
             flake = config_spec['onRemoveFlake'] if is_remove else config_spec['flake']
-            cmd = f"nixos-anywhere --target-host {machine_spec['ipAddress']} --kexec {config_base_path}/{flake}"
+            cmd = f"nix run github:nix-community/nixos-anywhere -- --target-host {ssh_user}@{machine_spec['hostname']} --flake {config_base_path}.{flake}"
         else:
             # Обновление существующей системы с nixos-rebuild
             flake = config_spec['onRemoveFlake'] if is_remove else config_spec['flake']
-            cmd = f"nixos-rebuild switch --flake {config_base_path}/{flake} --target-host {machine_spec['ipAddress']}"
+            cmd = f"nixos-rebuild switch --flake {config_base_path}.{flake} --target-host {ssh_user}@{machine_spec['ipAddress']}"
         
-        # Создаем Job
-        job = {
+        # Подготавливаем спецификацию Job с SSH ключом
+        job_spec = {
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
@@ -163,6 +166,11 @@ async def create_nixos_job(
                             "args": [
                                 f"""
                                 set -e
+                                # Настраиваем SSH ключ
+                                mkdir -p /root/.ssh
+                                cp /etc/ssh-key/ssh-privatekey /root/.ssh/id_rsa
+                                chmod 600 /root/.ssh/id_rsa
+                                
                                 # Ждем появления tar.gz файла
                                 echo "Waiting for configuration tarball..."
                                 while [ ! -f /tmp/configuration.tar.gz ]; do
@@ -174,6 +182,8 @@ async def create_nixos_job(
                                 cd /config
                                 tar -xzf /tmp/configuration.tar.gz
                                 rm /tmp/configuration.tar.gz
+
+                                ls -lah
                                 
                                 # Применяем конфигурацию
                                 {cmd}
@@ -194,8 +204,24 @@ async def create_nixos_job(
                                     "cpu": "1000m",
                                     "memory": "1Gi"
                                 }
-                            }
+                            },
+                            "volumeMounts": [
+                                {
+                                    "name": "ssh-key-volume",
+                                    "mountPath": "/etc/ssh-key",
+                                    "readOnly": True
+                                }
+                            ]
                         }],
+                        "volumes": [
+                            {
+                                "name": "ssh-key-volume",
+                                "secret": {
+                                    "secretName": machine_spec['sshKeySecretRef']['name'],
+                                    "defaultMode": 0o600
+                                }
+                            }
+                        ],
                         "restartPolicy": "Never"
                     }
                 },
@@ -205,8 +231,8 @@ async def create_nixos_job(
         }
         
         # Создаем Job
-        batch_v1.create_namespaced_job(namespace, job)
-        logger.info(f"Created Job {job_name} for configuration application")
+        batch_v1.create_namespaced_job(namespace, job_spec)
+        logger.info(f"Created Job {job_name} for configuration application with SSH key")
         
         return True
         
@@ -222,7 +248,7 @@ async def copy_tarball_to_job(job_name: str, namespace: str, tarball_path: str) 
             namespace=namespace,
             label_selector=f"job-name={job_name}"
         )
-        
+        await asyncio.sleep(3)
         if not pods.items:
             logger.error(f"No pods found for Job {job_name}")
             return False
@@ -232,7 +258,7 @@ async def copy_tarball_to_job(job_name: str, namespace: str, tarball_path: str) 
         # Ждем пока Pod будет готов
         import time
         start_time = time.time()
-        while time.time() - start_time < 60:  # 60 секунд таймаут
+        while time.time() - start_time < 600:  # 60 секунд таймаут
             pod = core_v1.read_namespaced_pod(pod_name, namespace)
             if pod.status.phase == "Running":
                 break
