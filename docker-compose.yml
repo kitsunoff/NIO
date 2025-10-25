@@ -2,23 +2,42 @@ version: '3.8'
 
 services:
 
-  # Оператор в режиме разработки
-  nixos-operator-dev:
+  # # Оператор в режиме разработки
+  # nixos-operator-dev:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.dev
+  #   container_name: nixos-operator-dev
+  #   network_mode: host
+  #   volumes:
+  #     - .:/app
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - ~/.kube/config:/root/.kube/config
+  #   environment:
+  #     - KUBECONFIG=/root/.kube/config
+  #     - PYTHONPATH=/app
+  #     - PYTHONUNBUFFERED=1
+  #     - PYDEVD_DISABLE_FILE_VALIDATION=1 
+  #   command: |
+  #     python -m debugpy --listen 0.0.0.0:5678 main.py
+  #   ports:
+  #     - "5678:5678"  # Python debugger port
+
+  # PXE сервер для загрузки машин через iPXE
+  ipxe-server:
     build:
       context: .
-      dockerfile: Dockerfile.dev
-    container_name: nixos-operator-dev
+      dockerfile: Dockerfile
+    container_name: ipxe-server
     network_mode: host
     volumes:
       - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
       - ~/.kube/config:/root/.kube/config
     environment:
       - KUBECONFIG=/root/.kube/config
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-      - PYDEVD_DISABLE_FILE_VALIDATION=1 
-    command: |
-      python -m debugpy --listen 0.0.0.0:5678 main.py
+    command: python ipxe.py
+    privileged: true
     ports:
-      - "5678:5678"  # Python debugger port
+      - "8000:8000"  # HTTP порт для iPXE скриптов

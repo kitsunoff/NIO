@@ -28,7 +28,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копирование исходного кода оператора
-COPY main.py .
+COPY . .
 COPY crds/ ./crds/
 
 # Создание пользователя для безопасности (но с правами для разработки)
