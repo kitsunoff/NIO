@@ -184,20 +184,30 @@ def ensure_nixos_placeholders():
 # dnsmasq
 # ==============================
 def generate_dnsmasq_conf(interface: str, server_ip: str, tftp_root: Path) -> str:
-    conf = f"""
-interface={interface}
+    conf= f"""
+interface=eth0
 bind-interfaces
-port=0
+
 dhcp-range=192.168.2.0,proxy
+
+# TFTP только для начальной загрузки НЕ-iPXE клиентов
 enable-tftp
-tftp-root={tftp_root}
+tftp-root=/home/kitsunoff/NIO/.pxe/tftp
+
+# Определяем iPXE клиентов
+dhcp-userclass=set:ipxe,iPXE
+dhcp-match=set:ipxe,175,#iPXE
+
+# Для НЕ-iPXE клиентов: загружаем ipxe.efi по TFTP
+dhcp-boot=tag:!ipxe,ipxe.efi
+
+# Для iPXE клиентов: принудительно используем HTTP и БЛОКИРУЕМ TFTP
+dhcp-option=tag:ipxe,66,192.168.2.121
+dhcp-option=tag:ipxe,67,http://192.168.2.121:8000/boot.ipxe
+dhcp-option=tag:ipxe,60,"iPXE"
+pxe-service=tag:ipxe,X86-64_EFI,"iPXE",http://192.168.2.121:8000/boot.ipxe
+
 log-dhcp
-log-queries
-dhcp-option=66,{server_ip}
-dhcp-match=set:efi-x86_64,option:client-arch,7
-dhcp-match=set:efi-x86_64,option:client-arch,9
-dhcp-boot=tag:!efi-x86_64,undionly.kpxe,{server_ip}
-dhcp-boot=tag:efi-x86_64,ipxe.efi,{server_ip}
 """
     # Сохраняем в .pxe/dnsmasq.conf (удобно для отладки)
     conf_path = BASE_DIR / "dnsmasq.conf"
@@ -208,7 +218,7 @@ dhcp-boot=tag:efi-x86_64,ipxe.efi,{server_ip}
 def start_dnsmasq(interface: str, server_ip: str):
     global dnsmasq_proc
     conf_path = generate_dnsmasq_conf(interface, server_ip, TFTP_ROOT)
-    cmd = ["dnsmasq", "--no-daemon", "--conf-file=" + conf_path]
+    cmd = ["dnsmasq", "--no-daemon", "--conf-file=" + conf_path, "--log-dhcp"]
     logger.info("Запуск dnsmasq (proxy DHCP + TFTP)...")
     dnsmasq_proc = subprocess.Popen(
         cmd,
@@ -233,6 +243,7 @@ app = FastAPI(title="Unified PXE + K8s Registrar")
 
 @app.get("/boot.ipxe")
 async def boot_script(request: Request, mac: Optional[str] = None):
+    logger.info("req arrived")
     if request.client is None:
         raise HTTPException(400, "Client IP not available")
     
@@ -267,7 +278,7 @@ async def boot_script(request: Request, mac: Optional[str] = None):
 
     script = f"""#!ipxe
 dhcp
-chain http://{ip}:{HTTP_PORT}/main.ipxe
+chain http://{ip}:{HTTP_PORT}/result/netboot.ipxe
 """
     return Response(script, media_type="text/plain")
 
