@@ -100,17 +100,28 @@ async def apply_nixos_configuration(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+
+        # Асинхронное чтение stdout и stderr в реальном времени
+        async def read_stream(stream, log_func):
+            if stream:
+                async for line in stream:
+                    decoded = line.decode('utf-8', errors='replace').rstrip()
+                    if decoded:
+                        log_func(decoded)
+
+        # Запускаем чтение stdout и stderr параллельно
+        await asyncio.gather(
+            read_stream(process.stdout, logger.info),
+            read_stream(process.stderr, logger.error),
+            process.wait()  # ждём завершения процесса
+        )
 
         if process.returncode != 0:
             logger.error(f"Command failed (code {process.returncode})")
-            logger.error(f"stderr: {stderr.decode()}")
-            logger.error(f"stdout: {stdout.decode()}")
             return False
 
         logger.info("NixOS configuration applied successfully")
         return True
-
     except Exception as e:
         logger.error(f"Unexpected error in apply_nixos_configuration: {e}")
         return False
