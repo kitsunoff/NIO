@@ -54,6 +54,8 @@ spec:
       containers:
       - name: operator
         image: nixos-operator:latest
+        imagePullPolicy: IfNotPresent   # ←←← ЭТО ОБЯЗАТЕЛЬНО ДЛЯ :latest
+
         env:
         - name: KUBERNETES_SERVICE_HOST
           value: "kubernetes.default.svc"

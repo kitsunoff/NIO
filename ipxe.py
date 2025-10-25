@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
+"""
+PXE-сервер с регистрацией машин в Kubernetes и отдачей netboot.ipxe из .pxe/result
+"""
 
 import os
 import sys
 import signal
 import logging
-import tempfile
 import subprocess
 import threading
 import argparse
 from pathlib import Path
-from ipaddress import ip_address
 from typing import Optional
 
 import uvicorn
@@ -18,149 +19,61 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 # ==============================
-# Настройки: всё в .pxe внутри текущей папки
+# Настройки
 # ==============================
 BASE_DIR = Path.cwd() / ".pxe"
-BASE_DIR.mkdir(exist_ok=True)
-
+RESULT_DIR = BASE_DIR / "result"
+SSH_DIR = BASE_DIR / "ssh"
 TFTP_ROOT = BASE_DIR / "tftp"
-TFTP_ROOT.mkdir(exist_ok=True)
-
-# Внешние URL (опционально, через env)
-NIXOS_KERNEL_URL = os.getenv("NIXOS_KERNEL_URL")
-NIXOS_INITRD_URL = os.getenv("NIXOS_INITRD_URL")
-
-# Локальные пути
-LOCAL_KERNEL_PATH = BASE_DIR / "nixos-kernel"
-LOCAL_INITRD_PATH = BASE_DIR / "nixos-initrd"
-
 HTTP_PORT = 8000
 
+# Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("pxe-k8s")
 
-# Глобальные
+# Глобальные переменные
 dnsmasq_proc: Optional[subprocess.Popen] = None
-REGISTERED_MACHINES = set()
 GROUP, VERSION, PLURAL = "nixos.infra", "v1alpha1", "machines"
+crd_api = None
+REGISTERED_MACHINES = set()
 
 
 # ==============================
-# Сеть (Cross-platform)
+# Утилиты
 # ==============================
 def get_primary_interface_and_ip():
-    """
-    Cross-platform function to get the primary network interface and IP address.
-    Returns (interface_name, ip_address)
-    """
-    
-    # Method 1: macOS - use ipconfig (most reliable on macOS)
+    """Простое определение основного интерфейса и IP (Linux/macOS)"""
     try:
-        # Try common macOS interfaces
-        for interface in ["en0", "en1", "en2"]:
-            try:
-                ip = subprocess.check_output(["ipconfig", "getifaddr", interface], text=True).strip()
-                if ip and ip != "":
-                    logger.info(f"Определен интерфейс {interface} с IP {ip} через ipconfig (macOS)")
-                    return interface, ip
-            except subprocess.CalledProcessError:
-                continue
-    except FileNotFoundError:
-        logger.warning("ipconfig не найден, пробуем другие методы...")
-    except Exception as e:
-        logger.warning(f"Ошибка ipconfig: {e}, пробуем другие методы...")
-    
-    # Method 2: Linux - use iproute2 (ip command)
-    try:
-        # Get primary interface through ip route
+        # Linux
         route_output = subprocess.check_output(["ip", "route", "get", "1"], text=True)
-        logger.info(f"ip route output: {route_output}")
-        # Example output: 1.1.1.1 via 172.17.0.1 dev eth0 src 172.17.0.2 uid 0
-        parts = route_output.strip().split()
-        iface = parts[parts.index("dev") + 1]
-        logger.info(f"Found interface: {iface}")
-        
-        # Get IP address of the interface
+        iface = route_output.split()[route_output.split().index("dev") + 1]
         addr_output = subprocess.check_output(["ip", "addr", "show", iface], text=True)
         for line in addr_output.splitlines():
-            if "inet " in line:
-                ip = line.strip().split()[1].split('/')[0]
-                logger.info(f"Определен интерфейс {iface} с IP {ip} через iproute2 (Linux)")
+            if "inet " in line and "127.0.0.1" not in line:
+                ip = line.split()[1].split('/')[0]
                 return iface, ip
-        
-        raise Exception(f"Не удалось найти IP для интерфейса {iface}")
-    except FileNotFoundError:
-        logger.warning("iproute2 не найден, пробуем другие методы...")
-    except Exception as e:
-        logger.warning(f"Ошибка iproute2: {e}, пробуем другие методы...")
-    
-    # Method 3: Cross-platform - use ifconfig
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
     try:
-        # Try common interface names
-        interface_candidates = ["eth0", "ens33", "ens192", "enp0s3", "wlan0", "en0", "en1", "en2"]
-        for iface in interface_candidates:
-            try:
-                ifconfig_output = subprocess.check_output(["ifconfig", iface], text=True)
-                for line in ifconfig_output.splitlines():
-                    if "inet " in line and "127.0.0.1" not in line:
-                        parts = line.strip().split()
-                        ip = parts[1]
-                        logger.info(f"Определен интерфейс {iface} с IP {ip} через ifconfig")
-                        return iface, ip
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                continue
-    except Exception as e:
-        logger.warning(f"Ошибка ifconfig: {e}")
-    
-    # Method 4: Linux - use hostname
-    try:
-        hostname_output = subprocess.check_output(["hostname", "-I"], text=True)
-        if hostname_output.strip():
-            ip = hostname_output.strip().split()[0]
-            # Try to find the interface for this IP
-            try:
-                route_output = subprocess.check_output(["ip", "route", "get", ip], text=True)
-                parts = route_output.strip().split()
-                iface = parts[parts.index("dev") + 1]
-                logger.info(f"Определен интерфейс {iface} с IP {ip} через hostname")
-                return iface, ip
-            except:
-                logger.info(f"Определен IP {ip} через hostname (интерфейс неизвестен)")
-                return "unknown", ip
-    except Exception as e:
-        logger.warning(f"Ошибка hostname: {e}")
-    
-    # Method 5: macOS - use networksetup as fallback
-    try:
-        service_output = subprocess.check_output(["networksetup", "-listallnetworkservices"], text=True)
-        for line in service_output.splitlines():
-            if line.strip() and not line.startswith("An asterisk"):
-                service = line.strip()
-                try:
-                    ip_output = subprocess.check_output(["networksetup", "-getinfo", service], text=True)
-                    for ip_line in ip_output.splitlines():
-                        if "IP address:" in ip_line:
-                            ip = ip_line.split(":")[1].strip()
-                            if ip and ip != "none":
-                                logger.info(f"Определен интерфейс {service} с IP {ip} через networksetup (macOS)")
-                                return service, ip
-                except:
-                    continue
-    except Exception as e:
-        logger.warning(f"Ошибка networksetup: {e}")
-    
-    # Fallback: Use localhost
-    logger.warning("Не удалось определить сетевой интерфейс, использую localhost")
-    return "lo", "127.0.0.1"
+        # macOS
+        for interface in ["en0", "en1", "en2"]:
+            ip = subprocess.check_output(["ipconfig", "getifaddr", interface], text=True).strip()
+            if ip:
+                return interface, ip
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    logger.error("Не удалось определить сетевой интерфейс")
+    return None, None
 
 
-# ==============================
-# Файлы
-# ==============================
 def ensure_ipxe_binaries():
+    """Скачивает необходимые файлы iPXE"""
+    TFTP_ROOT.mkdir(exist_ok=True)
     files = {
-        "undionly.kpxe": "https://boot.ipxe.org/undionly.kpxe",
-        "ipxe.efi": "https://boot.ipxe.org/ipxe.efi",
+        "undionly.kpxe": "https://boot.ipxe.org/undionly.kpxe  ",
+        "ipxe.efi": "https://boot.ipxe.org/ipxe.efi  ",
     }
     for name, url in files.items():
         dst = TFTP_ROOT / name
@@ -170,18 +83,139 @@ def ensure_ipxe_binaries():
             urllib.request.urlretrieve(url, dst)
 
 
-def ensure_nixos_placeholders():
-    if not NIXOS_KERNEL_URL and not LOCAL_KERNEL_PATH.exists():
-        logger.warning("NIXOS_KERNEL_URL не задан — создаю заглушку nixos-kernel")
-        LOCAL_KERNEL_PATH.write_bytes(b"")
-    if not NIXOS_INITRD_URL and not LOCAL_INITRD_PATH.exists():
-        logger.warning("NIXOS_INITRD_URL не задан — создаю заглушку nixos-initrd")
-        LOCAL_INITRD_PATH.write_bytes(b"")
+def generate_ssh_keys_if_missing():
+    """Генерирует SSH-ключи, если они не существуют."""
+    SSH_DIR.mkdir(exist_ok=True)
+    private_key_path = SSH_DIR / "id_rsa"
+    public_key_path = SSH_DIR / "id_rsa.pub"
+
+    if private_key_path.exists() and public_key_path.exists():
+        logger.info(f"SSH-ключи уже существуют: {private_key_path}, {public_key_path}")
+        return str(private_key_path), str(public_key_path)
+
+    logger.info("SSH-ключи не найдены, генерирую новые...")
+    try:
+        subprocess.run([
+            "ssh-keygen", "-t", "rsa", "-b", "4096", "-f", str(private_key_path), "-N", ""
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info(f"SSH-ключи сгенерированы: {private_key_path}, {public_key_path}")
+        return str(private_key_path), str(public_key_path)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Ошибка генерации SSH-ключей: {e}")
+        sys.exit(1)
+    except FileNotFoundError:
+        logger.error("Команда ssh-keygen не найдена. Убедитесь, что OpenSSH установлен.")
+        sys.exit(1)
 
 
-# ==============================
-# dnsmasq
-# ==============================
+def build_nixos_netboot_if_missing(public_key_path: str):
+    """Проверяет наличие netboot-файлов и собирает их, если они отсутствуют.
+    Использует кастомную конфигурацию с SSH-ключом.
+    """
+    netboot_ipxe_path = RESULT_DIR / "netboot.ipxe"
+    
+    required_files_exist = netboot_ipxe_path.exists()
+
+    if required_files_exist:
+        logger.info("Файлы netboot уже существуют в .pxe/result, сборка не требуется.")
+        return
+
+    logger.info("Файлы netboot не найдены, запускаю сборку...")
+
+    # --- Добавляем путь к Nix в PATH ---
+    nix_bin_path = "/nix/var/nix/profiles/default/bin"
+    current_path = os.environ.get("PATH", "")
+    if nix_bin_path not in current_path:
+        os.environ["PATH"] = f"{nix_bin_path}:{current_path}"
+        logger.info(f"Добавлен путь к Nix в PATH: {nix_bin_path}")
+
+    # Путь к кастомной конфигурации
+    custom_config_path = BASE_DIR / "configuration.nix"
+
+    # Проверяем, существует ли файл конфигурации
+    if not custom_config_path.exists():
+        logger.info(f"Файл конфигурации {custom_config_path} не найден, создаю стандартный...")
+        # Читаем содержимое публичного ключа
+        try:
+            public_key_content = Path(public_key_path).read_text().strip()
+            if not public_key_content.startswith("ssh-"):
+                logger.error(f"Файл {public_key_path} не содержит валидный публичный ключ SSH.")
+                public_key_content = ""
+        except Exception as e:
+            logger.error(f"Ошибка чтения публичного ключа из {public_key_path}: {e}")
+            public_key_content = ""
+
+        # Содержимое стандартной конфигурации
+        config_content = f"""{{ modulesPath, ... }}: {{
+  imports = [ (modulesPath + "/installer/netboot/netboot-minimal.nix") ];
+
+  services.openssh.enable = true;
+  users.users.root.openssh.authorizedKeys.keys = [
+    {f'"{public_key_content}"' if public_key_content else ''}
+  ];
+}}
+"""
+        custom_config_path.write_text(config_content)
+        logger.info(f"Создан стандартный файл конфигурации: {custom_config_path}")
+
+# ...
+    logger.info(f"Собираю netboot с конфигурацией: {custom_config_path}")
+    nix_expression = f"""
+with import <nixpkgs/nixos/release.nix> {{ configuration = import {custom_config_path}; }};
+netboot.x86_64-linux
+"""
+
+    cmd = [
+        "nix-build", "-E", nix_expression,
+        "-o", str(RESULT_DIR)
+    ]
+    logger.info(f"Выполняю: nix-build -E '<custom_expression>' -o {RESULT_DIR}")
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+
+        if process.stdout:
+            for line in process.stdout:
+                logger.info(f"nix-build: {line.strip()}")
+
+        process.wait()
+
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd)
+
+        # После сборки файлы находятся в result/
+        # Проверяем, создались ли файлы после сборки
+        if not netboot_ipxe_path.exists():
+            logger.warning(f"После сборки netboot файл netboot.ipxe не найден в .pxe/result")
+            # Попробуем найти и скопировать его из результата сборки
+            import shutil
+            for item in RESULT_DIR.iterdir():
+                if item.is_symlink() and (item / "netboot.ipxe").exists():
+                    source_ipxe = item / "netboot.ipxe"
+                    logger.info(f"Найден netboot.ipxe в {source_ipxe}, копирую...")
+                    shutil.copy2(source_ipxe, netboot_ipxe_path)
+                    break
+
+        logger.info(f"Сборка netboot завершена.")
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Ошибка сборки netboot: {e}")
+        sys.exit(1)
+    except FileNotFoundError:
+        logger.error("Команда nix-build не найдена. Убедитесь, что Nix установлен.")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при сборке netboot: {e}")
+        sys.exit(1)
+
+
 def generate_dnsmasq_conf(interface: str, server_ip: str, tftp_root: Path) -> str:
     conf= f"""
 interface={interface}
@@ -215,97 +249,181 @@ log-dhcp
 
 
 def start_dnsmasq(interface: str, server_ip: str):
+    """Запускает dnsmasq в отдельном процессе"""
     global dnsmasq_proc
     conf_path = generate_dnsmasq_conf(interface, server_ip, TFTP_ROOT)
     cmd = ["dnsmasq", "--no-daemon", "--conf-file=" + conf_path, "--log-dhcp"]
-    logger.info("Запуск dnsmasq (proxy DHCP + TFTP)...")
-    dnsmasq_proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        preexec_fn=os.setsid
-    )
+    logger.info("Запуск dnsmasq...")
+    dnsmasq_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     def log_output():
-        if dnsmasq_proc and dnsmasq_proc.stdout:
-            for line in iter(dnsmasq_proc.stdout.readline, b""):
-                logger.info(f"dnsmasq: {line.decode().strip()}")
+        for line in iter(dnsmasq_proc.stdout.readline, b""):
+            logger.info(f"dnsmasq: {line.decode().strip()}")
 
     threading.Thread(target=log_output, daemon=True).start()
 
-
-# ==============================
-# Machine Registration
-# ==============================
 def register_machine_in_k8s(mac: str, ip: str) -> str:
-    """Register machine in Kubernetes by MAC address and return machine name"""
-    mac_norm = mac.replace(":", "-").replace(".", "-").lower()
+    """Регистрирует машину в Kubernetes и создаёт Secret с SSH-ключом."""
+    mac_norm = mac.replace(":", "-").lower()
     machine_name = f"machine-{mac_norm}"
+    secret_name = f"ssh-private-key-{mac_norm}"
 
-    if mac_norm not in REGISTERED_MACHINES:
-        logger.info(f"Регистрация машины {machine_name} с IP {ip}")
-        body = {
-            "apiVersion": f"{GROUP}/{VERSION}",
-            "kind": "Machine",
-            "metadata": {"name": machine_name, "namespace": "default"},
-            "spec": {"hostname": ip, "sshUser": "root", "macAddress": mac}
+    if mac_norm in REGISTERED_MACHINES:
+        logger.info(f"Машина {machine_name} уже зарегистрирована в этой сессии")
+        return machine_name
+
+    # 1. Читаем приватный ключ
+    try:
+        private_key_content = Path(private_key_path).read_text()
+    except Exception as e:
+        logger.error(f"Ошибка чтения приватного ключа {private_key_path}: {e}")
+        raise HTTPException(500, "Failed to read private key")
+
+    # 2. Создаём Secret
+    secret_body = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": secret_name,
+            "namespace": "default",
+        },
+        "type": "Opaque",
+        "data": {
+            # Ключи в Secret должны быть в base64
+            "ssh-privatekey": subprocess.check_output(["base64", "-w", "0"], input=private_key_content.encode()).decode().strip()
         }
-        try:
-            crd_api.create_namespaced_custom_object(GROUP, VERSION, "default", PLURAL, body)
+
+    }
+
+    try:
+        core_api.create_namespaced_secret("default", secret_body)
+        logger.info(f"Secret {secret_name} создан в K8s")
+    except ApiException as e:
+        if e.status != 409: # 409 = уже существует
+            logger.error(f"Ошибка создания Secret {secret_name}: {e}")
+            raise HTTPException(500, "Secret creation failed")
+        else:
+            logger.info(f"Secret {secret_name} уже существует в K8s")
+
+    # 3. Создаём объект Machine
+    machine_body = {
+        "apiVersion": f"{GROUP}/{VERSION}",
+        "kind": "Machine",
+        "metadata": {"name": machine_name, "namespace": "default"},
+        "spec": {
+            "hostname": ip,
+            "sshUser": "root", # Или передавать как аргумент, если нужно
+            "macAddress": mac,
+            "sshKeySecretRef": {
+                "name": secret_name,
+                "namespace": "default"
+            }
+        }
+    }
+
+    try:
+        crd_api.create_namespaced_custom_object(GROUP, VERSION, "default", PLURAL, machine_body)
+        logger.info(f"Машина {machine_name} зарегистрирована в K8s")
+        REGISTERED_MACHINES.add(mac_norm)
+    except ApiException as e:
+        if e.status != 409:
+            logger.error(f"Ошибка K8s при создании Machine: {e}")
+            # Если Machine не создалась, но Secret был, возможно, стоит удалить Secret?
+            # Пока что просто бросаем ошибку.
+            raise HTTPException(500, "Machine registration failed")
+        else:
+            logger.info(f"Машина {machine_name} уже существует в K8s")
             REGISTERED_MACHINES.add(mac_norm)
-        except ApiException as e:
-            if e.status != 409:
-                logger.error(f"K8s error: {e}")
-                raise HTTPException(500, "Registration failed")
-            REGISTERED_MACHINES.add(mac_norm)
-    
+
     return machine_name
 
 
 # ==============================
-# Generic File Serving
+# HTTP-сервер
 # ==============================
-def get_file_mime_type(file_path: Path) -> str:
-    """Determine MIME type based on file extension"""
-    extension = file_path.suffix.lower()
-    mime_types = {
-        '.ipxe': 'text/plain',
-        '.pxe': 'text/plain',
-        '.txt': 'text/plain',
-        '.conf': 'text/plain',
-        '.sh': 'text/plain',
-        '.py': 'text/plain',
-        '.kernel': 'application/octet-stream',
-        '.initrd': 'application/octet-stream',
-        '.efi': 'application/octet-stream',
-        '.kpxe': 'application/octet-stream',
-        '.iso': 'application/octet-stream',
-        '.img': 'application/octet-stream',
-    }
-    return mime_types.get(extension, 'application/octet-stream')
+app = FastAPI(title="PXE + K8s Registrar")
+
+@app.get("/boot.ipxe")
+async def boot_script(request: Request, mac: Optional[str] = None):
+    """Первый скрипт iPXE - регистрирует машину и отдаёт netboot.pxe"""
+
+    script = f"""#!ipxe
+dhcp
+chain http://{server_ip}:{HTTP_PORT}/netboot.pxe?mac=${{mac}}&ip=${{ip}}
+"""
+    return Response(content=script, media_type="text/plain")
 
 
-# ==============================
-# FastAPI Endpoints
-# ==============================
-app = FastAPI(title="Unified PXE + K8s Registrar")
+@app.get("/netboot.pxe")
+async def netboot_script(request: Request, mac: Optional[str] = None, ip: Optional[str] = None):
+    """Отдаёт файл netboot.ipxe из .pxe/result с подставленными MAC и IP"""
+    logger.info(f"Запрос netboot.pxe от {request.client.host} с MAC {mac}, IP {ip}")
 
+    if not mac or not ip:
+        raise HTTPException(400, "MAC и IP обязательны")
 
-@app.get("/{file_path:path}")
-async def serve_file(file_path: str, request: Request):
-    """Serve any file from the .pxe directory"""
-    # Security: prevent directory traversal
-    safe_path = Path(file_path).resolve()
-    base_path = BASE_DIR.resolve()
+    machine_name = register_machine_in_k8s(mac, ip) # Вызываем с ключом
+
+    netboot_file_path = RESULT_DIR / "netboot.ipxe"
     
-    if not str(safe_path).startswith(str(base_path)):
-        # If not in base directory, try to find it in BASE_DIR
-        safe_path = base_path / file_path
+    if not netboot_file_path.exists():
+        logger.error(f"Файл netboot.ipxe не найден: {netboot_file_path}")
+        raise HTTPException(404, "Файл netboot.ipxe не найден в .pxe/result")
+
+    try:
+        content = netboot_file_path.read_text()
+        # Подставляем HTTP-пути к kernel и initrd
+        # Заменяем только имена файлов, оставляя остальные параметры без изменений
+        content = content.replace("bzImage", f"http://{server_ip}:{HTTP_PORT}/result/bzImage")
+        # Заменяем "initrd=initrd" на "initrd=http://..."
+        # И "initrd initrd" на "initrd http://..."
+        # Можно сделать это одной строкой, заменив "initrd" на полный путь, но будь осторожен с init=/nix/store/...
+        # Лучше заменить конкретные вхождения "initrd" как имя файла, а не как часть параметра init=.
+        # Например, можно сначала заменить " initrd " (с пробелами), чтобы не трогать init=/nix/store...
+        content = content.replace(" initrd ", f" http://{server_ip}:{HTTP_PORT}/result/initrd ")
+        # Затем заменить "initrd initrd" на "initrd http://..."
+        content = content.replace("initrd initrd", f"initrd http://{server_ip}:{HTTP_PORT}/result/initrd")
+        # Или, проще и надёжнее, заменить все вхождения "initrd" на полный путь, но только если это отдельное слово или после/до него пробел/новая строка
+        # Для простоты и точности, заменим построчно
+        lines = content.splitlines()
+        processed_lines = []
+        for line in lines:
+            # Обрабатываем строку kernel
+            if line.strip().startswith('kernel'):
+                line = line.replace(' bzImage ', f' http://{server_ip}:{HTTP_PORT}/result/bzImage ')
+                # Заменяем initrd=initrd на initrd=...URL
+                import re
+                # Заменяем initrd=initrd на initrd=...URL, но только если это отдельное слово после =
+                line = re.sub(r'(\binitrd=)initrd\b', rf'\g<1>http://{server_ip}:{HTTP_PORT}/result/initrd', line)
+            # Обрабатываем строку initrd
+            elif line.strip().startswith('initrd'):
+                line = f"initrd http://{server_ip}:{HTTP_PORT}/result/initrd"
+            processed_lines.append(line)
+        content = "\n".join(processed_lines)
+        logger.info(content)
+
+        logger.info(f"Отправка netboot.ipxe для машины {machine_name} с подставленными значениями")
+        return Response(content=content, media_type="text/plain")
+
+    except Exception as e:
+        logger.error(f"Ошибка чтения файла netboot.ipxe: {e}")
+        raise HTTPException(500, "Ошибка чтения файла netboot.ipxe")
+
+
+@app.get("/result/{file_path:path}")
+async def serve_result_file(file_path: str, request: Request):
+    logger.info(f"request {file_path}")
+    """Обслуживает *любой* файл из .pxe/result по HTTP"""
+    # Безопасный путь (предотвращает выход за пределы RESULT_DIR)
+    requested_path = Path(file_path)
+    logger.info(requested_path)
+    # Очищаем путь от .. и . для безопасности
+    safe_path = (RESULT_DIR / requested_path)
+    logger.info(safe_path)
     
-    # Ensure the file is within BASE_DIR
-    safe_path = safe_path.resolve()
-    if not str(safe_path).startswith(str(base_path)):
-        raise HTTPException(404, "File not found")
+    # Проверяем, что путь находится внутри RESULT_DIR
+    if not str(safe_path).startswith(str(RESULT_DIR)):
+        raise HTTPException(404, "File not found (path traversal attempt)")
     
     if not safe_path.exists():
         raise HTTPException(404, f"File not found: {file_path}")
@@ -313,352 +431,83 @@ async def serve_file(file_path: str, request: Request):
     if safe_path.is_dir():
         raise HTTPException(400, "Cannot serve directories")
     
-    logger.info(f"Serving file: {safe_path}")
+    logger.info(f"Отдаю файл: {safe_path}")
     
-    # Determine MIME type
-    mime_type = get_file_mime_type(safe_path)
-    
-    # Read and serve file
-    if mime_type.startswith('text/'):
-        return Response(safe_path.read_text(), media_type=mime_type)
+    # Определяем MIME-тип по расширению
+    extension = safe_path.suffix.lower()
+    if extension in ['.img', '.iso', '.bz2', '.gz', '.xz', '.bin', '.efi', '.kpxe']:
+        media_type = "application/octet-stream"
+    elif extension in ['.txt', '.ipxe', '.pxe', '.cfg', '.conf']:
+        media_type = "text/plain"
     else:
-        return Response(safe_path.read_bytes(), media_type=mime_type)
-
-
-@app.get("/boot.ipxe")
-async def boot_script(request: Request, mac: Optional[str] = None):
-    """Initial iPXE boot script - registers machine and chains to netboot"""
-    logger.info(f"Boot request from {request.client.host if request.client else 'unknown'} (MAC: {mac})")
-    
-    if request.client is None:
-        raise HTTPException(400, "Client IP not available")
-    
-    ip = request.client.host
-    try:
-        ip_address(ip)
-    except ValueError:
-        raise HTTPException(400, "Invalid client IP")
-
-    # Register machine if MAC is provided
-    machine_name = "unknown"
-    if mac:
-        machine_name = register_machine_in_k8s(mac, ip)
-
-    script = f"""#!ipxe
-echo Booting machine {machine_name}
-dhcp
-chain http://{ip}:{HTTP_PORT}/result/netboot.pxe?mac={{mac}}&ip={{ip}}
-"""
-    return Response(script, media_type="text/plain")
-
-
-@app.get("/result/netboot.pxe")
-async def netboot_script(request: Request, mac: Optional[str] = None, ip: Optional[str] = None):
-    """Serve netboot.pxe file from .pxe directory"""
-    logger.info(f"Netboot request from {request.client.host if request.client else 'unknown'} (MAC: {mac})")
-    
-    if request.client is None:
-        raise HTTPException(400, "Client IP not available")
-    
-    if ip is None:
-        raise HTTPException(400, "Client IP not available")
-
-        
-    # Register machine if MAC is provided
-    machine_name = "unknown"
-    if mac:
-        machine_name = register_machine_in_k8s(mac, ip)
-
-    # Serve the actual netboot.pxe file from .pxe directory
-    netboot_path = BASE_DIR / "netboot.pxe"
-    if netboot_path.exists():
-        logger.info(f"Serving netboot.pxe from: {netboot_path}")
-        return Response(netboot_path.read_text(), media_type="text/plain")
-    else:
-        # If file doesn't exist, return 404
-        raise HTTPException(404, "netboot.pxe file not found in .pxe directory")
-
-
-# Эндпоинты для локальных файлов (только если URL не заданы)
-if not NIXOS_KERNEL_URL:
-    @app.get("/nixos-kernel")
-    async def serve_kernel():
-        if not LOCAL_KERNEL_PATH.exists():
-            raise HTTPException(404, "nixos-kernel not found")
-        return Response(LOCAL_KERNEL_PATH.read_bytes(), media_type="application/octet-stream")
-
-if not NIXOS_INITRD_URL:
-    @app.get("/nixos-initrd")
-    async def serve_initrd():
-        if not LOCAL_INITRD_PATH.exists():
-            raise HTTPException(404, "nixos-initrd not found")
-        return Response(LOCAL_INITRD_PATH.read_bytes(), media_type="application/octet-stream")
-
-
-# ==============================
-# Завершение
-# ==============================
-def cleanup(signum=None, frame=None):
-    logger.info("Остановка...")
-    if dnsmasq_proc:
-        dnsmasq_proc.terminate()
+        # Для остальных файлов пытаемся определить как бинарные или текстовые
+        # Простой способ - отдать как бинарные, если не текст
         try:
-            dnsmasq_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            dnsmasq_proc.kill()
-    sys.exit(0)
+            content = safe_path.read_text(encoding='utf-8')
+            media_type = "text/plain"
+        except UnicodeDecodeError:
+            media_type = "application/octet-stream"
+            content = safe_path.read_bytes()
+            return Response(content, media_type=media_type)
+        return Response(content, media_type=media_type)
 
-
-# ==============================
-# Netboot Image Building
-# ==============================
-def build_nixos_netboot(output_dir: Path):
-    """Build NixOS netboot image in the .pxe directory"""
-    logger.info("Building NixOS netboot image...")
-    
+    # Отдаём файл как текст или бинарные данные
     try:
-        # Create result directory if it doesn't exist
-        result_dir = output_dir / "result"
-        result_dir.mkdir(exist_ok=True)
-        
-        # Check if we have a flake.nix in the .pxe directory
-        flake_path = output_dir / "flake.nix"
-        if flake_path.exists():
-            logger.info("Found flake.nix, building custom netboot image...")
-            # Build from local flake
-            process = subprocess.Popen(
-                ["nix", "build", f"{output_dir}#netboot", "-o", str(result_dir)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-        else:
-            logger.info("No flake.nix found, building standard netboot image...")
-            # Build standard netboot from nixpkgs
-            process = subprocess.Popen(
-                ["nix-build", "-A", "netboot.x86_64-linux", "<nixpkgs/nixos/release.nix>", "-o", str(result_dir)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
-        
-        # Stream output in real-time
-        if process.stdout:
-            for line in process.stdout:
-                logger.info(f"nix-build: {line.strip()}")
-        
-        # Wait for process to complete
-        process.wait()
-        
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, process.args)
-        
-        # Find and copy the built files
-        copy_netboot_files(result_dir, output_dir)
-        
-        logger.info("NixOS netboot image built successfully")
-        
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to build NixOS netboot image: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Error building NixOS netboot image: {e}")
-        raise
+        content = safe_path.read_text(encoding='utf-8')
+        return Response(content, media_type=media_type)
+    except UnicodeDecodeError:
+        # Если файл не текстовый, отдаём как бинарные данные
+        content = safe_path.read_bytes()
+        return Response(content, media_type=media_type)
 
-
-def copy_netboot_files(result_dir: Path, output_dir: Path):
-    """Copy kernel, initrd, and netboot.ipxe from build result"""
-    # Look for kernel, initrd, and netboot.ipxe in the result
-    kernel_path = None
-    initrd_path = None
-    netboot_ipxe_path = None
-    
-    for item in result_dir.rglob("*"):
-        if "bzImage" in item.name or "vmlinuz" in item.name:
-            kernel_path = item
-        elif "initrd" in item.name:
-            initrd_path = item
-        elif "netboot.ipxe" in item.name:
-            netboot_ipxe_path = item
-    
-    # Copy kernel
-    if kernel_path and kernel_path.exists():
-        LOCAL_KERNEL_PATH.write_bytes(kernel_path.read_bytes())
-        logger.info(f"Copied kernel to {LOCAL_KERNEL_PATH}")
-    
-    # Copy initrd
-    if initrd_path and initrd_path.exists():
-        LOCAL_INITRD_PATH.write_bytes(initrd_path.read_bytes())
-        logger.info(f"Copied initrd to {LOCAL_INITRD_PATH}")
-    
-    # Copy netboot.ipxe if it exists
-    if netboot_ipxe_path and netboot_ipxe_path.exists():
-        netboot_dest = output_dir / "netboot.ipxe"
-        netboot_dest.write_text(netboot_ipxe_path.read_text())
-        logger.info(f"Copied netboot.ipxe to {netboot_dest}")
-    
-    # Create a basic netboot.ipxe if it doesn't exist
-    netboot_ipxe_path = output_dir / "netboot.ipxe"
-    if not netboot_ipxe_path.exists():
-        create_default_netboot_ipxe(netboot_ipxe_path)
-
-
-def create_default_netboot_ipxe(output_path: Path):
-    """Create a default netboot.ipxe script"""
-    script = """#!ipxe
-echo Starting NixOS netboot...
-echo Loading kernel and initrd...
-
-# Use relative paths for files in the same directory
-kernel nixos-kernel init=/init console=ttyS0,115200n8
-initrd nixos-initrd
-
-echo Booting NixOS...
-boot
-"""
-    output_path.write_text(script)
-    logger.info(f"Created default netboot.ipxe at {output_path}")
-
-
-def build_nixos_image(nix_file: str, output_dir: Path):
-    """Build NixOS image from a .nix file"""
-    logger.info(f"Building NixOS image from {nix_file}")
-    
-    try:
-        # Create result directory if it doesn't exist
-        result_dir = output_dir / "result"
-        result_dir.mkdir(exist_ok=True)
-        
-        # Build the image
-        process = subprocess.Popen(
-            ["nix-build", nix_file, "-o", str(result_dir)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
-        
-        # Stream output in real-time
-        if process.stdout:
-            for line in process.stdout:
-                logger.info(f"nix-build: {line.strip()}")
-        
-        # Wait for process to complete
-        process.wait()
-        
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, process.args)
-        
-        # Find and copy the built files
-        copy_netboot_files(result_dir, output_dir)
-        
-        logger.info("NixOS image built successfully")
-        
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to build NixOS image: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Error building NixOS image: {e}")
-        raise
-
-
-# ==============================
-# Argument Parsing
-# ==============================
-def parse_arguments():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description="PXE + Kubernetes Machine Registrar")
-    parser.add_argument("--port", type=int, default=8000, help="HTTP server port (default: 8000)")
-    parser.add_argument("--interface", type=str, help="Network interface to use (auto-detected if not specified)")
-    parser.add_argument("--ip", type=str, help="Server IP address (auto-detected if not specified)")
-    parser.add_argument("--kernel-url", type=str, help="NixOS kernel URL (overrides NIXOS_KERNEL_URL env)")
-    parser.add_argument("--initrd-url", type=str, help="NixOS initrd URL (overrides NIXOS_INITRD_URL env)")
-    parser.add_argument("--build-image", type=str, help="Build NixOS image from .nix file before starting server")
-    parser.add_argument("--build-netboot", action="store_true", help="Build NixOS netboot image from nixpkgs/nixos/release.nix")
-    parser.add_argument("--no-dnsmasq", action="store_true", help="Skip dnsmasq startup")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    
-    return parser.parse_args()
 
 
 # ==============================
 # Запуск
 # ==============================
 def main():
-    global crd_api, HTTP_PORT
-    
-    # Parse command line arguments
-    args = parse_arguments()
-    
-    # Apply arguments
-    HTTP_PORT = args.port
-    if args.kernel_url:
-        global NIXOS_KERNEL_URL
-        NIXOS_KERNEL_URL = args.kernel_url
-    if args.initrd_url:
-        global NIXOS_INITRD_URL
-        NIXOS_INITRD_URL = args.initrd_url
-    
-    # Configure logging
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    # Build image if requested
-    if args.build_netboot or args.build_image:
-        try:
-            if args.build_netboot:
-                build_nixos_netboot(BASE_DIR)
-            elif args.build_image:
-                build_nixos_image(args.build_image, BASE_DIR)
-        except Exception as e:
-            logger.error(f"Failed to build image: {e}")
-            if not args.no_dnsmasq:
-                logger.info("Continuing with existing files...")
-            else:
-                sys.exit(1)
-    
-    signal.signal(signal.SIGINT, cleanup)
-    signal.signal(signal.SIGTERM, cleanup)
+    global core_api, crd_api, server_ip, interface, private_key_path, public_key_path # Добавляем
 
-    # Kubernetes
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--no-dnsmasq", action="store_true")
+    args = parser.parse_args()
+
+    # Подключение к Kubernetes
     try:
         config.load_kube_config()
+        core_api= client.CoreV1Api()
         crd_api = client.CustomObjectsApi()
     except Exception as e:
-        logger.error(f"Ошибка kubeconfig: {e}")
+        logger.error(f"Ошибка подключения к K8s: {e}")
         sys.exit(1)
+
+    # Генерация SSH-ключей (опционально)
+    private_key_path, public_key_path = generate_ssh_keys_if_missing()
+
+    # Проверка и сборка netboot-образа
+    build_nixos_netboot_if_missing(public_key_path)
 
     # Сеть
     interface, server_ip = get_primary_interface_and_ip()
-    logger.info(f"Сервер: {server_ip} на интерфейсе {interface}")
+    if not interface:
+        logger.error("Не удалось определить интерфейс")
+        sys.exit(1)
 
     # Файлы
     ensure_ipxe_binaries()
-    ensure_nixos_placeholders()
 
     # dnsmasq
     if not args.no_dnsmasq:
         start_dnsmasq(interface, server_ip)
 
-    # Инструкции
-    logger.info("✅ PXE + K8s контроллер запущен!")
-    logger.info(f"   Рабочая папка: {BASE_DIR}")
-    logger.info(f"   Файловый сервер: http://{server_ip}:{HTTP_PORT}/")
-    if NIXOS_KERNEL_URL:
-        logger.info(f"   Ядро: {NIXOS_KERNEL_URL}")
-        logger.info(f"   Initrd: {NIXOS_INITRD_URL or 'локальный'}")
-    else:
-        logger.info(f"   Образы: {LOCAL_KERNEL_PATH}, {LOCAL_INITRD_PATH}")
-    logger.info(f"   iPXE: http://{server_ip}:{HTTP_PORT}/boot.ipxe?mac=aa:bb:cc:dd:ee:ff")
-    logger.info(f"   Любой файл: http://{server_ip}:{HTTP_PORT}/filename")
-
     # HTTP-сервер
-    uvicorn.run(app, host="0.0.0.0", port=HTTP_PORT, log_level="warning")
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
+    logger.info(f"PXE-сервер запущен на http://{server_ip}:{args.port}")
+    logger.info(f"Загрузка начинается с: http://{server_ip}:{args.port}/boot.ipxe?mac=XX:XX:XX:XX:XX:XX")
+    logger.info(f"Файл netboot.pxe будет читаться из: {RESULT_DIR / 'netboot.ipxe'}")
+    logger.info(f"Сгенерированные SSH-ключи: {SSH_DIR}")
+    uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

@@ -3,12 +3,23 @@
 import base64
 import kubernetes
 import logging
+import sys
 from typing import Dict
 
 logger = logging.getLogger(__name__)
 
-# Инициализация клиентов Kubernetes
-kubernetes.config.load_kube_config()
+
+# Подключение к Kubernetes
+try:
+    kubernetes.config.load_kube_config()
+    logger.info("Kubernetes config loaded from kubeconfig file.")
+except kubernetes.config.ConfigException:
+    try:
+        kubernetes.config.load_incluster_config()
+        logger.info("Kubernetes config loaded from in-cluster environment.")
+    except kubernetes.config.ConfigException as e:
+        logger.error(f"Ошибка подключения к K8s: {e}")
+        sys.exit(1)
 
 # Глобальные клиенты Kubernetes
 api_client = kubernetes.client.ApiClient()

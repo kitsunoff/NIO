@@ -6,13 +6,13 @@ metadata:
 spec:
   # Использование флейка из репозитория
   gitRepo: "https://github.com/homystack/NIO"
-  flake: ".#custom-server"
-  onRemoveFlake: ".#minimal"
+  flake: "#custom-server"
+  onRemoveFlake: "#minimal"
   configurationSubdir: "examples/nix"  # Поддиректория с Nix конфигурациями
   
   # Ссылка на машину
   machineRef:
-    name: test
+    name: machine-b0-41-6f-10-7e-42
   
   # Настройки для флейков
   fullInstall: true 

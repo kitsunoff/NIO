@@ -19,8 +19,9 @@ from utils import clone_git_repo
 
 logger = logging.getLogger(__name__)
 
+from clients import api_client
+
 # Инициализация клиентов Kubernetes
-kubernetes.config.load_kube_config()
 batch_v1 = kubernetes.client.BatchV1Api()
 core_v1 = kubernetes.client.CoreV1Api()
 

@@ -4,55 +4,120 @@ import logging
 import shutil
 import asyncio
 from datetime import datetime
+import tempfile
 import kopf
 from machine_handlers import check_machine_discoverable
 from clients import get_machine, update_machine_status, update_configuration_status
 from utils import clone_git_repo
-
-
+import os 
+from clients import get_secret_data
 
 logger = logging.getLogger(__name__)
 
-async def apply_nixos_configuration(machine_spec: dict, config_spec: dict, 
-                                  repo_path: str, commit_hash: str) -> bool:
-    """Применить конфигурацию NixOS к машине с использованием --target-host"""
+async def apply_nixos_configuration(
+    machine_spec: dict,
+    config_spec: dict,
+    repo_path: str,
+    commit_hash: str,
+    is_remove: bool
+) -> bool:
+    """Применить конфигурацию NixOS к машине. SSH-ключ опционален."""
+    tmp_key_path: Optional[str] = None
     try:
-        # Определение пути к конфигурации с учетом поддиректории
-        config_path = repo_path
-        if config_spec.get('configurationSubdir'):
-            config_path = f"{repo_path}/{config_spec['configurationSubdir']}"
-        
-        # Определение команды в зависимости от режима с --target-host
-        if config_spec.get('fullInstall', False):
-            # Полная установка с nixos-anywhere
-            cmd = f"nixos-anywhere --target-host {machine_spec['ipAddress']} --kexec {config_path}/{config_spec['flake']}"
+        # --- Обработка SSH-ключа (опционально) ---
+        ssh_key_ref = machine_spec.get("sshKeySecretRef")
+        identity_option = ""
+
+        if ssh_key_ref:
+            secret_name = ssh_key_ref["name"]
+            secret_namespace = ssh_key_ref.get("namespace", machine_spec.get("namespace", "default"))
+
+            try:
+                secret_data = await get_secret_data(secret_name, secret_namespace)
+            except Exception as e:
+                logger.error(f"Failed to fetch SSH key secret '{secret_name}' in namespace '{secret_namespace}': {e}")
+                return False
+
+            ssh_private_key = secret_data.get("ssh-privatekey")
+            if not ssh_private_key:
+                logger.error(f"Secret '{secret_name}' does not contain 'ssh-privatekey' key")
+                return False
+
+            # Сохраняем во временный файл
+            with tempfile.NamedTemporaryFile(mode='w', prefix='ssh_key_', delete=False) as tmp:
+                tmp.write(ssh_private_key.strip() + '\n')
+                tmp_key_path = tmp.name
+            os.chmod(tmp_key_path, 0o600)
+
+            # Формируем опцию для SSH
+            identity_option = f"-i {tmp_key_path}"
         else:
-            # Обновление существующей системы с nixos-rebuild
-            cmd = f"nixos-rebuild switch --flake {config_path}/{config_spec['flake']} --target-host {machine_spec['ipAddress']}"
-        
-        # Выполнение команды локально (внутри контейнера оператора)
+            # Без ключа — ничего не добавляем
+            identity_option = ""
+
+        # --- Подготовка параметров ---
+        config_path = f"{repo_path}/{config_spec['configurationSubdir']}" if config_spec.get('configurationSubdir') else repo_path
+        ssh_user = machine_spec["sshUser"]
+        target_host = machine_spec.get("ipAddress") or machine_spec["hostname"]
+
+        # Определяем флейк
+        if is_remove and config_spec.get('onRemoveFlake'):
+            flake = config_spec['onRemoveFlake']
+        else:
+            flake = config_spec['flake']
+
+        base_nix = "nix --extra-experimental-features 'nix-command flakes'"
+
+        if config_spec.get('fullInstall', False) and not is_remove:
+            # nixos-anywhere
+            cmd_parts = [
+                base_nix,
+                "run github:nix-community/nixos-anywhere --",
+                f"--target-host {ssh_user}@{target_host}",
+                f"--flake {config_path}{flake}"
+            ]
+            if identity_option:
+                cmd_parts.append(identity_option)
+            cmd = " ".join(cmd_parts)
+        else:
+            # nixos-rebuild
+            cmd_parts = [
+                base_nix,
+                "shell nixpkgs#nixos-rebuild --command",
+                "nixos-rebuild switch",
+                f"--flake {config_path}{flake}",
+                f"--target-host {ssh_user}@{target_host}",
+                "--ssh-option StrictHostKeyChecking=no"
+            ]
+            if identity_option:
+                cmd_parts.append(f"--ssh-option IdentityFile={tmp_key_path}")
+            cmd = " ".join(cmd_parts)
+
         logger.info(f"Executing command: {cmd}")
-        
-        # Здесь мы выполняем команду локально, а не через SSH
-        # Команда сама управляет подключением к целевому хосту
+
         process = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
         stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0:
-            logger.info(f"Configuration applied successfully: {stdout.decode()}")
-            return True
-        else:
-            logger.error(f"Command failed with return code {process.returncode}: {stderr.decode()}")
+
+        if process.returncode != 0:
+            logger.error(f"Command failed (code {process.returncode})")
+            logger.error(f"stderr: {stderr.decode()}")
+            logger.error(f"stdout: {stdout.decode()}")
             return False
-            
+
+        logger.info("NixOS configuration applied successfully")
+        return True
+
     except Exception as e:
-        logger.error(f"Failed to apply configuration: {e}")
+        logger.error(f"Unexpected error in apply_nixos_configuration: {e}")
         return False
+
+    finally:
+        if tmp_key_path and os.path.exists(tmp_key_path):
+            os.unlink(tmp_key_path)
 
 async def handle_configuration_create(body, spec, name, namespace, **kwargs):
     """Обработчик создания NixosConfiguration"""
@@ -100,7 +165,8 @@ async def handle_configuration_create(body, spec, name, namespace, **kwargs):
                 machine['spec'],
                 spec,
                 repo_path,
-                commit_hash
+                commit_hash,
+                False
             )
             
             if success:
@@ -181,7 +247,8 @@ async def handle_configuration_delete(body, spec, name, namespace, **kwargs):
                     machine['spec'],
                     remove_spec,
                     repo_path,
-                    commit_hash
+                    commit_hash,
+                    True
                 )
                 
             finally:

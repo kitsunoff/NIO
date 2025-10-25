@@ -4,13 +4,23 @@ import kopf
 import logging
 
 from machine_handlers import check_machine_discoverable, scan_machine_hardware
+from nixosconfiguration_handlers import handle_configuration_create, handle_configuration_delete
 from nixosconfiguration_job_handlers import handle_configuration_create_with_job, handle_configuration_delete_with_job
 from clients import update_machine_status, get_machine
+import os
+
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 print("starting")
+
+    # --- Добавляем путь к Nix в PATH ---
+nix_bin_path = "/nix/var/nix/profiles/default/bin"
+current_path = os.environ.get("PATH", "")
+if nix_bin_path not in current_path:
+    os.environ["PATH"] = f"{nix_bin_path}:{current_path}"
+    logger.info(f"Добавлен путь к Nix в PATH: {nix_bin_path}")
 
 # Machine handlers
 @kopf.on.create('nixos.infra', 'v1alpha1', 'machines')
@@ -79,12 +89,12 @@ async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwar
 @kopf.on.create('nixos.infra', 'v1alpha1', 'nixosconfigurations')
 async def on_nixosconfiguration_create(body, spec, name, namespace, **kwargs):
     """Обработчик создания NixosConfiguration"""
-    await handle_configuration_create_with_job(body, spec, name, namespace, **kwargs)
+    await handle_configuration_create(body, spec, name, namespace, **kwargs)
 
 @kopf.on.delete('nixos.infra', 'v1alpha1', 'nixosconfigurations')
 async def on_nixosconfiguration_delete(body, spec, name, namespace, **kwargs):
     """Обработчик удаления NixosConfiguration"""
-    await handle_configuration_delete_with_job(body, spec, name, namespace, **kwargs)
+    await handle_configuration_delete(body, spec, name, namespace, **kwargs)
 
 @kopf.on.startup()
 def configure(settings: kopf.OperatorSettings, **_):
