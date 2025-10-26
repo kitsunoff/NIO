@@ -59,6 +59,7 @@ jobs:
         type=sha,prefix={{branch}}-
         latest
       push_images: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
   # deploy-test:
   #   name: Deploy to Test Environment
