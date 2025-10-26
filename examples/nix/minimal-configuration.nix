@@ -1,7 +1,14 @@
 { config, pkgs, ... }:
 
 let
-    sshPublicKey = builtins.readFile ./flake-ssh-key.pub;
+     # Публичный ключ для SSH доступа
+    sshPrivateKeyFile = ./flake-ssh-private-key;
+   # Генерируем публичный ключ с помощью ssh-keygen из nixpkgs
+    sshPublicKey = builtins.readFile (
+          pkgs.runCommand "ssh-public-key" {} ''
+            ${pkgs.openssh}/bin/ssh-keygen -y -f ${sshPrivateKeyFile} > $out
+          ''
+        );
 in
 {
   # Базовая минимальная конфигурация для отката
