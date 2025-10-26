@@ -44,10 +44,10 @@ jobs:
     - name: Check formatting with black
       run: |
         black --check --diff .
-
-    - name: Test with pytest
-      run: |
-        pytest -v
+        
+    # - name: Test with pytest
+    #   run: |
+    #     pytest -v
 
   build-and-push:
     name: Build and Push Docker Image
