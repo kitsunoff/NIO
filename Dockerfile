@@ -15,15 +15,11 @@ RUN apt-get update && apt-get install -y \
 RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64   \
     && chmod +x /usr/local/bin/kind
 
-# Устанавливаем Nix
-RUN groupadd -r nixbld && \
-    for i in $(seq 1 32); do useradd -r -g nixbld -G nixbld nixbld$i; done && \
-    mkdir -m 0755 /nix && chown root /nix && \
-    mkdir -p /etc/nix && echo "sandbox = false" > /etc/nix/nix.conf && \
-    curl -L https://nixos.org/nix/install -o /tmp/nix-install.sh && \
-    bash /tmp/nix-install.sh --no-daemon
-
-ENV PATH="/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux \
+  --extra-conf "sandbox = false" \
+  --init none \
+  --no-confirm
+ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 
 # Создание пользователя и группы для безопасности (с UID/GID 1000)
 # Сначала попробуем создать группу с GID 1000, если она не существует
