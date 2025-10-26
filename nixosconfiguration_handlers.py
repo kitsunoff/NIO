@@ -187,7 +187,7 @@ async def apply_nixos_configuration(
             os.chmod(tmp_key_path, 0o600)
 
             # Формируем NIX_SSHOPTS для nixos-rebuild
-            nix_sshopts = f"-i {tmp_key_path}"
+            nix_sshopts = f"-i {tmp_key_path} -o StrictHostKeyChecking=no"
             # Формируем аргумент для nixos-anywhere
             identity_arg_anywhere = f"-i {tmp_key_path}"
 
