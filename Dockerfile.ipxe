@@ -9,10 +9,15 @@ RUN apt-get update && apt-get install -y \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# Устанавливаем Nix
 RUN groupadd -r nixbld && \
-    useradd -r -g nixbld -G nixbld nix && \
+    for i in $(seq 1 32); do useradd -r -g nixbld -G nixbld nixbld$i; done && \
     mkdir -m 0755 /nix && chown root /nix && \
-    curl -L https://nixos.org/nix/install -o /tmp/nix-install.sh && bash /tmp/nix-install.sh --no-daemon
+    mkdir -p /etc/nix && echo "sandbox = false" > /etc/nix/nix.conf && \
+    curl -L https://nixos.org/nix/install -o /tmp/nix-install.sh && \
+    bash /tmp/nix-install.sh --no-daemon
+
+ENV PATH="/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin:${PATH}"
 
 # Создаем рабочую директорию
 WORKDIR /app
