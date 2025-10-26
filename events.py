@@ -5,6 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def emit_missing_credentials_event(body, reason: str, message: str):
     """Создать событие о недостающих учетных данных"""
     try:
@@ -13,6 +14,7 @@ def emit_missing_credentials_event(body, reason: str, message: str):
     except Exception as e:
         logger.error(f"Failed to emit missing credentials event: {e}")
 
+
 def emit_configuration_applied_event(body, reason: str, message: str):
     """Создать событие о применении конфигурации"""
     try:
@@ -20,6 +22,7 @@ def emit_configuration_applied_event(body, reason: str, message: str):
         logger.info(f"Emitted configuration applied event: {message}")
     except Exception as e:
         logger.error(f"Failed to emit configuration applied event: {e}")
+
 
 def emit_error_event(body, reason: str, message: str):
     """Создать событие об ошибке"""

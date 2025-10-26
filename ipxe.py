@@ -28,7 +28,9 @@ TFTP_ROOT = BASE_DIR / "tftp"
 HTTP_PORT = 8000
 
 # Логирование
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger("pxe-k8s")
 
 # Глобальные переменные
@@ -50,7 +52,7 @@ def get_primary_interface_and_ip():
         addr_output = subprocess.check_output(["ip", "addr", "show", iface], text=True)
         for line in addr_output.splitlines():
             if "inet " in line and "127.0.0.1" not in line:
-                ip = line.split()[1].split('/')[0]
+                ip = line.split()[1].split("/")[0]
                 return iface, ip
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
@@ -58,7 +60,9 @@ def get_primary_interface_and_ip():
     try:
         # macOS
         for interface in ["en0", "en1", "en2"]:
-            ip = subprocess.check_output(["ipconfig", "getifaddr", interface], text=True).strip()
+            ip = subprocess.check_output(
+                ["ipconfig", "getifaddr", interface], text=True
+            ).strip()
             if ip:
                 return interface, ip
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -80,6 +84,7 @@ def ensure_ipxe_binaries():
         if not dst.exists():
             logger.info(f"Скачиваю {name}...")
             import urllib.request
+
             urllib.request.urlretrieve(url, dst)
 
 
@@ -95,16 +100,31 @@ def generate_ssh_keys_if_missing():
 
     logger.info("SSH-ключи не найдены, генерирую новые...")
     try:
-        subprocess.run([
-            "ssh-keygen", "-t", "rsa", "-b", "4096", "-f", str(private_key_path), "-N", ""
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-t",
+                "rsa",
+                "-b",
+                "4096",
+                "-f",
+                str(private_key_path),
+                "-N",
+                "",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         logger.info(f"SSH-ключи сгенерированы: {private_key_path}, {public_key_path}")
         return str(private_key_path), str(public_key_path)
     except subprocess.CalledProcessError as e:
         logger.error(f"Ошибка генерации SSH-ключей: {e}")
         sys.exit(1)
     except FileNotFoundError:
-        logger.error("Команда ssh-keygen не найдена. Убедитесь, что OpenSSH установлен.")
+        logger.error(
+            "Команда ssh-keygen не найдена. Убедитесь, что OpenSSH установлен."
+        )
         sys.exit(1)
 
 
@@ -113,7 +133,7 @@ def build_nixos_netboot_if_missing(public_key_path: str):
     Использует кастомную конфигурацию с SSH-ключом.
     """
     netboot_ipxe_path = RESULT_DIR / "netboot.ipxe"
-    
+
     required_files_exist = netboot_ipxe_path.exists()
 
     if required_files_exist:
@@ -134,12 +154,16 @@ def build_nixos_netboot_if_missing(public_key_path: str):
 
     # Проверяем, существует ли файл конфигурации
     if not custom_config_path.exists():
-        logger.info(f"Файл конфигурации {custom_config_path} не найден, создаю стандартный...")
+        logger.info(
+            f"Файл конфигурации {custom_config_path} не найден, создаю стандартный..."
+        )
         # Читаем содержимое публичного ключа
         try:
             public_key_content = Path(public_key_path).read_text().strip()
             if not public_key_content.startswith("ssh-"):
-                logger.error(f"Файл {public_key_path} не содержит валидный публичный ключ SSH.")
+                logger.error(
+                    f"Файл {public_key_path} не содержит валидный публичный ключ SSH."
+                )
                 public_key_content = ""
         except Exception as e:
             logger.error(f"Ошибка чтения публичного ключа из {public_key_path}: {e}")
@@ -158,17 +182,14 @@ def build_nixos_netboot_if_missing(public_key_path: str):
         custom_config_path.write_text(config_content)
         logger.info(f"Создан стандартный файл конфигурации: {custom_config_path}")
 
-# ...
+    # ...
     logger.info(f"Собираю netboot с конфигурацией: {custom_config_path}")
     nix_expression = f"""
 with import <nixpkgs/nixos/release.nix> {{ configuration = import {custom_config_path}; }};
 netboot.x86_64-linux
 """
 
-    cmd = [
-        "nix-build", "-E", nix_expression,
-        "-o", str(RESULT_DIR)
-    ]
+    cmd = ["nix-build", "-E", nix_expression, "-o", str(RESULT_DIR)]
     logger.info(f"Выполняю: nix-build -E '<custom_expression>' -o {RESULT_DIR}")
 
     try:
@@ -178,7 +199,7 @@ netboot.x86_64-linux
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
         )
 
         if process.stdout:
@@ -193,9 +214,12 @@ netboot.x86_64-linux
         # После сборки файлы находятся в result/
         # Проверяем, создались ли файлы после сборки
         if not netboot_ipxe_path.exists():
-            logger.warning(f"После сборки netboot файл netboot.ipxe не найден в .pxe/result")
+            logger.warning(
+                f"После сборки netboot файл netboot.ipxe не найден в .pxe/result"
+            )
             # Попробуем найти и скопировать его из результата сборки
             import shutil
+
             for item in RESULT_DIR.iterdir():
                 if item.is_symlink() and (item / "netboot.ipxe").exists():
                     source_ipxe = item / "netboot.ipxe"
@@ -217,7 +241,7 @@ netboot.x86_64-linux
 
 
 def generate_dnsmasq_conf(interface: str, server_ip: str, tftp_root: Path) -> str:
-    conf= f"""
+    conf = f"""
 interface={interface}
 bind-interfaces
 
@@ -254,13 +278,16 @@ def start_dnsmasq(interface: str, server_ip: str):
     conf_path = generate_dnsmasq_conf(interface, server_ip, TFTP_ROOT)
     cmd = ["dnsmasq", "--no-daemon", "--conf-file=" + conf_path, "--log-dhcp"]
     logger.info("Запуск dnsmasq...")
-    dnsmasq_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    dnsmasq_proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
 
     def log_output():
         for line in iter(dnsmasq_proc.stdout.readline, b""):
             logger.info(f"dnsmasq: {line.decode().strip()}")
 
     threading.Thread(target=log_output, daemon=True).start()
+
 
 def register_machine_in_k8s(mac: str, ip: str) -> str:
     """Регистрирует машину в Kubernetes и создаёт Secret с SSH-ключом."""
@@ -290,16 +317,19 @@ def register_machine_in_k8s(mac: str, ip: str) -> str:
         "type": "Opaque",
         "data": {
             # Ключи в Secret должны быть в base64
-            "ssh-privatekey": subprocess.check_output(["base64", "-w", "0"], input=private_key_content.encode()).decode().strip()
-        }
-
+            "ssh-privatekey": subprocess.check_output(
+                ["base64", "-w", "0"], input=private_key_content.encode()
+            )
+            .decode()
+            .strip()
+        },
     }
 
     try:
         core_api.create_namespaced_secret("default", secret_body)
         logger.info(f"Secret {secret_name} создан в K8s")
     except ApiException as e:
-        if e.status != 409: # 409 = уже существует
+        if e.status != 409:  # 409 = уже существует
             logger.error(f"Ошибка создания Secret {secret_name}: {e}")
             raise HTTPException(500, "Secret creation failed")
         else:
@@ -312,17 +342,16 @@ def register_machine_in_k8s(mac: str, ip: str) -> str:
         "metadata": {"name": machine_name, "namespace": "default"},
         "spec": {
             "hostname": ip,
-            "sshUser": "root", # Или передавать как аргумент, если нужно
+            "sshUser": "root",  # Или передавать как аргумент, если нужно
             "macAddress": mac,
-            "sshKeySecretRef": {
-                "name": secret_name,
-                "namespace": "default"
-            }
-        }
+            "sshKeySecretRef": {"name": secret_name, "namespace": "default"},
+        },
     }
 
     try:
-        crd_api.create_namespaced_custom_object(GROUP, VERSION, "default", PLURAL, machine_body)
+        crd_api.create_namespaced_custom_object(
+            GROUP, VERSION, "default", PLURAL, machine_body
+        )
         logger.info(f"Машина {machine_name} зарегистрирована в K8s")
         REGISTERED_MACHINES.add(mac_norm)
     except ApiException as e:
@@ -343,6 +372,7 @@ def register_machine_in_k8s(mac: str, ip: str) -> str:
 # ==============================
 app = FastAPI(title="PXE + K8s Registrar")
 
+
 @app.get("/boot.ipxe")
 async def boot_script(request: Request, mac: Optional[str] = None):
     """Первый скрипт iPXE - регистрирует машину и отдаёт netboot.pxe"""
@@ -355,17 +385,19 @@ chain http://{server_ip}:{HTTP_PORT}/netboot.pxe?mac=${{mac}}&ip=${{ip}}
 
 
 @app.get("/netboot.pxe")
-async def netboot_script(request: Request, mac: Optional[str] = None, ip: Optional[str] = None):
+async def netboot_script(
+    request: Request, mac: Optional[str] = None, ip: Optional[str] = None
+):
     """Отдаёт файл netboot.ipxe из .pxe/result с подставленными MAC и IP"""
     logger.info(f"Запрос netboot.pxe от {request.client.host} с MAC {mac}, IP {ip}")
 
     if not mac or not ip:
         raise HTTPException(400, "MAC и IP обязательны")
 
-    machine_name = register_machine_in_k8s(mac, ip) # Вызываем с ключом
+    machine_name = register_machine_in_k8s(mac, ip)  # Вызываем с ключом
 
     netboot_file_path = RESULT_DIR / "netboot.ipxe"
-    
+
     if not netboot_file_path.exists():
         logger.error(f"Файл netboot.ipxe не найден: {netboot_file_path}")
         raise HTTPException(404, "Файл netboot.ipxe не найден в .pxe/result")
@@ -374,35 +406,50 @@ async def netboot_script(request: Request, mac: Optional[str] = None, ip: Option
         content = netboot_file_path.read_text()
         # Подставляем HTTP-пути к kernel и initrd
         # Заменяем только имена файлов, оставляя остальные параметры без изменений
-        content = content.replace("bzImage", f"http://{server_ip}:{HTTP_PORT}/result/bzImage")
+        content = content.replace(
+            "bzImage", f"http://{server_ip}:{HTTP_PORT}/result/bzImage"
+        )
         # Заменяем "initrd=initrd" на "initrd=http://..."
         # И "initrd initrd" на "initrd http://..."
         # Можно сделать это одной строкой, заменив "initrd" на полный путь, но будь осторожен с init=/nix/store/...
         # Лучше заменить конкретные вхождения "initrd" как имя файла, а не как часть параметра init=.
         # Например, можно сначала заменить " initrd " (с пробелами), чтобы не трогать init=/nix/store...
-        content = content.replace(" initrd ", f" http://{server_ip}:{HTTP_PORT}/result/initrd ")
+        content = content.replace(
+            " initrd ", f" http://{server_ip}:{HTTP_PORT}/result/initrd "
+        )
         # Затем заменить "initrd initrd" на "initrd http://..."
-        content = content.replace("initrd initrd", f"initrd http://{server_ip}:{HTTP_PORT}/result/initrd")
+        content = content.replace(
+            "initrd initrd", f"initrd http://{server_ip}:{HTTP_PORT}/result/initrd"
+        )
         # Или, проще и надёжнее, заменить все вхождения "initrd" на полный путь, но только если это отдельное слово или после/до него пробел/новая строка
         # Для простоты и точности, заменим построчно
         lines = content.splitlines()
         processed_lines = []
         for line in lines:
             # Обрабатываем строку kernel
-            if line.strip().startswith('kernel'):
-                line = line.replace(' bzImage ', f' http://{server_ip}:{HTTP_PORT}/result/bzImage ')
+            if line.strip().startswith("kernel"):
+                line = line.replace(
+                    " bzImage ", f" http://{server_ip}:{HTTP_PORT}/result/bzImage "
+                )
                 # Заменяем initrd=initrd на initrd=...URL
                 import re
+
                 # Заменяем initrd=initrd на initrd=...URL, но только если это отдельное слово после =
-                line = re.sub(r'(\binitrd=)initrd\b', rf'\g<1>http://{server_ip}:{HTTP_PORT}/result/initrd', line)
+                line = re.sub(
+                    r"(\binitrd=)initrd\b",
+                    rf"\g<1>http://{server_ip}:{HTTP_PORT}/result/initrd",
+                    line,
+                )
             # Обрабатываем строку initrd
-            elif line.strip().startswith('initrd'):
+            elif line.strip().startswith("initrd"):
                 line = f"initrd http://{server_ip}:{HTTP_PORT}/result/initrd"
             processed_lines.append(line)
         content = "\n".join(processed_lines)
         logger.info(content)
 
-        logger.info(f"Отправка netboot.ipxe для машины {machine_name} с подставленными значениями")
+        logger.info(
+            f"Отправка netboot.ipxe для машины {machine_name} с подставленными значениями"
+        )
         return Response(content=content, media_type="text/plain")
 
     except Exception as e:
@@ -418,32 +465,32 @@ async def serve_result_file(file_path: str, request: Request):
     requested_path = Path(file_path)
     logger.info(requested_path)
     # Очищаем путь от .. и . для безопасности
-    safe_path = (RESULT_DIR / requested_path)
+    safe_path = RESULT_DIR / requested_path
     logger.info(safe_path)
-    
+
     # Проверяем, что путь находится внутри RESULT_DIR
     if not str(safe_path).startswith(str(RESULT_DIR)):
         raise HTTPException(404, "File not found (path traversal attempt)")
-    
+
     if not safe_path.exists():
         raise HTTPException(404, f"File not found: {file_path}")
-    
+
     if safe_path.is_dir():
         raise HTTPException(400, "Cannot serve directories")
-    
+
     logger.info(f"Отдаю файл: {safe_path}")
-    
+
     # Определяем MIME-тип по расширению
     extension = safe_path.suffix.lower()
-    if extension in ['.img', '.iso', '.bz2', '.gz', '.xz', '.bin', '.efi', '.kpxe']:
+    if extension in [".img", ".iso", ".bz2", ".gz", ".xz", ".bin", ".efi", ".kpxe"]:
         media_type = "application/octet-stream"
-    elif extension in ['.txt', '.ipxe', '.pxe', '.cfg', '.conf']:
+    elif extension in [".txt", ".ipxe", ".pxe", ".cfg", ".conf"]:
         media_type = "text/plain"
     else:
         # Для остальных файлов пытаемся определить как бинарные или текстовые
         # Простой способ - отдать как бинарные, если не текст
         try:
-            content = safe_path.read_text(encoding='utf-8')
+            content = safe_path.read_text(encoding="utf-8")
             media_type = "text/plain"
         except UnicodeDecodeError:
             media_type = "application/octet-stream"
@@ -453,7 +500,7 @@ async def serve_result_file(file_path: str, request: Request):
 
     # Отдаём файл как текст или бинарные данные
     try:
-        content = safe_path.read_text(encoding='utf-8')
+        content = safe_path.read_text(encoding="utf-8")
         return Response(content, media_type=media_type)
     except UnicodeDecodeError:
         # Если файл не текстовый, отдаём как бинарные данные
@@ -461,12 +508,11 @@ async def serve_result_file(file_path: str, request: Request):
         return Response(content, media_type=media_type)
 
 
-
 # ==============================
 # Запуск
 # ==============================
 def main():
-    global core_api, crd_api, server_ip, interface, private_key_path, public_key_path # Добавляем
+    global core_api, crd_api, server_ip, interface, private_key_path, public_key_path  # Добавляем
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
@@ -476,7 +522,7 @@ def main():
     # Подключение к Kubernetes
     try:
         config.load_kube_config()
-        core_api= client.CoreV1Api()
+        core_api = client.CoreV1Api()
         crd_api = client.CustomObjectsApi()
     except Exception as e:
         logger.error(f"Ошибка подключения к K8s: {e}")
@@ -504,7 +550,9 @@ def main():
     # HTTP-сервер
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
     logger.info(f"PXE-сервер запущен на http://{server_ip}:{args.port}")
-    logger.info(f"Загрузка начинается с: http://{server_ip}:{args.port}/boot.ipxe?mac=XX:XX:XX:XX:XX:XX")
+    logger.info(
+        f"Загрузка начинается с: http://{server_ip}:{args.port}/boot.ipxe?mac=XX:XX:XX:XX:XX:XX"
+    )
     logger.info(f"Файл netboot.pxe будет читаться из: {RESULT_DIR / 'netboot.ipxe'}")
     logger.info(f"Сгенерированные SSH-ключи: {SSH_DIR}")
     uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")

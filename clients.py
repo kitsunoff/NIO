@@ -34,21 +34,21 @@ async def get_secret_data(secret_name: str, namespace: str) -> Dict[str, str]:
         if not secret.data:
             return {}
         return {
-            key: base64.b64decode(value).decode('utf-8') if value else ""
+            key: base64.b64decode(value).decode("utf-8") if value else ""
             for key, value in secret.data.items()
         }
     except Exception as e:
         logger.error(f"Failed to get secret {secret_name}: {e}")
         raise
 
-async def update_machine_status(machine_name: str, namespace: str, 
-                              status_updates: Dict, patch: bool = True):
+
+async def update_machine_status(
+    machine_name: str, namespace: str, status_updates: Dict, patch: bool = True
+):
     """Обновить статус Machine ресурса"""
     try:
-        body = {
-            "status": status_updates
-        }
-        
+        body = {"status": status_updates}
+
         if patch:
             custom_objects_api.patch_namespaced_custom_object_status(
                 group="nixos.infra",
@@ -56,33 +56,33 @@ async def update_machine_status(machine_name: str, namespace: str,
                 namespace=namespace,
                 plural="machines",
                 name=machine_name,
-                body=body
+                body=body,
             )
         else:
             # Для создания статуса
             pass
-            
+
     except Exception as e:
         logger.error(f"Failed to update machine status: {e}")
         raise
 
-async def update_configuration_status(config_name: str, namespace: str,
-                                    status_updates: Dict):
+
+async def update_configuration_status(
+    config_name: str, namespace: str, status_updates: Dict
+):
     """Обновить статус NixosConfiguration ресурса"""
     try:
-        body = {
-            "status": status_updates
-        }
-        
+        body = {"status": status_updates}
+
         custom_objects_api.patch_namespaced_custom_object_status(
             group="nixos.infra",
             version="v1alpha1",
             namespace=namespace,
             plural="nixosconfigurations",
             name=config_name,
-            body=body
+            body=body,
         )
-            
+
     except Exception as e:
         logger.error(f"Failed to update configuration status: {e}")
         raise
@@ -95,5 +95,5 @@ def get_machine(machine_name: str, namespace: str):
         version="v1alpha1",
         namespace=namespace,
         plural="machines",
-        name=machine_name
+        name=machine_name,
     )
