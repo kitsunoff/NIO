@@ -58,7 +58,7 @@ jobs:
         type=ref,event=branch
         type=sha,prefix={{branch}}-
         latest
-      push_images: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      push_images: true
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
   # deploy-test:
