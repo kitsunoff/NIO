@@ -15,8 +15,11 @@ RUN apt-get update && apt-get install -y \
 RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64   \
     && chmod +x /usr/local/bin/kind
 
-# Установка debugpy для отладки Python
-
+RUN groupadd -r nixbld && \
+    useradd -r -g nixbld -G nixbld nix && \
+    mkdir -m 0755 /nix && chown root /nix && \
+    curl -L https://nixos.org/nix/install -o /tmp/nix-install.sh && bash /tmp/nix-install.sh --no-daemon
+    
 # Создание пользователя и группы для безопасности (с UID/GID 1000)
 # Сначала попробуем создать группу с GID 1000, если она не существует
 # Если groupadd не сработает, значит GID 1000 уже занят другой группой
