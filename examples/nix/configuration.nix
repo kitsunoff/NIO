@@ -2,7 +2,14 @@
 
 let
   # Публичный ключ для SSH доступа
-   sshPublicKey = builtins.readFile ./flake-ssh-key.pub;
+    sshPrivateKeyFile = ./flake-ssh-private-key;
+
+   # Генерируем публичный ключ с помощью ssh-keygen из nixpkgs
+    sshPublicKey = builtins.readFile (
+          pkgs.runCommand "ssh-public-key" {} ''
+            ${pkgs.openssh}/bin/ssh-keygen -y -f ${sshPrivateKeyFile} > $out
+          ''
+        );
 in
 {
   imports = [

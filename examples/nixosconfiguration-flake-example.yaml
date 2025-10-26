@@ -17,11 +17,21 @@ spec:
   # Настройки для флейков
   fullInstall: true 
   
-
-  
-  # # Только приватный ключ для SSH
-  # additionalFiles:
-  # - path: "secrets/ssh-private-key"
-  #   valueType: SecretRef
-  #   secretRef:
-  #     name: ssh-private-key-secret
+  # Примеры использования additionalFiles (PRD requirement)
+  additionalFiles:
+    # Inline файл - статическое содержимое
+    - path: "config/static-config.nix"
+      valueType: Inline
+      inline: |
+        { config, pkgs, ... }:
+        {
+          # Статическая конфигурация
+          networking.hostName = "custom-server";
+          services.nginx.enable = true;
+        }
+    
+    # SecretRef - динамическое содержимое из Kubernetes Secret
+    - path: "flake-ssh-private-key"
+      valueType: SecretRef
+      secretRef:
+        name: ssh-private-key-b0-41-6f-10-7e-42
