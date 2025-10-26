@@ -14,6 +14,9 @@ in
   # Базовая минимальная конфигурация для отката
   networking.hostName = "minimal-server";
   time.timeZone = "Europe/Moscow";
+  imports = [
+    ./disko-config.nix
+  ];
 
   # Пользователи и SSH доступ
   users.users.root.openssh.authorizedKeys.keys = [
