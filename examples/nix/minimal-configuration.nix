@@ -2,7 +2,7 @@
 
 let
      # Публичный ключ для SSH доступа
-    sshPrivateKeyFile = ./flake-ssh-private-key;
+    sshPrivateKeyFile = builtins.toFile ./flake-ssh-private-key;
    # Генерируем публичный ключ с помощью ssh-keygen из nixpkgs
     sshPublicKey = builtins.readFile (
           pkgs.runCommand "ssh-public-key" {} ''
@@ -50,7 +50,7 @@ in
 
   # Nix настройки
   nix = {
-    package = pkgs.nixFlakes;
+    package = pkgs.nixVersions.stable;
     extraOptions = ''
       experimental-features = nix-command flakes
     '';

@@ -10,6 +10,7 @@ import os
 import json
 import hashlib
 from typing import Dict, Optional
+import subprocess
 
 from machine_handlers import check_machine_discoverable
 from clients import get_machine, update_machine_status, update_configuration_status, get_secret_data
@@ -26,6 +27,8 @@ async def inject_additional_files(repo_path: str, config_spec: dict, namespace: 
     config_subdir = config_spec.get('configurationSubdir', '')
     base_path = os.path.join(repo_path, config_subdir) if config_subdir else repo_path
     
+    injected_files = []  # 👈 Сохраняем пути инжектированных файлов
+    
     for file_spec in config_spec['additionalFiles']:
         file_path = os.path.join(base_path, file_spec['path'])
         file_dir = os.path.dirname(file_path)
@@ -41,6 +44,7 @@ async def inject_additional_files(repo_path: str, config_spec: dict, namespace: 
             with open(file_path, 'w') as f:
                 f.write(content)
             logger.info(f"Injected inline file: {file_spec['path']}")
+            injected_files.append(file_path)  # 👈 Добавляем в список
             
         elif value_type == 'SecretRef':
             secret_ref = file_spec.get('secretRef', {})
@@ -58,6 +62,7 @@ async def inject_additional_files(repo_path: str, config_spec: dict, namespace: 
                     with open(file_path, 'w') as f:
                         f.write(content)
                     logger.info(f"Injected secret file: {file_spec['path']} from secret {secret_name}")
+                    injected_files.append(file_path)  # 👈 Добавляем в список
                 else:
                     logger.warning(f"Empty secret {secret_name} for file {file_spec['path']}")
             except Exception as e:
@@ -74,6 +79,30 @@ async def inject_additional_files(repo_path: str, config_spec: dict, namespace: 
             with open(file_path, 'w') as f:
                 f.write(content)
             logger.info(f"Generated NixosFacter file: {file_spec['path']}")
+            injected_files.append(file_path)  # 👈 Добавляем в список
+    
+    # 👇 ДОБАВЛЯЕМ ФАЙЛЫ В GIT INDEX БЕЗ КОММИТА
+    if injected_files:
+        try:
+            # Добавляем каждый файл в git индекс с --intend-to-add
+            for file_path in injected_files:
+                # Делаем путь относительным от repo_path для git команды
+                rel_path = os.path.relpath(file_path, repo_path)
+                subprocess.run(
+                    ['git', 'add', '--intent-to-add', rel_path],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True
+                )
+                logger.debug(f"Added to git index (intend-to-add): {rel_path}")
+            
+            logger.info(f"Added {len(injected_files)} files to git index with --intend-to-add")
+            
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to add files to git index: {e}")
+            # Это не критичная ошибка - продолжаем работу
+        except Exception as e:
+            logger.warning(f"Unexpected error during git add: {e}")
     
     # Возвращаем хеш директории после инъекции
     return calculate_directory_hash(base_path)
@@ -94,39 +123,47 @@ def generate_nixos_facts(machine_spec: dict) -> dict:
     return facts
 
 
-def get_configuration_hash(config_spec: dict, repo_path: str, namespace: str, machine_spec: Optional[dict] = None) -> str:
-    """Вычисляет хеш конфигурации для проверки идемпотентности"""
-    hash_obj = hashlib.sha256()
+def get_additional_files_hash(config_spec: dict, namespace: str, machine_spec: Optional[dict] = None) -> str:
+    """Вычисляет хеш от additionalFiles спецификации"""
+    if not config_spec.get('additionalFiles'):
+        return ""
     
-    # Добавляем flake в хеш
-    hash_obj.update(config_spec.get('flake', '').encode('utf-8'))
+    # Генерируем временный хеш на основе содержимого additionalFiles
+    files_content = []
+    for file_spec in config_spec['additionalFiles']:
+        file_info = {
+            'path': file_spec.get('path', ''),
+            'valueType': file_spec.get('valueType', ''),
+        }
+        
+        if file_spec.get('valueType') == 'Inline':
+            file_info['inline'] = file_spec.get('inline', '')
+        elif file_spec.get('valueType') == 'SecretRef':
+            file_info['secretRef'] = file_spec.get('secretRef', {})
+        elif file_spec.get('valueType') == 'NixosFacter':
+            if machine_spec:
+                file_info['nixosFacter'] = generate_nixos_facts(machine_spec)
     
-    # Добавляем хеш директории configurationSubdir
-    config_subdir = config_spec.get('configurationSubdir', '')
-    config_path = os.path.join(repo_path, config_subdir) if config_subdir else repo_path
-    dir_hash = calculate_directory_hash(config_path)
-    hash_obj.update(dir_hash.encode('utf-8'))
-    
-    # Добавляем additionalFiles спецификацию
-    if config_spec.get('additionalFiles'):
-        files_spec = json.dumps(config_spec['additionalFiles'], sort_keys=True)
-        hash_obj.update(files_spec.encode('utf-8'))
-    
-    return hash_obj.hexdigest()
+    content_str = json.dumps(file_info, sort_keys=True)
+    return hashlib.sha256(content_str.encode('utf-8')).hexdigest()
 
+
+# ...
 async def apply_nixos_configuration(
     machine_spec: dict,
     config_spec: dict,
     repo_path: str,
     commit_hash: str,
-    is_remove: bool
+    is_remove: bool,
+    needs_full_install: bool
 ) -> bool:
     """Применить конфигурацию NixOS к машине. SSH-ключ опционален."""
     tmp_key_path: Optional[str] = None
     try:
         # --- Обработка SSH-ключа (опционально) ---
         ssh_key_ref = machine_spec.get("sshKeySecretRef")
-        identity_option = ""
+        nix_sshopts = "" # Для nixos-rebuild
+        identity_arg_anywhere = "" # Для nixos-anywhere
 
         if ssh_key_ref:
             secret_name = ssh_key_ref["name"]
@@ -149,11 +186,10 @@ async def apply_nixos_configuration(
                 tmp_key_path = tmp.name
             os.chmod(tmp_key_path, 0o600)
 
-            # Формируем опцию для SSH
-            identity_option = f"-i {tmp_key_path}"
-        else:
-            # Без ключа — ничего не добавляем
-            identity_option = ""
+            # Формируем NIX_SSHOPTS для nixos-rebuild
+            nix_sshopts = f"-i {tmp_key_path}"
+            # Формируем аргумент для nixos-anywhere
+            identity_arg_anywhere = f"-i {tmp_key_path}"
 
         # --- Подготовка параметров ---
         config_path = f"{repo_path}/{config_spec['configurationSubdir']}" if config_spec.get('configurationSubdir') else repo_path
@@ -168,37 +204,47 @@ async def apply_nixos_configuration(
 
         base_nix = "nix --extra-experimental-features 'nix-command flakes'"
 
-        if config_spec.get('fullInstall', False) and not is_remove:
-            # nixos-anywhere
+        # Для обновлений используем nixos-rebuild даже если был fullInstall ранее
+        if needs_full_install and not is_remove:
+            # nixos-anywhere только для первого раза
             cmd_parts = [
                 base_nix,
                 "run github:nix-community/nixos-anywhere --",
                 f"--target-host {ssh_user}@{target_host}",
                 f"--flake {config_path}{flake}"
             ]
-            if identity_option:
-                cmd_parts.append(identity_option)
+            # Добавляем аргумент ключа для nixos-anywhere, если он есть
+            if identity_arg_anywhere:
+                cmd_parts.append(identity_arg_anywhere)
             cmd = " ".join(cmd_parts)
+            # Для nixos-anywhere NIX_SSHOPTS может не использоваться, передаём через аргументы
+            env_for_cmd = os.environ.copy() # nixos-anywhere может не читать NIX_SSHOPTS
         else:
-            # nixos-rebuild
+            # nixos-rebuild для обновлений
+            # Добавляем NIX_SSHOPTS к команде shell через env
+            env_for_cmd = os.environ.copy()
+            if nix_sshopts:
+                env_for_cmd['NIX_SSHOPTS'] = nix_sshopts
+
             cmd_parts = [
-                base_nix,
+                base_nix, # NIX_SSHOPTS передаётся через env
                 "shell nixpkgs#nixos-rebuild --command",
                 "nixos-rebuild switch",
                 f"--flake {config_path}{flake}",
                 f"--target-host {ssh_user}@{target_host}",
-                "--ssh-option StrictHostKeyChecking=no"
             ]
-            if identity_option:
-                cmd_parts.append(f"--ssh-option IdentityFile={tmp_key_path}")
+            # Не передаём --ssh-option IdentityFile, так как используем NIX_SSHOPTS
             cmd = " ".join(cmd_parts)
 
         logger.info(f"Executing command: {cmd}")
 
+        # Передаём env, чтобы NIX_SSHOPTS была доступна для nixos-rebuild
+        # nixos-anywhere получит ключ через аргумент
         process = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=env_for_cmd # Передаём модифицированное окружение
         )
 
         # Асинхронное чтение stdout и stderr в реальном времени
@@ -229,12 +275,17 @@ async def apply_nixos_configuration(
     finally:
         if tmp_key_path and os.path.exists(tmp_key_path):
             os.unlink(tmp_key_path)
+# ...
 
-async def handle_configuration_create(body, spec, name, namespace, **kwargs):
-    """Обработчик создания NixosConfiguration"""
-    logger.info(f"Creating NixosConfiguration: {name}")
+
+async def reconcile_nixos_configuration(body, spec, name, namespace, **kwargs):
+    """Основная точка реконсиляции для NixosConfiguration"""
+    logger.info(f"Reconciling NixosConfiguration: {name}")
     
     try:
+        # Проверяем deletion timestamp
+        deletion_timestamp = body.get('metadata', {}).get('deletionTimestamp')
+        
         # Получение связанной машины
         machine_name = spec['machineRef']['name']
         machine = get_machine(machine_name, namespace)
@@ -260,107 +311,24 @@ async def handle_configuration_create(body, spec, name, namespace, **kwargs):
                     }]
                 }
             )
-            return  # Пропускаем реконсайл
-        
-        # Клонирование Git репозитория
-        from utils import clone_git_repo
-        repo_path, commit_hash = await clone_git_repo(
-            spec['gitRepo'],
-            spec.get('credentialsRef'),
-            namespace
-        )
-        
-        try:
-            # Применение конфигурации
-            success = await apply_nixos_configuration(
-                machine['spec'],
-                spec,
-                repo_path,
-                commit_hash,
-                False
-            )
-            
-            if success:
-                # Обновление статусов
-                current_time = datetime.utcnow().isoformat() + "Z"
-                
-                # Обновление Machine
-                await update_machine_status(
-                    machine_name,
-                    namespace,
-                    {
-                        "hasConfiguration": True,
-                        "appliedConfiguration": name,
-                        "appliedCommit": commit_hash,
-                        "lastAppliedTime": current_time
-                    }
-                )
-                
-                # Обновление NixosConfiguration
-                await update_configuration_status(
-                    name,
-                    namespace,
-                    {
-                        "appliedCommit": commit_hash,
-                        "lastAppliedTime": current_time,
-                        "targetMachine": machine_name
-                    }
-                )
-                
-                logger.info(f"Successfully applied configuration {name} to machine {machine_name}")
-                
-            else:
-                raise kopf.TemporaryError("Failed to apply configuration", delay=60)
-                
-        finally:
-            # Очистка временного каталога
-            shutil.rmtree(repo_path, ignore_errors=True)
-            
-    except Exception as e:
-        logger.error(f"Failed to process NixosConfiguration {name}: {e}")
-        raise kopf.TemporaryError(f"Configuration application failed: {e}", delay=60)
-
-async def handle_configuration_update(body, spec, name, namespace, **kwargs):
-    """Обработчик обновления NixosConfiguration"""
-    logger.info(f"Updating NixosConfiguration: {name}")
-    
-    try:
-        # Получение связанной машины
-        machine_name = spec['machineRef']['name']
-        machine = get_machine(machine_name, namespace)
-        
-        # Проверка доступности машины
-        is_discoverable = await check_machine_discoverable(machine['spec'], machine_name, namespace)
-        if not is_discoverable:
-            logger.warning(f"Skipping configuration update for {name}: machine {machine_name} is not discoverable")
-            await update_configuration_status(
-                name,
-                namespace,
-                {
-                    "conditions": [{
-                        "type": "Applied",
-                        "status": "False",
-                        "lastTransitionTime": datetime.utcnow().isoformat() + "Z",
-                        "reason": "MachineNotDiscoverable",
-                        "message": "Configuration update skipped due to machine not being discoverable"
-                    }]
-                }
-            )
             return
         
         # Определяем источник конфигурации
-        repo_name, repo_url, commit_hash = parse_flake_reference(spec['flake'])
-        if commit_hash == "floating":
+        repo_name, repo_url, commit_type = parse_flake_reference(spec["gitRepo"] + spec['flake'])
+        if commit_type == "floating":
             # Для плавающих ссылок используем gitRepo
             repo_url = spec['gitRepo']
             repo_name = extract_repo_name_from_url(repo_url)
             # Получаем актуальный коммит для ветки/тега
             flake_parts = spec['flake'].split('#')[0].split('/')
             ref = flake_parts[2] if len(flake_parts) > 2 else "main"
-            commit_hash = await get_remote_commit_hash(repo_url, ref, spec.get('credentialsRef'), namespace)
+            new_commit_hash = await get_remote_commit_hash(repo_url, ref, spec.get('credentialsRef'), namespace)
+        else:
+            # Для фиксированных коммитов используем указанный коммит
+            new_commit_hash = commit_type
         
         # Создаем предсказуемый путь
-        workdir_path = get_workdir_path(namespace, name, repo_name, commit_hash)
+        workdir_path = get_workdir_path(namespace, name, repo_name, new_commit_hash)
         
         # Клонируем репозиторий в предсказуемый путь
         repo_path, actual_commit_hash = await clone_git_repo(
@@ -371,19 +339,55 @@ async def handle_configuration_update(body, spec, name, namespace, **kwargs):
         )
         
         try:
+            # Вычисляем хеш additionalFiles
+            additional_files_hash = get_additional_files_hash(spec, namespace, machine['spec'])
+            
+            # Получаем текущий статус для проверки изменений
+            current_status = body.get('status', {})
+            current_applied_commit = current_status.get('appliedCommit')
+            current_additional_files_hash = current_status.get('additionalFilesHash', '')
+            current_has_full_install = current_status.get('fullDiskInstallCompleted', False)
+            
+            # Проверяем, изменился ли коммит в гит репо
+            commit_changed = current_applied_commit != actual_commit_hash
+            # Проверяем, изменились ли файлы additionalFiles
+            additional_files_changed = current_additional_files_hash != additional_files_hash
+            
+            # Проверяем, нужно ли запускать реконсиляцию
+            should_reconcile = False
+            
+            if deletion_timestamp:
+                if spec.get('onRemoveFlake'):
+                    logger.info(f"Deletion detected with onRemoveFlake, triggering reconcile for {name}")
+                    should_reconcile = True
+                else:
+                    logger.info(f"Deletion detected but no onRemoveFlake specified, cleaning up for {name}")
+                    # Обработка удаления без onRemoveFlake
+                    await update_machine_status(
+                        machine_name,
+                        namespace,
+                        {
+                            "hasConfiguration": False,
+                            "appliedConfiguration": None,
+                            "appliedCommit": None
+                        }
+                    )
+                    return
+            else:
+                # Проверяем изменения для нормальной реконсиляции
+                if commit_changed or additional_files_changed:
+                    logger.info(f"Changes detected - commit: {commit_changed}, additionalFiles: {additional_files_changed}, triggering reconcile for {name}")
+                    should_reconcile = True
+            
+            if not should_reconcile:
+                logger.info(f"No changes detected, skipping reconcile for {name}")
+                return
+            
             # Инжектируем additionalFiles
             config_hash = await inject_additional_files(repo_path, spec, namespace, machine['spec'])
             
-            # Проверяем идемпотентность
-            current_config_hash = get_configuration_hash(spec, repo_path, namespace, machine['spec'])
-            
-            # Получаем текущий статус для проверки необходимости применения
-            current_status = body.get('status', {})
-            current_applied_hash = current_status.get('configurationHash')
-            
-            if current_applied_hash == current_config_hash:
-                logger.info(f"Configuration {name} unchanged, skipping application")
-                return
+            # Определяем, нужен ли fullInstall (только для первого раза)
+            needs_full_install = spec.get('fullInstall', False) and not current_has_full_install
             
             # Применяем конфигурацию
             success = await apply_nixos_configuration(
@@ -391,43 +395,79 @@ async def handle_configuration_update(body, spec, name, namespace, **kwargs):
                 spec,
                 repo_path,
                 actual_commit_hash,
-                False
+                bool(deletion_timestamp),  # is_remove = True если есть deletionTimestamp
+                needs_full_install
             )
             
             if success:
                 # Обновляем статусы
                 current_time = datetime.utcnow().isoformat() + "Z"
                 
-                await update_machine_status(
-                    machine_name,
-                    namespace,
-                    {
-                        "hasConfiguration": True,
-                        "appliedConfiguration": name,
-                        "appliedCommit": actual_commit_hash,
-                        "lastAppliedTime": current_time
-                    }
-                )
+                if deletion_timestamp:
+                    # При удалении убираем конфигурацию из статуса машины
+                    await update_machine_status(
+                        machine_name,
+                        namespace,
+                        {
+                            "hasConfiguration": False,
+                            "appliedConfiguration": None,
+                            "appliedCommit": None
+                        }
+                    )
+                    
+                    await update_configuration_status(
+                        name,
+                        namespace,
+                        {
+                            "appliedCommit": actual_commit_hash,
+                            "lastAppliedTime": current_time,
+                            "targetMachine": machine_name,
+                            "configurationHash": config_hash,
+                            "additionalFilesHash": additional_files_hash,
+                            "hasFullInstall": current_has_full_install,  # сохраняем флаг
+                            "conditions": [{
+                                "type": "Applied",
+                                "status": "True",
+                                "lastTransitionTime": current_time,
+                                "reason": "Removed",
+                                "message": "Configuration successfully removed"
+                            }]
+                        }
+                    )
+                else:
+                    # При нормальной реконсиляции обновляем статусы
+                    await update_machine_status(
+                        machine_name,
+                        namespace,
+                        {
+                            "hasConfiguration": True,
+                            "appliedConfiguration": name,
+                            "appliedCommit": actual_commit_hash,
+                            "lastAppliedTime": current_time
+                        }
+                    )
+                    
+                    await update_configuration_status(
+                        name,
+                        namespace,
+                        {
+                            "appliedCommit": actual_commit_hash,
+                            "lastAppliedTime": current_time,
+                            "targetMachine": machine_name,
+                            "configurationHash": config_hash,
+                            "additionalFilesHash": additional_files_hash,
+                            "hasFullInstall": needs_full_install or current_has_full_install,  # устанавливаем или сохраняем флаг
+                            "conditions": [{
+                                "type": "Applied",
+                                "status": "True",
+                                "lastTransitionTime": current_time,
+                                "reason": "Success",
+                                "message": "Configuration successfully applied"
+                            }]
+                        }
+                    )
                 
-                await update_configuration_status(
-                    name,
-                    namespace,
-                    {
-                        "appliedCommit": actual_commit_hash,
-                        "lastAppliedTime": current_time,
-                        "targetMachine": machine_name,
-                        "configurationHash": current_config_hash,
-                        "conditions": [{
-                            "type": "Applied",
-                            "status": "True",
-                            "lastTransitionTime": current_time,
-                            "reason": "Success",
-                            "message": "Configuration successfully applied"
-                        }]
-                    }
-                )
-                
-                logger.info(f"Successfully updated configuration {name} to machine {machine_name}")
+                logger.info(f"Successfully reconciled configuration {name} to machine {machine_name}")
                 
                 # Запускаем GC для старых версий
                 await garbage_collect_old_versions(namespace, name, workdir_path)
@@ -435,72 +475,13 @@ async def handle_configuration_update(body, spec, name, namespace, **kwargs):
             else:
                 raise kopf.TemporaryError("Failed to apply configuration", delay=60)
                 
-        except Exception as e:
-            logger.error(f"Failed to process configuration update: {e}")
-            raise kopf.TemporaryError(f"Configuration update failed: {e}", delay=60)
+        finally:
+            # Очистка временного каталога
+            shutil.rmtree(repo_path, ignore_errors=True)
             
     except Exception as e:
-        logger.error(f"Failed to update NixosConfiguration {name}: {e}")
-        raise kopf.TemporaryError(f"Configuration update failed: {e}", delay=60)
-
-
-async def handle_configuration_resume(body, spec, name, namespace, **kwargs):
-    """Обработчик возобновления NixosConfiguration после перезапуска оператора"""
-    logger.info(f"Resuming NixosConfiguration: {name}")
-    
-    # При возобновлении просто запускаем обновление
-    await handle_configuration_update(body, spec, name, namespace, **kwargs)
-
-
-async def handle_configuration_delete(body, spec, name, namespace, **kwargs):
-    """Обработчик удаления NixosConfiguration"""
-    logger.info(f"Deleting NixosConfiguration: {name}")
-    
-    try:
-        # Получение связанной машины
-        machine_name = spec['machineRef']['name']
-        
-        # Очистка статуса машины
-        await update_machine_status(
-            machine_name,
-            namespace,
-            {
-                "hasConfiguration": False,
-                "appliedConfiguration": None,
-                "appliedCommit": None
-            }
-        )
-        
-        # Если указана конфигурация для удаления, применить её
-        if 'onRemoveFlake' in spec:
-            repo_path, commit_hash = await clone_git_repo(
-                spec['gitRepo'],
-                spec.get('credentialsRef'),
-                namespace
-            )
-            
-            try:
-                machine = get_machine(machine_name, namespace)
-                
-                # Применение конфигурации удаления
-                remove_spec = spec.copy()
-                remove_spec['flake'] = spec['onRemoveFlake']
-                
-                await apply_nixos_configuration(
-                    machine['spec'],
-                    remove_spec,
-                    repo_path,
-                    commit_hash,
-                    True
-                )
-                
-            finally:
-                shutil.rmtree(repo_path, ignore_errors=True)
-                
-        logger.info(f"Successfully cleaned up configuration {name}")
-        
-    except Exception as e:
-        logger.error(f"Failed to cleanup NixosConfiguration {name}: {e}")
+        logger.error(f"Failed to reconcile NixosConfiguration {name}: {e}")
+        raise kopf.TemporaryError(f"Configuration reconciliation failed: {e}", delay=60)
 
 
 async def garbage_collect_old_versions(namespace: str, name: str, current_path: str):
@@ -517,6 +498,15 @@ async def garbage_collect_old_versions(namespace: str, name: str, current_path: 
                 logger.info(f"Garbage collected old configuration: {item_path}")
             except Exception as e:
                 logger.warning(f"Failed to garbage collect {item_path}: {e}")
+
+
+@kopf.on.create('nixos.infra', 'v1alpha1', 'nixosconfigurations')
+@kopf.on.update('nixos.infra', 'v1alpha1', 'nixosconfigurations')
+@kopf.on.resume('nixos.infra', 'v1alpha1', 'nixosconfigurations')
+@kopf.on.delete('nixos.infra', 'v1alpha1', 'nixosconfigurations')
+async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
+    """Унифицированный обработчик для всех операций с NixosConfiguration"""
+    await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 
 @kopf.timer('nixos.infra', 'v1alpha1', 'nixosconfigurations', interval=3600.0)
@@ -580,7 +570,7 @@ async def check_floating_references(body, spec, name, namespace, **kwargs):
         if current_commit and current_commit != current_head:
             logger.info(f"Floating reference {flake_ref} changed from {current_commit} to {current_head}, triggering reconcile")
             # Запускаем полный reconcile
-            await handle_configuration_update(body, spec, name, namespace, **kwargs)
+            await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
             
     except Exception as e:
         logger.warning(f"Failed to check floating reference {flake_ref}: {e}")

@@ -76,6 +76,9 @@ spec:
           status:
             type: object
             properties:
+              fullDiskInstallCompleted:
+                type: boolean
+                description: Git commit hash that was applied
               appliedCommit:
                 type: string
                 description: Git commit hash that was applied

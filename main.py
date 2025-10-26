@@ -4,8 +4,7 @@ import kopf
 import logging
 
 from machine_handlers import check_machine_discoverable, scan_machine_hardware
-from nixosconfiguration_handlers import handle_configuration_create, handle_configuration_delete, handle_configuration_update, handle_configuration_resume
-from nixosconfiguration_job_handlers import handle_configuration_create_with_job, handle_configuration_delete_with_job
+from nixosconfiguration_handlers import reconcile_nixos_configuration
 from clients import update_machine_status, get_machine
 import os
 
@@ -87,24 +86,12 @@ async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwar
 
 # NixOSConfiguration handlers
 @kopf.on.create('nixos.infra', 'v1alpha1', 'nixosconfigurations')
-async def on_nixosconfiguration_create(body, spec, name, namespace, **kwargs):
-    """Обработчик создания NixosConfiguration"""
-    await handle_configuration_create(body, spec, name, namespace, **kwargs)
-
 @kopf.on.update('nixos.infra', 'v1alpha1', 'nixosconfigurations')
-async def on_nixosconfiguration_update(body, spec, name, namespace, **kwargs):
-    """Обработчик обновления NixosConfiguration"""
-    await handle_configuration_update(body, spec, name, namespace, **kwargs)
-
 @kopf.on.resume('nixos.infra', 'v1alpha1', 'nixosconfigurations')
-async def on_nixosconfiguration_resume(body, spec, name, namespace, **kwargs):
-    """Обработчик возобновления NixosConfiguration"""
-    await handle_configuration_resume(body, spec, name, namespace, **kwargs)
-
 @kopf.on.delete('nixos.infra', 'v1alpha1', 'nixosconfigurations')
-async def on_nixosconfiguration_delete(body, spec, name, namespace, **kwargs):
-    """Обработчик удаления NixosConfiguration"""
-    await handle_configuration_delete(body, spec, name, namespace, **kwargs)
+async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
+    """Унифицированный обработчик для всех операций с NixosConfiguration"""
+    await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 @kopf.on.startup()
 def configure(settings: kopf.OperatorSettings, **_):
