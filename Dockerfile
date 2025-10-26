@@ -16,7 +16,6 @@ RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-
     && chmod +x /usr/local/bin/kind
 
 # Установка debugpy для отладки Python
-RUN pip install debugpy
 
 # Создание пользователя и группы для безопасности (с UID/GID 1000)
 # Сначала попробуем создать группу с GID 1000, если она не существует

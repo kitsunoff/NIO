@@ -240,12 +240,12 @@ netboot.x86_64-linux
         sys.exit(1)
 
 
-def generate_dnsmasq_conf(interface: str, server_ip: str, tftp_root: Path) -> str:
+def generate_dnsmasq_conf(interface: str, server_ip: str, tftp_root: Path, dhcp_range: str) -> str:
     conf = f"""
 interface={interface}
 bind-interfaces
 
-dhcp-range=192.168.2.0,proxy
+dhcp-range={dhcp_range}
 
 # TFTP только для начальной загрузки НЕ-iPXE клиентов
 enable-tftp
@@ -272,10 +272,10 @@ log-dhcp
     return str(conf_path)
 
 
-def start_dnsmasq(interface: str, server_ip: str):
+def start_dnsmasq(interface: str, server_ip: str, dhcp_range: str):
     """Запускает dnsmasq в отдельном процессе"""
     global dnsmasq_proc
-    conf_path = generate_dnsmasq_conf(interface, server_ip, TFTP_ROOT)
+    conf_path = generate_dnsmasq_conf(interface, server_ip, TFTP_ROOT, dhcp_range)
     cmd = ["dnsmasq", "--no-daemon", "--conf-file=" + conf_path, "--log-dhcp"]
     logger.info("Запуск dnsmasq...")
     dnsmasq_proc = subprocess.Popen(
@@ -517,6 +517,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-dnsmasq", action="store_true")
+    parser.add_argument("--interface", type=str, help="Сетевой интерфейс для dnsmasq")
+    parser.add_argument("--dhcp-range", type=str, default="192.168.2.0,proxy", 
+                       help="Диапазон DHCP (например: 192.168.1.0,proxy или 192.168.1.100,192.168.1.200)")
     args = parser.parse_args()
 
     # Подключение к Kubernetes
@@ -535,17 +538,25 @@ def main():
     build_nixos_netboot_if_missing(public_key_path)
 
     # Сеть
-    interface, server_ip = get_primary_interface_and_ip()
-    if not interface:
-        logger.error("Не удалось определить интерфейс")
-        sys.exit(1)
+    if args.interface:
+        interface = args.interface
+        # Используем существующую функцию для получения IP
+        _, server_ip = get_primary_interface_and_ip()
+        if not server_ip:
+            logger.error(f"Не удалось определить IP для интерфейса {interface}")
+            sys.exit(1)
+    else:
+        interface, server_ip = get_primary_interface_and_ip()
+        if not interface:
+            logger.error("Не удалось определить интерфейс")
+            sys.exit(1)
 
     # Файлы
     ensure_ipxe_binaries()
 
     # dnsmasq
     if not args.no_dnsmasq:
-        start_dnsmasq(interface, server_ip)
+        start_dnsmasq(interface, server_ip, args.dhcp_range)
 
     # HTTP-сервер
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
