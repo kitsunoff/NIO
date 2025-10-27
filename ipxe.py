@@ -521,15 +521,17 @@ def main():
     parser.add_argument("--dhcp-range", type=str, default="192.168.2.0,proxy", 
                        help="Диапазон DHCP (например: 192.168.1.0,proxy или 192.168.1.100,192.168.1.200)")
     args = parser.parse_args()
-
     # Подключение к Kubernetes
     try:
-        config.load_kube_config()
-        core_api = client.CoreV1Api()
-        crd_api = client.CustomObjectsApi()
-    except Exception as e:
-        logger.error(f"Ошибка подключения к K8s: {e}")
-        sys.exit(1)
+        kubernetes.config.load_kube_config()
+        logger.info("Kubernetes config loaded from kubeconfig file.")
+    except kubernetes.config.ConfigException:
+        try:
+            kubernetes.config.load_incluster_config()
+            logger.info("Kubernetes config loaded from in-cluster environment.")
+        except kubernetes.config.ConfigException as e:
+            logger.error(f"Ошибка подключения к K8s: {e}")
+            sys.exit(1)
 
     # Генерация SSH-ключей (опционально)
     private_key_path, public_key_path = generate_ssh_keys_if_missing()
