@@ -53,7 +53,7 @@ spec:
       serviceAccountName: nixos-operator
       containers:
       - name: operator
-        image: nixos-operator:latest
+        image: ghcr.io/homystack/nio:main
         imagePullPolicy: IfNotPresent   # ←←← ЭТО ОБЯЗАТЕЛЬНО ДЛЯ :latest
 
         env:
