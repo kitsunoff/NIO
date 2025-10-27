@@ -1,4 +1,4 @@
-apiVersion: nixos.infra/v1alpha1
+apiVersion: nio.homystack.com/v1alpha1
 kind: NixosConfiguration
 metadata:
   name: ultra-flake-config

@@ -577,16 +577,16 @@ async def garbage_collect_old_versions(namespace: str, name: str, current_path: 
                 logger.warning(f"Failed to garbage collect {item_path}: {e}")
 
 
-@kopf.on.create("nixos.infra", "v1alpha1", "nixosconfigurations")
-@kopf.on.update("nixos.infra", "v1alpha1", "nixosconfigurations")
-@kopf.on.resume("nixos.infra", "v1alpha1", "nixosconfigurations")
-@kopf.on.delete("nixos.infra", "v1alpha1", "nixosconfigurations")
+@kopf.on.create("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.update("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.resume("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
     """Унифицированный обработчик для всех операций с NixosConfiguration"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 
-@kopf.timer("nixos.infra", "v1alpha1", "nixosconfigurations", interval=3600.0)
+@kopf.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=3600.0)
 async def garbage_collect_all_old_configurations(**kwargs):
     """Фоновый GC для всех конфигураций старше 24 часов"""
     base_path = "/tmp/nixos-config"
@@ -624,7 +624,7 @@ async def garbage_collect_all_old_configurations(**kwargs):
                     logger.warning(f"GC: Failed to remove {version_path}: {e}")
 
 
-@kopf.timer("nixos.infra", "v1alpha1", "nixosconfigurations", interval=300.0)
+@kopf.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=300.0)
 async def check_floating_references(body, spec, name, namespace, **kwargs):
     """Проверка обновлений для плавающих ссылок (ветки/теги)"""
     flake_ref = spec.get("flake", "")

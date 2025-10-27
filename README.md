@@ -11,13 +11,51 @@ A Kubernetes-native operator for declarative management of bare-metal and virtua
 
 ## CRD (Custom Resource Definitions)
 
-### Machine (`machine.nixos.infra/v1alpha1`)
+### Machine (`machine.nio.homystack.com/v1alpha1`)
 
 Manages the state of physical or virtual machines.
 
-### NixosConfiguration (`nixosconfiguration.nixos.infra/v1alpha1`)
+```yaml
+apiVersion: nio.homystack.com/v1alpha1
+kind: Machine
+metadata:
+  name: test-machine
+  namespace: default
+spec:
+  hostname: 192.168.1.100
+  sshUser: root
+  sshKeySecretRef:
+    name: ssh-private-key
+    namespace: default
+```
+
+### NixosConfiguration (`nixosconfiguration.nio.homystack.com/v1alpha1`)
 
 Defines NixOS configurations to be applied to machines.
+
+```yaml
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixosConfiguration
+metadata:
+  name: server-config
+  namespace: default
+spec:
+  gitRepo: "https://github.com/homystack/NIO"
+  flake: "#custom-server"
+  configurationSubdir: "examples/nix"
+  machineRef:
+    name: test-machine
+  fullInstall: true
+  additionalFiles:
+    - path: "config/static-config.nix"
+      valueType: Inline
+      inline: |
+        { config, pkgs, ... }:
+        {
+          networking.hostName = "custom-server";
+          services.nginx.enable = true;
+        }
+```
 
 ## Installation
 

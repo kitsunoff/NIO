@@ -9,10 +9,10 @@ kind: ClusterRole
 metadata:
   name: nixos-operator
 rules:
-- apiGroups: ["nixos.infra"]
+- apiGroups: ["nio.homystack.com"]
   resources: ["machines", "nixosconfigurations"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["nixos.infra"]
+- apiGroups: ["nio.homystack.com"]
   resources: ["machines/status", "nixosconfigurations/status"]
   verbs: ["get", "update", "patch"]
 - apiGroups: [""]

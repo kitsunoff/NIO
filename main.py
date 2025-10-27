@@ -23,7 +23,7 @@ if nix_bin_path not in current_path:
 
 
 # Machine handlers
-@kopf.on.create("nixos.infra", "v1alpha1", "machines")
+@kopf.on.create("nio.homystack.com", "v1alpha1", "machines")
 async def on_machine_create(body, spec, name, namespace, **kwargs):
     """Обработчик создания Machine"""
     logger.info(f"Creating Machine: {name}")
@@ -37,7 +37,7 @@ async def on_machine_create(body, spec, name, namespace, **kwargs):
     )
 
 
-@kopf.timer("nixos.infra", "v1alpha1", "machines", interval=60.0)
+@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=60.0)
 async def check_machine_discoverability(body, spec, name, namespace, **kwargs):
     """Периодическая проверка доступности машин"""
     logger.debug(f"Checking discoverability for machine: {name}")
@@ -49,7 +49,7 @@ async def check_machine_discoverability(body, spec, name, namespace, **kwargs):
     await update_machine_status(name, namespace, {"discoverable": is_discoverable})
 
 
-@kopf.timer("nixos.infra", "v1alpha1", "machines", interval=300.0)  # Каждые 5 минут
+@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=300.0)  # Каждые 5 минут
 async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwargs):
     """Периодическое сканирование железа машин"""
     logger.debug(f"Scanning hardware for machine: {name}")
@@ -77,10 +77,10 @@ async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwar
 
 
 # NixOSConfiguration handlers
-@kopf.on.create("nixos.infra", "v1alpha1", "nixosconfigurations")
-@kopf.on.update("nixos.infra", "v1alpha1", "nixosconfigurations")
-@kopf.on.resume("nixos.infra", "v1alpha1", "nixosconfigurations")
-@kopf.on.delete("nixos.infra", "v1alpha1", "nixosconfigurations")
+@kopf.on.create("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.update("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.resume("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
     """Унифицированный обработчик для всех операций с NixosConfiguration"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)

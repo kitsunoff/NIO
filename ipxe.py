@@ -39,7 +39,7 @@ logger = logging.getLogger("pxe-k8s")
 
 # Глобальные переменные
 dnsmasq_proc: Optional[subprocess.Popen] = None
-GROUP, VERSION, PLURAL = "nixos.infra", "v1alpha1", "machines"
+GROUP, VERSION, PLURAL = "nio.homystack.com", "v1alpha1", "machines"
 crd_api = None
 REGISTERED_MACHINES = set()
 

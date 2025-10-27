@@ -91,7 +91,7 @@ The operator always tracks the Git commit hash from which the configuration was 
 
 When deleting NixosConfiguration:
 - Machine status is cleaned
-- Removal configuration is applied if specified (`onRemoveConfigurationPath`)
+- Removal configuration is applied if specified (`onRemoveFlake`)
 - Ensures clean state removal
 
 ## Advanced Scenarios
@@ -100,7 +100,7 @@ When deleting NixosConfiguration:
 
 ```yaml
 spec:
-  configurationPath: ".#worker"
+  flake: ".#worker"
   fullInstall: false
 ```
 
@@ -128,7 +128,7 @@ additionalFiles:
 
 ```yaml
 spec:
-  onRemoveConfigurationPath: "hosts/minimal.nix"
+  onRemoveFlake: "hosts/minimal.nix"
 ```
 
 ## Troubleshooting
@@ -173,7 +173,7 @@ Ensure that:
 ### Machine Resource
 
 ```yaml
-apiVersion: nixos.infra/v1alpha1
+apiVersion: nio.homystack.com/v1alpha1
 kind: Machine
 metadata:
   name: worker-01
@@ -188,13 +188,13 @@ spec:
 ### NixosConfiguration Resource
 
 ```yaml
-apiVersion: nixos.infra/v1alpha1
+apiVersion: nio.homystack.com/v1alpha1
 kind: NixosConfiguration
 metadata:
   name: worker-config
 spec:
   gitRepo: "https://github.com/your-org/nixos-configs.git"
-  configurationPath: ".#worker"
+  flake: ".#worker"
   fullInstall: false
   machineRef:
     name: worker-01

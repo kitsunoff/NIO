@@ -96,7 +96,7 @@ async def update_machine_status(
 
         if patch:
             custom_objects_api.patch_namespaced_custom_object_status(
-                group="nixos.infra",
+                group="nio.homystack.com",
                 version="v1alpha1",
                 namespace=namespace,
                 plural="machines",
@@ -120,7 +120,7 @@ async def update_configuration_status(
         body = {"status": status_updates}
 
         custom_objects_api.patch_namespaced_custom_object_status(
-            group="nixos.infra",
+            group="nio.homystack.com",
             version="v1alpha1",
             namespace=namespace,
             plural="nixosconfigurations",
@@ -136,7 +136,7 @@ async def update_configuration_status(
 def get_machine(machine_name: str, namespace: str):
     """Get Machine resource"""
     return custom_objects_api.get_namespaced_custom_object(
-        group="nixos.infra",
+        group="nio.homystack.com",
         version="v1alpha1",
         namespace=namespace,
         plural="machines",
