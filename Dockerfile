@@ -61,6 +61,9 @@ COPY crds/ ./crds/
 
 # Меняем владельца рабочей директории на нового пользователя
 RUN chown -R operator_user:$EXISTING_GROUP_NAME /app
+#for testing
+RUN mkdir -p /root/.kube && \
+    chmod 755 /root/.kube
 
 # Переход к пользователю operator_user
 USER operator_user
