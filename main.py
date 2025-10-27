@@ -81,6 +81,7 @@ async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwar
 @kopf.on.update("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.resume("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
+@kopf.on.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=120)
 async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
     """Унифицированный обработчик для всех операций с NixosConfiguration"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)

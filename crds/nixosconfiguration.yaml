@@ -16,11 +16,16 @@ spec:
         type: object
         properties:
           spec:
+            x-kubernetes-preserve-unknown-fields: true
             type: object
             properties:
               gitRepo:
                 type: string
                 description: Git repository URL containing NixOS configuration
+              ref:
+                type: string
+                default: "main"
+                description: Git reference (branch, tag, or commit hash) to use
               credentialsRef:
                 type: object
                 properties:
@@ -75,6 +80,7 @@ spec:
                   - valueType
           status:
             type: object
+            x-kubernetes-preserve-unknown-fields: true
             properties:
               fullDiskInstallCompleted:
                 type: boolean
