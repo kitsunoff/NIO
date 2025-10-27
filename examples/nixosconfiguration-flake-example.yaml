@@ -15,7 +15,7 @@ spec:
     name: machine-b0-41-6f-10-7e-42
   
   # Настройки для флейков
-  fullInstall: true 
+  fullInstall: false 
   
   # Примеры использования additionalFiles (PRD requirement)
   additionalFiles:

@@ -26,7 +26,7 @@ in
     isNormalUser = true;
     extraGroups = [ "wheel" ];
     openssh.authorizedKeys.keys = [ sshPublicKey ];
-    hashedPassword = "$y$j9T$/88y.wXimtoYqjegH0K8W/$Lg7.fq4zrYLJXqefFqe0PrT25fToPUYe9Br1UZxE6Z1";
+    hashedPassword = "$y$j9T$1ufo60PHEVj7Y9t2WEnUH1$Ntha5GMZ7Ri6di6WzhosBp0.t253AlTQfpbF8zsfaq3";
   };
 
   # SSH сервер
