@@ -16,6 +16,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, Request, Response, HTTPException
 from kubernetes import client, config
+import kubernetes
 from kubernetes.client.rest import ApiException
 
 # ==============================
