@@ -3,6 +3,7 @@
 PXE-сервер с регистрацией машин в Kubernetes и отдачей netboot.ipxe из .pxe/result
 """
 
+import asyncio
 import os
 import sys
 import signal
@@ -12,6 +13,7 @@ import threading
 import argparse
 from pathlib import Path
 from typing import Optional
+import shutil
 
 import uvicorn
 from fastapi import FastAPI, Request, Response, HTTPException
@@ -24,6 +26,7 @@ from kubernetes.client.rest import ApiException
 # ==============================
 BASE_DIR = Path.cwd() / ".pxe"
 RESULT_DIR = BASE_DIR / "result"
+RESULT_TEMP_DIR = BASE_DIR / "temp-result"
 SSH_DIR = BASE_DIR / "ssh"
 TFTP_ROOT = BASE_DIR / "tftp"
 HTTP_PORT = 8000
@@ -190,8 +193,8 @@ with import <nixpkgs/nixos/release.nix> {{ configuration = import {custom_config
 netboot.x86_64-linux
 """
 
-    cmd = ["nix-build", "-E", nix_expression, "-o", str(RESULT_DIR)]
-    logger.info(f"Выполняю: nix-build -E '<custom_expression>' -o {RESULT_DIR}")
+    cmd = ["nix-build",  "-E", nix_expression, "-o", str(RESULT_TEMP_DIR)]
+    logger.info(f"Выполняю: nix-build -E '<custom_expression>' -o {RESULT_TEMP_DIR}")
 
     try:
         process = subprocess.Popen(
@@ -211,7 +214,16 @@ netboot.x86_64-linux
 
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, cmd)
+        
+        src = Path(RESULT_TEMP_DIR).resolve()
+        dst = Path(RESULT_DIR)
 
+        for item in src.iterdir():
+            target = dst / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, symlinks=False, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
         # После сборки файлы находятся в result/
         # Проверяем, создались ли файлы после сборки
         if not netboot_ipxe_path.exists():
@@ -219,8 +231,6 @@ netboot.x86_64-linux
                 f"После сборки netboot файл netboot.ipxe не найден в .pxe/result"
             )
             # Попробуем найти и скопировать его из результата сборки
-            import shutil
-
             for item in RESULT_DIR.iterdir():
                 if item.is_symlink() and (item / "netboot.ipxe").exists():
                     source_ipxe = item / "netboot.ipxe"
@@ -514,6 +524,9 @@ async def serve_result_file(file_path: str, request: Request):
 # ==============================
 def main():
     global core_api, crd_api, server_ip, interface, private_key_path, public_key_path  # Добавляем
+
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
