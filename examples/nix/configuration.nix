@@ -26,12 +26,13 @@ in
     isNormalUser = true;
     extraGroups = [ "wheel" ];
     openssh.authorizedKeys.keys = [ sshPublicKey ];
+    hashedPassword = "$y$j9T$/88y.wXimtoYqjegH0K8W/$Lg7.fq4zrYLJXqefFqe0PrT25fToPUYe9Br1UZxE6Z1";
   };
 
   # SSH сервер
   services.openssh = {
     enable = true;
-    settings.PasswordAuthentication = false;
+    settings.PasswordAuthentication = true;
   };
 
   # Файрвол - только SSH
