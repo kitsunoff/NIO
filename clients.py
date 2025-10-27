@@ -5,21 +5,66 @@ import kubernetes
 import logging
 import sys
 from typing import Dict
+import os
 
 logger = logging.getLogger(__name__)
 
 
-# Подключение к Kubernetes
-try:
-    kubernetes.config.load_kube_config()
-    logger.info("Kubernetes config loaded from kubeconfig file.")
-except kubernetes.config.ConfigException:
+def setup_kubernetes_client():
+    kubeconfig_path = os.environ.get("KUBECONFIG", "~/.kube/config")
+    expanded_kubeconfig = os.path.expanduser(kubeconfig_path)
+    kubeconfig_file = Path(expanded_kubeconfig)
+
+    logger.info(f"Попытка подключения к Kubernetes")
+    logger.info(f"Переменная KUBECONFIG: {kubeconfig_path}")
+    logger.info(f"Раскрытый путь к kubeconfig: {expanded_kubeconfig}")
+
+    # Проверяем существование файла
+    if kubeconfig_file.exists():
+        logger.info(f"Файл kubeconfig найден: {kubeconfig_file}")
+        try:
+            stat = kubeconfig_file.stat()
+            logger.info(f"Права на файл: {oct(stat.st_mode)[-3:]}")
+            logger.info(f"Размер файла: {stat.st_size} байт")
+        except Exception as e:
+            logger.warning(f"Не удалось получить метаданные файла: {e}")
+
+        # Пытаемся загрузить kubeconfig
+        try:
+            kubernetes.config.load_kube_config(config_file=expanded_kubeconfig)
+            logger.info("✅ Успешно загружен kubeconfig")
+            return
+        except kubernetes.config.ConfigException as e:
+            logger.warning(f"❌ Не удалось загрузить kubeconfig: {e}")
+        except Exception as e:
+            logger.error(f"❗ Неожиданная ошибка при загрузке kubeconfig: {e}", exc_info=True)
+    else:
+        logger.warning(f"Файл kubeconfig НЕ найден: {kubeconfig_file}")
+
+    # Если kubeconfig не сработал — пробуем in-cluster
+    logger.info("Переключаюсь на попытку in-cluster подключения...")
+
+    # Проверяем наличие переменных окружения для in-cluster
+    host = os.environ.get("KUBERNETES_SERVICE_HOST")
+    port = os.environ.get("KUBERNETES_SERVICE_PORT")
+    logger.info(f"KUBERNETES_SERVICE_HOST: {host}")
+    logger.info(f"KUBERNETES_SERVICE_PORT: {port}")
+
+    if not host or not port:
+        logger.error("❌ Переменные KUBERNETES_SERVICE_HOST и KUBERNETES_SERVICE_PORT не установлены — in-cluster config невозможен")
+
     try:
         kubernetes.config.load_incluster_config()
-        logger.info("Kubernetes config loaded from in-cluster environment.")
+        logger.info("✅ Успешно загружен in-cluster config")
     except kubernetes.config.ConfigException as e:
-        logger.error(f"Ошибка подключения к K8s: {e}")
+        logger.error(f"❌ Ошибка in-cluster подключения: {e}")
         sys.exit(1)
+    except Exception as e:
+        logger.error(f"❗ Критическая ошибка при in-cluster подключении: {e}", exc_info=True)
+        sys.exit(1)
+
+# Вызов инициализации
+setup_kubernetes_client()
 
 # Глобальные клиенты Kubernetes
 api_client = kubernetes.client.ApiClient()
