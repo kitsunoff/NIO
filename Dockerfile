@@ -1,72 +1,56 @@
 FROM python:3.11-slim
 
-# Установка системных зависимостей для разработки
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    git \
-    xz-utils \
-    openssh-client \
-    curl \
-    wget \
-    vim \
-    kubectl \
-    && rm -rf /var/lib/apt/lists/*
+    git xz-utils openssh-client curl wget vim kubectl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Установка kind для управления кластером
-RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64   \
+# Download Nix installer with checksum verification
+
+# Install kind
+ARG KIND_VERSION=v0.20.0
+RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
 
-RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux \
-  --extra-conf "sandbox = false" \
-  --extra-conf "filter-syscalls = false" \
-  --init none \
-  --no-confirm
+# Create user
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN groupadd -g ${USER_GID} operator_group \
+    && useradd -u ${USER_UID} -g operator_group -m -s /bin/bash operator_user \
+    && mkdir -p /home/operator_user/.kube /app/.kube \
+    && chown -R operator_user:operator_group /home/operator_user /app
+
+
+ADD https://install.determinate.systems/nix /tmp/nix-installer
+
+# Install Nix (will be cached if installer doesn't change)
+RUN chmod +x /tmp/nix-installer \
+    && /tmp/nix-installer install linux \
+        --extra-conf "sandbox = false" \
+        --extra-conf "filter-syscalls = false" \
+        --init none \
+        --no-confirm \
+    && rm -f /tmp/nix-installer
+
 ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 
-# Создание пользователя и группы для безопасности (с UID/GID 1000)
-# Сначала попробуем создать группу с GID 1000, если она не существует
-# Если groupadd не сработает, значит GID 1000 уже занят другой группой
-RUN set -ex; \
-    if ! getent group 1000 > /dev/null 2>&1; then \
-        groupadd -g 1000 operator_group; \
-        USER_GID=1000; \
-    else \
-        # Если GID 1000 уже занят, используем другую группу для пользователя
-        # или просто используем группу, которая уже есть (например, staff в python:slim)
-        # Найдём имя группы с GID 1000
-        EXISTING_GROUP_NAME=$(getent group 1000 | cut -d: -f1); \
-        echo "Группа с GID 1000 уже существует: $EXISTING_GROUP_NAME"; \
-        USER_GID=$(getent group $EXISTING_GROUP_NAME | cut -d: -f3); \
-    fi; \
-    # Теперь создаём пользователя с UID 1000 и используем найденную/созданную группу
-    # Если мы создали operator_group, USER_GID будет 1000
-    # Если группа уже существовала, USER_GID будет 1000
-    USER_UID=1000; \
-    # Используем имя группы, которое мы нашли или создали
-    EXISTING_GROUP_NAME=${EXISTING_GROUP_NAME:-operator_group}; \
-    useradd -u $USER_UID -g $EXISTING_GROUP_NAME -m -s /bin/bash operator_user; \
-    echo "Создан пользователь operator_user с UID $USER_UID и GID $USER_GID в группе $EXISTING_GROUP_NAME"
-
-# Создание рабочей директории
 WORKDIR /app
 
-# Копирование зависимостей
+# Copy only runtime-required files
 COPY requirements.txt .
-
-# Установка Python зависимостей
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование исходного кода оператора
-COPY . .
-COPY crds/ ./crds/
+# Copy only essential runtime files
+COPY --chown=operator_user:operator_group main.py .
+COPY --chown=operator_user:operator_group machine_handlers.py .
+COPY --chown=operator_user:operator_group nixosconfiguration_handlers.py .
+COPY --chown=operator_user:operator_group clients.py .
+COPY --chown=operator_user:operator_group utils.py .
+COPY --chown=operator_user:operator_group events.py .
+COPY --chown=operator_user:operator_group scripts/ ./scripts/
+COPY --chown=operator_user:operator_group crds/ ./crds/
 
-# Меняем владельца рабочей директории на нового пользователя
-RUN chown -R operator_user:$EXISTING_GROUP_NAME /app
-#for testing
-RUN mkdir -p /root/.kube && \
-    chmod 755 /root/.kube
-
-# Переход к пользователю operator_user
 USER operator_user
-
-# Команда по умолчанию (будет переопределена в docker-compose)
+ENV KUBECONFIG=/app/.kube/config PYTHONUNBUFFERED=1 PYTHONPATH=/app
 CMD ["python", "main.py"]

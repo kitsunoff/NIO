@@ -9,17 +9,17 @@ from clients import update_machine_status, get_machine
 import os
 
 
-# Настройка логирования
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 print("starting")
 
-# --- Добавляем путь к Nix в PATH ---
+# --- Add Nix path to PATH ---
 nix_bin_path = "/nix/var/nix/profiles/default/bin"
 current_path = os.environ.get("PATH", "")
 if nix_bin_path not in current_path:
     os.environ["PATH"] = f"{nix_bin_path}:{current_path}"
-    logger.info(f"Добавлен путь к Nix в PATH: {nix_bin_path}")
+    logger.info(f"Added Nix path to PATH: {nix_bin_path}")
 
 
 # Machine handlers

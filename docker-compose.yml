@@ -4,15 +4,17 @@ services:
 
   # # Оператор в режиме разработки
   nio:
-    image: ghcr.io/homystack/nio:main
+    # image: ghcr.io/homystack/nio:main
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: nixos-operator-dev
     network_mode: host
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.kube/config:/home/operator_user/.kube/config
+      - ~/.kube/config:/app/.kube/config
     environment:
-      - KUBECONFIG=/root/.kube/config
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - PYDEVD_DISABLE_FILE_VALIDATION=1 
@@ -21,7 +23,9 @@ services:
 
   # PXE сервер для загрузки машин через iPXE
   nio-ipxe:
-    image: ghcr.io/homystack/nio-ipxe:main
+    build:
+      context: .
+      dockerfile: Dockerfile.ipxe
     container_name: ipxe-server
     network_mode: host
     volumes:

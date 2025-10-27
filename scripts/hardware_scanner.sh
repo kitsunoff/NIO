@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Вспомогательная функция для безопасного чтения файла
+# Helper function for safe file reading
 safe_read() {
     local file="$1"
     if [ -r "$file" ]; then
@@ -8,7 +8,7 @@ safe_read() {
     fi
 }
 
-# --- 1. ОС и базовая инфа ---
+# --- 1. OS and basic info ---
 os_name="unknown"
 os_id="unknown"
 if [ -f /etc/os-release ]; then
@@ -58,7 +58,7 @@ if [ -f /proc/cpuinfo ]; then
 fi
 cpu_cores=$(nproc 2>/dev/null || echo "unknown")
 
-# --- 3. Память ---
+# --- 3. Memory ---
 memory_mb="unknown"
 if [ -f /proc/meminfo ]; then
     mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
@@ -67,7 +67,7 @@ if [ -f /proc/meminfo ]; then
     fi
 fi
 
-# --- 4. Виртуализация и контейнер ---
+# --- 4. Virtualization and container ---
 virtualization="unknown"
 container_engine="unknown"
 
@@ -93,7 +93,7 @@ if [ "$virtualization" = "unknown" ]; then
     fi
 fi
 
-# --- 5. Системные идентификаторы ---
+# --- 5. System identifiers ---
 system_serial="unknown"
 system_uuid="unknown"
 if [ -r /sys/class/dmi/id/product_serial ] && [ "$(safe_read /sys/class/dmi/id/product_serial)" != "" ]; then
@@ -103,7 +103,7 @@ if [ -r /sys/class/dmi/id/product_uuid ]; then
     system_uuid=$(safe_read /sys/class/dmi/id/product_uuid)
 fi
 
-# --- 6. Часовой пояс ---
+# --- 6. Timezone ---
 timezone="unknown"
 if [ -L /etc/localtime ]; then
     tz_link=$(readlink /etc/localtime 2>/dev/null)
@@ -116,7 +116,7 @@ elif [ -f /etc/TZ ]; then
     timezone=$(cat /etc/TZ 2>/dev/null)
 fi
 
-# --- 7. glibc и компиляторы ---
+# --- 7. glibc and compilers ---
 glibc_version="unknown"
 gcc_version="unknown"
 ldd_output=$(ldd --version 2>/dev/null | head -n1)
@@ -127,7 +127,7 @@ if command -v gcc >/dev/null 2>&1; then
     gcc_version=$(gcc -dumpversion 2>/dev/null)
 fi
 
-# --- 8. Пользователь и sudo ---
+# --- 8. User and sudo ---
 current_user=$(whoami 2>/dev/null || echo "unknown")
 has_sudo="no"
 if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
@@ -143,7 +143,7 @@ if command -v nix >/dev/null 2>&1; then
     fi
 fi
 
-# --- 10. Файловые системы (исправлено!) ---
+# --- 10. Filesystems (fixed!) ---
 filesystems="unknown"
 if [ -f /proc/filesystems ]; then
     fs_list=$(awk '
@@ -164,7 +164,7 @@ if [ -f /etc/resolv.conf ]; then
     fi
 fi
 
-# --- 12. Безопасность ---
+# --- 12. Security ---
 apparmor="unknown"
 selinux="unknown"
 if [ -f /sys/kernel/security/apparmor/profiles ]; then
@@ -176,7 +176,7 @@ if command -v getenforce >/dev/null 2>&1; then
     selinux=$(getenforce 2>/dev/null)
 fi
 
-# --- ВЫВОД ОБЩИХ ФАКТОВ ---
+# --- OUTPUT GENERAL FACTS ---
 echo "os.name=$os_name"
 echo "os.id=$os_id"
 echo "kernel.version=$kernel_version"
@@ -201,7 +201,7 @@ echo "network.dns_servers=$dns_servers"
 echo "security.apparmor=$apparmor"
 echo "security.selinux=$selinux"
 
-# --- 13. ДИСКИ (по одному) ---
+# --- 13. DISKS (one by one) ---
 if command -v lsblk >/dev/null 2>&1; then
     lsblk -b -d -o NAME,SIZE,TYPE -n 2>/dev/null | while read -r name size type _; do
         if [ "$size" -eq 0 ] 2>/dev/null; then
@@ -230,7 +230,7 @@ if command -v lsblk >/dev/null 2>&1; then
     done
 fi
 
-# --- 14. СЕТЬ: интерфейсы с IPv4 ---
+# --- 14. NETWORK: interfaces with IPv4 ---
 if command -v ip >/dev/null 2>&1; then
     ip -4 -br addr show 2>/dev/null | while read -r iface state ip_mask _; do
         if [ "$state" != "DOWN" ] && [ -n "$ip_mask" ] && [ "$ip_mask" != "-" ]; then

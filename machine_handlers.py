@@ -17,18 +17,18 @@ logger = logging.getLogger(__name__)
 async def check_machine_discoverable(
     machine_spec: Dict, body=None, machine_name: str = None, namespace: str = None
 ) -> bool:
-    """Проверить доступность машины через SSH с поддержкой ключа, пароля и без аутентификации"""
+    """Check machine availability via SSH with support for key, password, and no authentication"""
     try:
         ssh_config = {
             "host": machine_spec["hostname"],
             "username": machine_spec.get("sshUser", "root"),
-            "known_hosts": None,  # Отключить проверку known hosts
+            "known_hosts": None,  # Disable known hosts verification
         }
 
         has_credentials = False
         ssh_key_temp_file = None
 
-        # Попытка подключения по SSH ключу
+        # Attempt SSH key connection
         if "sshKeySecretRef" in machine_spec:
             try:
                 secret_data = await get_secret_data(
@@ -36,21 +36,21 @@ async def check_machine_discoverable(
                     machine_spec["sshKeySecretRef"].get("namespace", "default"),
                 )
                 if "ssh-privatekey" in secret_data and secret_data["ssh-privatekey"]:
-                    # Создаем временный файл для SSH ключа
+                    # Create temporary file for SSH key
                     with tempfile.NamedTemporaryFile(
                         mode="w", delete=False, suffix="_ssh_key"
                     ) as temp_file:
                         temp_file.write(secret_data["ssh-privatekey"])
                         ssh_key_temp_file = temp_file.name
 
-                    # Устанавливаем правильные права доступа для SSH ключа
+                    # Set correct permissions for SSH key
                     os.chmod(ssh_key_temp_file, 0o600)
 
                     ssh_config["client_keys"] = [ssh_key_temp_file]
                     has_credentials = True
                     logger.info("Using SSH key for authentication")
                 else:
-                    # Секрет существует, но не содержит SSH ключа
+                    # Secret exists but doesn't contain SSH key
                     if body:
                         emit_missing_credentials_event(
                             body,
@@ -61,7 +61,7 @@ async def check_machine_discoverable(
                         f"Secret {machine_spec['sshKeySecretRef']['name']} exists but doesn't contain 'ssh-privatekey'"
                     )
             except Exception as e:
-                # Секрет не найден или недоступен
+                # Secret not found or unavailable
                 if body:
                     emit_missing_credentials_event(
                         body,
@@ -72,7 +72,7 @@ async def check_machine_discoverable(
                     f"Failed to get SSH key from secret {machine_spec['sshKeySecretRef']['name']}: {e}"
                 )
 
-        # Попытка подключения по паролю (если ключ не сработал или не указан)
+        # Attempt password connection (if key didn't work or not specified)
         if not has_credentials and "sshPasswordSecretRef" in machine_spec:
             try:
                 secret_data = await get_secret_data(
@@ -80,7 +80,7 @@ async def check_machine_discoverable(
                     machine_spec["sshPasswordSecretRef"].get("namespace", "default"),
                 )
 
-                # Определяем ключ для пароля (по умолчанию 'password')
+                # Determine password key (default 'password')
                 password_key = machine_spec["sshPasswordSecretRef"].get(
                     "key", "password"
                 )
@@ -90,7 +90,7 @@ async def check_machine_discoverable(
                     has_credentials = True
                     logger.info("Using password for authentication")
                 else:
-                    # Секрет существует, но не содержит пароля
+                    # Secret exists but doesn't contain password
                     if body:
                         emit_missing_credentials_event(
                             body,
@@ -101,7 +101,7 @@ async def check_machine_discoverable(
                         f"Secret {machine_spec['sshPasswordSecretRef']['name']} exists but doesn't contain '{password_key}'"
                     )
             except Exception as e:
-                # Секрет не найден или недоступен
+                # Secret not found or unavailable
                 if body:
                     emit_missing_credentials_event(
                         body,
@@ -112,21 +112,21 @@ async def check_machine_discoverable(
                     f"Failed to get password from secret {machine_spec['sshPasswordSecretRef']['name']}: {e}"
                 )
 
-        # Если нет указанных учетных данных, пробуем подключиться без аутентификации
+        # If no credentials provided, try connection without authentication
         if not has_credentials:
             logger.info(
                 "No SSH key or password provided, attempting connection without authentication"
             )
-            # Продолжаем без дополнительных параметров аутентификации
+            # Continue without additional authentication parameters
 
-        # Попытка подключения
+        # Attempt connection
         try:
             async with asyncssh.connect(**ssh_config) as conn:
-                # Простая команда для проверки доступности
+                # Simple command to check availability
                 result = await conn.run('echo "machine_available"', check=True)
                 return result.stdout.strip() == "machine_available"
         finally:
-            # Удаляем временный файл SSH ключа, если он был создан
+            # Delete temporary SSH key file if it was created
             if ssh_key_temp_file and os.path.exists(ssh_key_temp_file):
                 try:
                     os.unlink(ssh_key_temp_file)
@@ -146,18 +146,18 @@ async def check_machine_discoverable(
 async def scan_machine_hardware(
     machine_spec: Dict, body=None, machine_name: str = None, namespace: str = None
 ) -> Dict:
-    """Сканировать железо машины и вернуть факты"""
+    """Scan machine hardware and return facts"""
     try:
         ssh_config = {
             "host": machine_spec["hostname"],
             "username": machine_spec.get("sshUser", "root"),
-            "known_hosts": None,  # Отключить проверку known hosts
+            "known_hosts": None,  # Disable known hosts verification
         }
 
         has_credentials = False
         ssh_key_temp_file = None
 
-        # Попытка подключения по SSH ключу
+        # Attempt SSH key connection
         if "sshKeySecretRef" in machine_spec:
             try:
                 secret_data = await get_secret_data(
@@ -165,14 +165,14 @@ async def scan_machine_hardware(
                     machine_spec["sshKeySecretRef"].get("namespace", "default"),
                 )
                 if "ssh-privatekey" in secret_data and secret_data["ssh-privatekey"]:
-                    # Создаем временный файл для SSH ключа
+                    # Create temporary file for SSH key
                     with tempfile.NamedTemporaryFile(
                         mode="w", delete=False, suffix="_ssh_key"
                     ) as temp_file:
                         temp_file.write(secret_data["ssh-privatekey"])
                         ssh_key_temp_file = temp_file.name
 
-                    # Устанавливаем правильные права доступа для SSH ключа
+                    # Set correct permissions for SSH key
                     os.chmod(ssh_key_temp_file, 0o600)
 
                     ssh_config["client_keys"] = [ssh_key_temp_file]
@@ -181,7 +181,7 @@ async def scan_machine_hardware(
             except Exception as e:
                 logger.warning(f"Failed to get SSH key for hardware scan: {e}")
 
-        # Попытка подключения по паролю (если ключ не сработал или не указан)
+        # Attempt password connection (if key didn't work or not specified)
         if not has_credentials and "sshPasswordSecretRef" in machine_spec:
             try:
                 secret_data = await get_secret_data(
@@ -189,7 +189,7 @@ async def scan_machine_hardware(
                     machine_spec["sshPasswordSecretRef"].get("namespace", "default"),
                 )
 
-                # Определяем ключ для пароля (по умолчанию 'password')
+                # Determine password key (default 'password')
                 password_key = machine_spec["sshPasswordSecretRef"].get(
                     "key", "password"
                 )
@@ -201,16 +201,16 @@ async def scan_machine_hardware(
             except Exception as e:
                 logger.warning(f"Failed to get password for hardware scan: {e}")
 
-        # Если нет указанных учетных данных, пробуем подключиться без аутентификации
+        # If no credentials provided, try connection without authentication
         if not has_credentials:
             logger.info(
                 "No SSH key or password provided, attempting hardware scan without authentication"
             )
 
-        # Подключение и выполнение сканирования
+        # Connection and scan execution
         try:
             async with asyncssh.connect(**ssh_config) as conn:
-                # Передаем скрипт сканирования по SCP
+                # Transfer scan script via SCP
                 scanner_path = os.path.join(
                     os.path.dirname(__file__), "scripts", "hardware_scanner.sh"
                 )
@@ -219,32 +219,32 @@ async def scan_machine_hardware(
                     logger.error(f"Hardware scanner script not found at {scanner_path}")
                     return {}
 
-                # Читаем содержимое скрипта
+                # Read script content
                 with open(scanner_path, "r") as f:
                     scanner_content = f.read()
 
-                # Создаем временный файл на удаленной машине
+                # Create temporary file on remote machine
                 remote_script_path = "/tmp/hardware_scanner.sh"
 
-                # Передаем скрипт по SCP
+                # Transfer script via SCP
                 async with conn.start_sftp_client() as sftp:
                     async with sftp.open(remote_script_path, "w") as remote_file:
                         await remote_file.write(scanner_content)
 
-                # Делаем скрипт исполняемым и выполняем его
+                # Make script executable and run it
                 await conn.run(f"chmod +x {remote_script_path}", check=True)
                 result = await conn.run(f"{remote_script_path}", check=True)
 
-                # Получаем сырой вывод сканера
+                # Get raw scanner output
                 facts_output = result.stdout.strip()
                 if not facts_output:
                     logger.warning("Hardware scanner returned empty output")
                     return {}
 
-                # Парсим результат локально
+                # Parse result locally
                 from scripts.facts_parser import parse_facts
 
-                # Разбиваем вывод на строки и парсим
+                # Split output into lines and parse
                 lines = facts_output.split("\n")
                 hardware_facts = parse_facts(lines)
 
@@ -253,7 +253,7 @@ async def scan_machine_hardware(
                 )
                 return hardware_facts
         finally:
-            # Удаляем временный файл SSH ключа, если он был создан
+            # Delete temporary SSH key file if it was created
             if ssh_key_temp_file and os.path.exists(ssh_key_temp_file):
                 try:
                     os.unlink(ssh_key_temp_file)

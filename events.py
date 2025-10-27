@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 def emit_missing_credentials_event(body, reason: str, message: str):
-    """Создать событие о недостающих учетных данных"""
+    """Create event about missing credentials"""
     try:
         kopf.warn(body, reason=reason, message=message)
         logger.warning(f"Emitted missing credentials event: {message}")
@@ -16,7 +16,7 @@ def emit_missing_credentials_event(body, reason: str, message: str):
 
 
 def emit_configuration_applied_event(body, reason: str, message: str):
-    """Создать событие о применении конфигурации"""
+    """Create event about configuration application"""
     try:
         kopf.info(body, reason=reason, message=message)
         logger.info(f"Emitted configuration applied event: {message}")
@@ -25,7 +25,7 @@ def emit_configuration_applied_event(body, reason: str, message: str):
 
 
 def emit_error_event(body, reason: str, message: str):
-    """Создать событие об ошибке"""
+    """Create error event"""
     try:
         kopf.exception(body, reason=reason, message=message)
         logger.error(f"Emitted error event: {message}")

@@ -1,36 +1,66 @@
 FROM python:3.11-slim
 
-# Устанавливаем системные зависимости
+# Установка только необходимых системных зависимостей
 RUN apt-get update && apt-get install -y \
-    dnsmasq \
-    iproute2 \
+    git \
+    xz-utils \
     openssh-client \
     curl \
-    xz-utils \
-    && rm -rf /var/lib/apt/lists/*
+    wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux \
-  --extra-conf "sandbox = false" \
-  --extra-conf "filter-syscalls = false" \
-  --init none \
-  --no-confirm
+# Установка kubectl из официального репозитория (меньше размер)
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/
+
+# Установка kind с кэшированием версии
+ARG KIND_VERSION=v0.20.0
+RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64 \
+    && chmod +x /usr/local/bin/kind
+
+# Создание пользователя (оптимизированная версия)
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN groupadd -g ${USER_GID} operator_group \
+    && useradd -u ${USER_UID} -g operator_group -m -s /bin/bash operator_user \
+    && mkdir -p /home/operator_user/.kube /app/.kube \
+    && chown -R operator_user:operator_group /home/operator_user /app
+
+# Кэширование установщика Nix через ADD (инвалидируется при изменении установщика)
+ADD https://install.determinate.systems/nix /tmp/nix-installer
+
+# Установка Nix с оптимизацией
+RUN chmod +x /tmp/nix-installer \
+    && /tmp/nix-installer install linux \
+        --extra-conf "sandbox = false" \
+        --extra-conf "filter-syscalls = false" \
+        --init none \
+        --no-confirm \
+    && rm -f /tmp/nix-installer \
+# Настройка PATH для Nix
 ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 
-# Создаем рабочую директорию
 WORKDIR /app
 
-# Копируем зависимости и устанавливаем их
+# Копирование зависимостей отдельно для лучшего кэширования
 COPY ipxe-requirements.txt .
+
+# Установка Python зависимостей с кэшированием
 RUN pip install --no-cache-dir -r ipxe-requirements.txt
 
-# Копируем основной скрипт
-COPY ipxe.py .
+# Копирование только необходимых файлов
+COPY --chown=operator_user:operator_group ipxe.py .
 
-# Создаем необходимые директории
-RUN mkdir -p .pxe/ssh .pxe/tftp
+USER operator_user
 
-# Открываем порт для HTTP-сервера
-EXPOSE 8000
+# Настройка окружения
+ENV KUBECONFIG=/app/.kube/config \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    # Отключаем сборку документации для pip
+    PIP_NO_BUILD_ISOLATION=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Запускаем скрипт
-CMD ["python", "ipxe.py"]
+CMD ["python", "main.py"]

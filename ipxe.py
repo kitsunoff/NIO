@@ -240,6 +240,7 @@ netboot.x86_64-linux
 
         logger.info(f"Сборка netboot завершена.")
 
+
     except subprocess.CalledProcessError as e:
         logger.error(f"Ошибка сборки netboot: {e}")
         sys.exit(1)

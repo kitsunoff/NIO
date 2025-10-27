@@ -15,65 +15,65 @@ def setup_kubernetes_client():
     expanded_kubeconfig = os.path.expanduser(kubeconfig_path)
     kubeconfig_file = Path(expanded_kubeconfig)
 
-    logger.info(f"Попытка подключения к Kubernetes")
-    logger.info(f"Переменная KUBECONFIG: {kubeconfig_path}")
-    logger.info(f"Раскрытый путь к kubeconfig: {expanded_kubeconfig}")
+    print(f"Attempting to connect to Kubernetes")
+    print(f"KUBECONFIG variable: {kubeconfig_path}")
+    print(f"Expanded kubeconfig path: {expanded_kubeconfig}")
 
-    # Проверяем существование файла
+    # Check if file exists
     if kubeconfig_file.exists():
-        logger.info(f"Файл kubeconfig найден: {kubeconfig_file}")
+        logger.info(f"Kubeconfig file found: {kubeconfig_file}")
         try:
             stat = kubeconfig_file.stat()
-            logger.info(f"Права на файл: {oct(stat.st_mode)[-3:]}")
-            logger.info(f"Размер файла: {stat.st_size} байт")
+            logger.info(f"File permissions: {oct(stat.st_mode)[-3:]}")
+            logger.info(f"File size: {stat.st_size} bytes")
         except Exception as e:
-            logger.warning(f"Не удалось получить метаданные файла: {e}")
+            logger.warning(f"Failed to get file metadata: {e}")
 
-        # Пытаемся загрузить kubeconfig
+        # Try to load kubeconfig
         try:
             kubernetes.config.load_kube_config(config_file=expanded_kubeconfig)
-            logger.info("✅ Успешно загружен kubeconfig")
+            logger.info("✅ Successfully loaded kubeconfig")
             return
         except kubernetes.config.ConfigException as e:
-            logger.warning(f"❌ Не удалось загрузить kubeconfig: {e}")
+            logger.warning(f"❌ Failed to load kubeconfig: {e}")
         except Exception as e:
-            logger.error(f"❗ Неожиданная ошибка при загрузке kubeconfig: {e}", exc_info=True)
+            logger.error(f"❗ Unexpected error loading kubeconfig: {e}", exc_info=True)
     else:
-        logger.warning(f"Файл kubeconfig НЕ найден: {kubeconfig_file}")
+        logger.warning(f"Kubeconfig file NOT found: {kubeconfig_file}")
 
-    # Если kubeconfig не сработал — пробуем in-cluster
-    logger.info("Переключаюсь на попытку in-cluster подключения...")
+    # If kubeconfig doesn't work - try in-cluster
+    logger.info("Switching to in-cluster connection attempt...")
 
-    # Проверяем наличие переменных окружения для in-cluster
+    # Check for in-cluster environment variables
     host = os.environ.get("KUBERNETES_SERVICE_HOST")
     port = os.environ.get("KUBERNETES_SERVICE_PORT")
     logger.info(f"KUBERNETES_SERVICE_HOST: {host}")
     logger.info(f"KUBERNETES_SERVICE_PORT: {port}")
 
     if not host or not port:
-        logger.error("❌ Переменные KUBERNETES_SERVICE_HOST и KUBERNETES_SERVICE_PORT не установлены — in-cluster config невозможен")
+        logger.error("❌ KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT variables not set — in-cluster config impossible")
 
     try:
         kubernetes.config.load_incluster_config()
-        logger.info("✅ Успешно загружен in-cluster config")
+        logger.info("✅ Successfully loaded in-cluster config")
     except kubernetes.config.ConfigException as e:
-        logger.error(f"❌ Ошибка in-cluster подключения: {e}")
+        logger.error(f"❌ In-cluster connection error: {e}")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"❗ Критическая ошибка при in-cluster подключении: {e}", exc_info=True)
+        logger.error(f"❗ Critical error during in-cluster connection: {e}", exc_info=True)
         sys.exit(1)
 
-# Вызов инициализации
+# Call initialization
 setup_kubernetes_client()
 
-# Глобальные клиенты Kubernetes
+# Global Kubernetes clients
 api_client = kubernetes.client.ApiClient()
 core_v1 = kubernetes.client.CoreV1Api()
 custom_objects_api = kubernetes.client.CustomObjectsApi()
 
 
 async def get_secret_data(secret_name: str, namespace: str) -> Dict[str, str]:
-    """Получить данные из Kubernetes Secret"""
+    """Get data from Kubernetes Secret"""
     try:
         secret = core_v1.read_namespaced_secret(secret_name, namespace)
         if not secret.data:
@@ -90,7 +90,7 @@ async def get_secret_data(secret_name: str, namespace: str) -> Dict[str, str]:
 async def update_machine_status(
     machine_name: str, namespace: str, status_updates: Dict, patch: bool = True
 ):
-    """Обновить статус Machine ресурса"""
+    """Update Machine resource status"""
     try:
         body = {"status": status_updates}
 
@@ -104,7 +104,7 @@ async def update_machine_status(
                 body=body,
             )
         else:
-            # Для создания статуса
+            # For creating status
             pass
 
     except Exception as e:
@@ -115,7 +115,7 @@ async def update_machine_status(
 async def update_configuration_status(
     config_name: str, namespace: str, status_updates: Dict
 ):
-    """Обновить статус NixosConfiguration ресурса"""
+    """Update NixosConfiguration resource status"""
     try:
         body = {"status": status_updates}
 
@@ -134,7 +134,7 @@ async def update_configuration_status(
 
 
 def get_machine(machine_name: str, namespace: str):
-    """Получить Machine ресурс"""
+    """Get Machine resource"""
     return custom_objects_api.get_namespaced_custom_object(
         group="nixos.infra",
         version="v1alpha1",

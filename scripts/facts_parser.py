@@ -4,33 +4,33 @@ import re
 import json
 from collections import defaultdict
 
-# Список ключей, значения которых — CSV и должны стать списками
+# List of keys whose values are CSV and should become arrays
 ARRAY_KEYS = {
     "storage.filesystems",
     "network.dns_servers",
-    # Можно добавить: "user.groups", "network.routes" и т.д.
+    # Can add: "user.groups", "network.routes", etc.
 }
 
 
 def should_be_array(full_key: str, value: str) -> bool:
-    """Определяет, нужно ли превратить значение в список."""
+    """Determines whether the value should be converted to a list."""
     if full_key in ARRAY_KEYS:
         return True
-    # Эвристика: если значение содержит запятую и не выглядит как IP@iface
+    # Heuristic: if value contains comma and doesn't look like IP@iface
     if "," in value and not re.search(r"\d+\.\d+\.\d+\.\d+@", value):
-        # Но не для всего: например, os.name может содержать запятую (редко)
-        # Поэтому ограничим эвристику только "безопасными" префиксами
+        # But not for everything: e.g., os.name might contain comma (rarely)
+        # So limit heuristic to "safe" prefixes only
         if full_key.startswith(("storage.", "network.", "user.", "system.")):
             return True
     return False
 
 
 def parse_value(full_key: str, value: str):
-    """Преобразует строку в str, list или оставляет как есть."""
+    """Converts string to str, list, or leaves as is."""
     if should_be_array(full_key, value):
-        # Разделяем по запятой и убираем пробелы
+        # Split by comma and remove spaces
         parts = [part.strip() for part in value.split(",") if part.strip()]
-        return parts if parts else value  # если пусто — оставляем строку
+        return parts if parts else value  # if empty - leave as string
     return value
 
 
@@ -51,7 +51,7 @@ def parse_facts(lines):
         else:
             result[key] = value
 
-    # Слияние групп
+    # Merge groups
     for prefix, subdict in groups.items():
         if prefix in result and isinstance(result[prefix], dict):
             result[prefix].update(subdict)
@@ -70,7 +70,7 @@ def main():
 
     facts = parse_facts(lines)
 
-    # Вывод в JSON (поддерживает списки)
+    # Output to JSON (supports lists)
     print(json.dumps(facts, indent=2, ensure_ascii=False))
 
 
