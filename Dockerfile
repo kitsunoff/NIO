@@ -42,15 +42,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only essential runtime files
-COPY --chown=operator_user:operator_group main.py .
-COPY --chown=operator_user:operator_group machine_handlers.py .
-COPY --chown=operator_user:operator_group nixosconfiguration_handlers.py .
-COPY --chown=operator_user:operator_group clients.py .
-COPY --chown=operator_user:operator_group utils.py .
-COPY --chown=operator_user:operator_group events.py .
-COPY --chown=operator_user:operator_group scripts/ ./scripts/
-COPY --chown=operator_user:operator_group crds/ ./crds/
+COPY main.py .
+COPY machine_handlers.py .
+COPY nixosconfiguration_handlers.py .
+COPY clients.py .
+COPY utils.py .
+COPY events.py .
+COPY scripts/ ./scripts/
+COPY crds/ ./crds/
 
-USER operator_user
 ENV KUBECONFIG=/app/.kube/config PYTHONUNBUFFERED=1 PYTHONPATH=/app
 CMD ["python", "main.py"]
