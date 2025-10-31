@@ -2,17 +2,17 @@
 
 import kopf
 import logging
+import os
 
 from machine_handlers import check_machine_discoverable, scan_machine_hardware
 from nixosconfiguration_handlers import reconcile_nixos_configuration
 from clients import update_machine_status, get_machine
-import os
 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-print("starting")
+logger.info("NixOS Infrastructure Operator starting")
 
 # --- Add Nix path to PATH ---
 nix_bin_path = "/nix/var/nix/profiles/default/bin"
@@ -25,13 +25,13 @@ if nix_bin_path not in current_path:
 # Machine handlers
 @kopf.on.create("nio.homystack.com", "v1alpha1", "machines")
 async def on_machine_create(body, spec, name, namespace, **kwargs):
-    """Обработчик создания Machine"""
+    """Handler for Machine resource creation"""
     logger.info(f"Creating Machine: {name}")
 
-    # Проверка доступности машины с передачей body для событий
+    # Check machine availability with body for events
     is_discoverable = await check_machine_discoverable(spec, body, name, namespace)
 
-    # Установка начального статуса
+    # Set initial status
     await update_machine_status(
         name, namespace, {"discoverable": is_discoverable, "hasConfiguration": False}
     )
@@ -39,34 +39,32 @@ async def on_machine_create(body, spec, name, namespace, **kwargs):
 
 @kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=60.0)
 async def check_machine_discoverability(body, spec, name, namespace, **kwargs):
-    """Периодическая проверка доступности машин"""
+    """Periodic machine availability check"""
     logger.debug(f"Checking discoverability for machine: {name}")
 
-    # Проверка доступности машины с передачей body для событий
+    # Check machine availability with body for events
     is_discoverable = await check_machine_discoverable(spec, body, name, namespace)
 
-    # Обновление статуса
+    # Update status
     await update_machine_status(name, namespace, {"discoverable": is_discoverable})
 
 
-@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=300.0)  # Каждые 5 минут
+@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=300.0)  # Every 5 minutes
 async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwargs):
-    """Периодическое сканирование железа машин"""
+    """Periodic hardware scanning for machines"""
     logger.debug(f"Scanning hardware for machine: {name}")
 
-    # Проверяем доступность машины перед сканированием
+    # Check machine availability before scanning
     is_discoverable = await check_machine_discoverable(spec, body, name, namespace)
 
     if not is_discoverable:
         logger.warning(f"Machine {name} is not discoverable, skipping hardware scan")
         return
 
-    # Сканируем железо
+    # Scan hardware
     hardware_facts = await scan_machine_hardware(spec, body, name, namespace)
 
-    # Обновляем статус с фактами о железе
-    from datetime import datetime
-
+    # Update status with hardware facts
     await update_machine_status(
         name,
         namespace,
@@ -83,7 +81,7 @@ async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwar
 @kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=120)
 async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
-    """Унифицированный обработчик для всех операций с NixosConfiguration"""
+    """Unified handler for all NixosConfiguration operations"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 

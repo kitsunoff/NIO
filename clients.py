@@ -15,9 +15,9 @@ def setup_kubernetes_client():
     expanded_kubeconfig = os.path.expanduser(kubeconfig_path)
     kubeconfig_file = Path(expanded_kubeconfig)
 
-    print(f"Attempting to connect to Kubernetes")
-    print(f"KUBECONFIG variable: {kubeconfig_path}")
-    print(f"Expanded kubeconfig path: {expanded_kubeconfig}")
+    logger.info(f"Attempting to connect to Kubernetes")
+    logger.info(f"KUBECONFIG variable: {kubeconfig_path}")
+    logger.info(f"Expanded kubeconfig path: {expanded_kubeconfig}")
 
     # Check if file exists
     if kubeconfig_file.exists():
@@ -32,12 +32,12 @@ def setup_kubernetes_client():
         # Try to load kubeconfig
         try:
             kubernetes.config.load_kube_config(config_file=expanded_kubeconfig)
-            logger.info("✅ Successfully loaded kubeconfig")
+            logger.info("Successfully loaded kubeconfig")
             return
         except kubernetes.config.ConfigException as e:
-            logger.warning(f"❌ Failed to load kubeconfig: {e}")
+            logger.warning(f"Failed to load kubeconfig: {e}")
         except Exception as e:
-            logger.error(f"❗ Unexpected error loading kubeconfig: {e}", exc_info=True)
+            logger.error(f"Unexpected error loading kubeconfig: {e}", exc_info=True)
     else:
         logger.warning(f"Kubeconfig file NOT found: {kubeconfig_file}")
 
@@ -51,16 +51,16 @@ def setup_kubernetes_client():
     logger.info(f"KUBERNETES_SERVICE_PORT: {port}")
 
     if not host or not port:
-        logger.error("❌ KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT variables not set — in-cluster config impossible")
+        logger.error("KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT variables not set - in-cluster config impossible")
 
     try:
         kubernetes.config.load_incluster_config()
-        logger.info("✅ Successfully loaded in-cluster config")
+        logger.info("Successfully loaded in-cluster config")
     except kubernetes.config.ConfigException as e:
-        logger.error(f"❌ In-cluster connection error: {e}")
+        logger.error(f"In-cluster connection error: {e}")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"❗ Critical error during in-cluster connection: {e}", exc_info=True)
+        logger.error(f"Critical error during in-cluster connection: {e}", exc_info=True)
         sys.exit(1)
 
 # Call initialization
@@ -103,12 +103,9 @@ async def update_machine_status(
                 name=machine_name,
                 body=body,
             )
-        else:
-            # For creating status
-            pass
 
     except Exception as e:
-        logger.error(f"Failed to update machine status: {e}")
+        logger.error(f"Failed to update machine status: {e}", exc_info=True)
         raise
 
 
@@ -129,7 +126,7 @@ async def update_configuration_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to update configuration status: {e}")
+        logger.error(f"Failed to update configuration status: {e}", exc_info=True)
         raise
 
 

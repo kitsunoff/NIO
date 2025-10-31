@@ -3,14 +3,14 @@
 import logging
 import shutil
 import asyncio
-from datetime import datetime
 import tempfile
 import kopf
 import os
 import json
 import hashlib
-from typing import Dict, Optional
 import subprocess
+from datetime import datetime
+from typing import Dict, Optional
 
 from machine_handlers import check_machine_discoverable
 from clients import (
@@ -43,7 +43,7 @@ async def inject_additional_files(
     config_subdir = config_spec.get("configurationSubdir", "")
     base_path = os.path.join(repo_path, config_subdir) if config_subdir else repo_path
 
-    injected_files = []  # 👈 Store paths of injected files
+    injected_files = []  # Store paths of injected files
 
     for file_spec in config_spec["additionalFiles"]:
         file_path = os.path.join(base_path, file_spec["path"])
@@ -60,7 +60,7 @@ async def inject_additional_files(
             with open(file_path, "w") as f:
                 f.write(content)
             logger.info(f"Injected inline file: {file_spec['path']}")
-            injected_files.append(file_path)  # 👈 Add to list
+            injected_files.append(file_path)
 
         elif value_type == "SecretRef":
             secret_ref = file_spec.get("secretRef", {})
@@ -80,7 +80,7 @@ async def inject_additional_files(
                     logger.info(
                         f"Injected secret file: {file_spec['path']} from secret {secret_name}"
                     )
-                    injected_files.append(file_path)  # 👈 Add to list
+                    injected_files.append(file_path)
                 else:
                     logger.warning(
                         f"Empty secret {secret_name} for file {file_spec['path']}"
@@ -101,9 +101,9 @@ async def inject_additional_files(
             with open(file_path, "w") as f:
                 f.write(content)
             logger.info(f"Generated NixosFacter file: {file_spec['path']}")
-            injected_files.append(file_path)  # 👈 Add to list
+            injected_files.append(file_path)
 
-    # 👇 ADD FILES TO GIT INDEX WITHOUT COMMIT
+    # Add files to git index without commit
     if injected_files:
         try:
             # Add each file to git index with --intend-to-add
@@ -170,7 +170,9 @@ def get_additional_files_hash(
             if machine_spec:
                 file_info["nixosFacter"] = generate_nixos_facts(machine_spec)
 
-    content_str = json.dumps(file_info, sort_keys=True)
+        files_content.append(file_info)
+
+    content_str = json.dumps(files_content, sort_keys=True)
     return hashlib.sha256(content_str.encode("utf-8")).hexdigest()
 
 
@@ -295,12 +297,21 @@ async def apply_nixos_configuration(
                     if decoded:
                         log_func(decoded)
 
-        # Start reading stdout and stderr in parallel
-        await asyncio.gather(
-            read_stream(process.stdout, logger.info),
-            read_stream(process.stderr, logger.error),
-            process.wait(),  # wait for process completion
-        )
+        # Start reading stdout and stderr in parallel with timeout (60 minutes for long operations)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    read_stream(process.stdout, logger.info),
+                    read_stream(process.stderr, logger.error),
+                    process.wait(),  # wait for process completion
+                ),
+                timeout=3600  # 60 minutes timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Command timed out after 60 minutes: {cmd}")
+            process.kill()
+            await process.wait()
+            return False
 
         if process.returncode != 0:
             logger.error(f"Command failed (code {process.returncode})")

@@ -48,6 +48,7 @@ COPY nixosconfiguration_handlers.py .
 COPY clients.py .
 COPY utils.py .
 COPY events.py .
+COPY ssh_utils.py .
 COPY scripts/ ./scripts/
 COPY crds/ ./crds/
 
