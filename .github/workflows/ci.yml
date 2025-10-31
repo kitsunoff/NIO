@@ -78,8 +78,8 @@ jobs:
 
   #   - name: Deploy to test cluster
   #     run: |
-  #       # Здесь можно добавить команды для деплоя в тестовый кластер
-  #       # Например, с использованием kind или minikube
+  #       # Add commands here for deploying to test cluster
+  #       # For example, using kind or minikube
   #       echo "Deploying to test environment..."
   #       # kubectl apply -f crds/
   #       # kubectl apply -f deployment.yaml

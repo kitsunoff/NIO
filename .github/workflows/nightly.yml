@@ -2,9 +2,9 @@ name: Nightly Build
 
 on:
   schedule:
-    # Запускается каждый день в 2:00 UTC
+    # Runs every day at 2:00 UTC
     - cron: '0 2 * * *'
-  workflow_dispatch:  # Позволяет запускать вручную
+  workflow_dispatch:  # Allows manual triggering
 
 env:
   REGISTRY: ghcr.io
@@ -48,7 +48,7 @@ jobs:
 
   #   - name: Run integration tests
   #     run: |
-  #       # Здесь можно добавить интеграционные тесты с Kind
+  #       # Add integration tests with Kind here
   #       echo "Running integration tests..."
   #       # kind create cluster --config kind-config.yaml
   #       # kubectl apply -f crds/
@@ -87,18 +87,18 @@ jobs:
   notify:
     name: Notify Status
     runs-on: ubuntu-latest
-    needs: [build-dockerfiles, integration-tests, security-scan]
+    needs: [build-dockerfiles, security-scan]
     if: always()
 
     steps:
     - name: Notify on success
-      if: needs.build-dockerfiles.result == 'success' && needs.integration-tests.result == 'success'
+      if: needs.build-dockerfiles.result == 'success' && needs.security-scan.result == 'success'
       run: |
         echo "Nightly build completed successfully!"
-        # Здесь можно добавить уведомления (Slack, Discord, etc.)
+        # Add notifications here (Slack, Discord, etc.)
 
     - name: Notify on failure
-      if: needs.build-dockerfiles.result == 'failure' || needs.integration-tests.result == 'failure'
+      if: needs.build-dockerfiles.result == 'failure' || needs.security-scan.result == 'failure'
       run: |
         echo "Nightly build failed! Check the logs."
-        # Здесь можно добавить уведомления об ошибках
+        # Add failure notifications here
