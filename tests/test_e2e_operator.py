@@ -29,20 +29,33 @@ class MockSSHServer:
         self.port = port
         self.server = None
         self.host_key = None
+        self.client_key = None
         self.commands_executed = []
 
     async def start(self):
         """Start the mock SSH server."""
-        # Generate host key
+        # Generate host key and client key for testing
         self.host_key = asyncssh.generate_private_key("ssh-rsa")
+        self.client_key = asyncssh.generate_private_key("ssh-rsa")
 
-        # Start server
+        # Write authorized key to temp file
+        self.temp_dir = tempfile.mkdtemp(prefix="mock-ssh-")
+        authorized_keys_file = os.path.join(self.temp_dir, "authorized_keys")
+        with open(authorized_keys_file, "w") as f:
+            f.write(self.client_key.export_public_key().decode())
+
+        # Start server with client's public key authorized
         self.server = await asyncssh.listen(
             "localhost",
             self.port,
             server_host_keys=[self.host_key],
+            authorized_client_keys=authorized_keys_file,
             process_factory=self.handle_client,
         )
+
+    def get_client_key(self):
+        """Get the client private key for connections."""
+        return self.client_key
 
     async def handle_client(self, process):
         """Handle client commands."""
@@ -70,6 +83,10 @@ class MockSSHServer:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+        # Clean up temp directory
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            import shutil
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def get_executed_commands(self):
         """Get list of executed commands."""
@@ -106,15 +123,12 @@ class TestE2EBasicWorkflow:
     @pytest.mark.asyncio
     async def test_ssh_connection_mock(self, mock_ssh_server):
         """Test SSH connection to mock server."""
-        # Generate client key
-        client_key = asyncssh.generate_private_key("ssh-rsa")
-
-        # Connect to mock server
+        # Connect to mock server with authorized key
         async with asyncssh.connect(
             "localhost",
             port=2222,
             username="test",
-            client_keys=[client_key],
+            client_keys=[mock_ssh_server.get_client_key()],
             known_hosts=None,  # Accept any host key for testing
         ) as conn:
             # Execute test command
@@ -125,13 +139,11 @@ class TestE2EBasicWorkflow:
     @pytest.mark.asyncio
     async def test_nixos_rebuild_mock(self, mock_ssh_server):
         """Test NixOS rebuild command execution."""
-        client_key = asyncssh.generate_private_key("ssh-rsa")
-
         async with asyncssh.connect(
             "localhost",
             port=2222,
             username="test",
-            client_keys=[client_key],
+            client_keys=[mock_ssh_server.get_client_key()],
             known_hosts=None,
         ) as conn:
             # Execute nixos-rebuild command
@@ -176,12 +188,11 @@ class TestE2EMachineDiscovery:
         # assert is_discoverable
 
         # For now, just verify mock server is running
-        client_key = asyncssh.generate_private_key("ssh-rsa")
         async with asyncssh.connect(
             "localhost",
             port=2223,
             username="test",
-            client_keys=[client_key],
+            client_keys=[mock_ssh_server.get_client_key()],
             known_hosts=None,
         ) as conn:
             result = await conn.run("echo test")
@@ -216,13 +227,11 @@ class TestE2EHardwareScanning:
     @pytest.mark.asyncio
     async def test_hardware_scan_execution(self, mock_ssh_server_with_hardware):
         """Test hardware scanning returns data."""
-        client_key = asyncssh.generate_private_key("ssh-rsa")
-
         async with asyncssh.connect(
             "localhost",
             port=2224,
             username="test",
-            client_keys=[client_key],
+            client_keys=[mock_ssh_server_with_hardware.get_client_key()],
             known_hosts=None,
         ) as conn:
             # Execute hardware scan
