@@ -11,6 +11,7 @@ from typing import Dict, Optional, Tuple, List, Any
 from datetime import datetime
 
 from clients import get_secret_data
+from input_validation import validate_git_url, ValidationError
 
 
 def get_workdir_path(
@@ -120,6 +121,12 @@ async def clone_git_repo(
     target_path: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Clone Git repository and return path and commit hash"""
+    # SECURITY: Validate Git URL to prevent command injection
+    try:
+        git_url = validate_git_url(git_url)
+    except ValidationError as e:
+        raise ValueError(f"Invalid Git URL: {e}")
+
     if target_path:
         work_dir = target_path
         # If directory already exists, use it

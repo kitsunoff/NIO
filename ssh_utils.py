@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple, Any
 from clients import get_secret_data
 from events import emit_missing_credentials_event
 from known_hosts_manager import get_known_hosts_manager
+from input_validation import validate_hostname, validate_ssh_username, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +29,20 @@ async def establish_ssh_connection(
         and temp_key_path is the path to temporary SSH key file (if created, None otherwise).
         Returns (None, None) if connection fails.
     """
+    # SECURITY: Validate inputs to prevent command injection
+    try:
+        hostname = validate_hostname(machine_spec["hostname"])
+        username = validate_ssh_username(machine_spec.get("sshUser", "root"))
+    except ValidationError as e:
+        logger.error(f"Input validation failed: {e}")
+        return None, None
+
     # Get known_hosts manager for host verification
     known_hosts_mgr = get_known_hosts_manager()
 
     ssh_config = {
-        "host": machine_spec["hostname"],
-        "username": machine_spec.get("sshUser", "root"),
+        "host": hostname,
+        "username": username,
         "known_hosts": known_hosts_mgr.get_known_hosts_path(),  # Enable host verification
     }
 
@@ -48,15 +57,22 @@ async def establish_ssh_connection(
                 machine_spec["sshKeySecretRef"].get("namespace", "default"),
             )
             if "ssh-privatekey" in secret_data and secret_data["ssh-privatekey"]:
-                # Create temporary file for SSH key
+                # SECURITY: Create temporary file in memory-backed tmpfs (/dev/shm)
+                # This prevents keys from being written to disk and persisting after crashes
+                shm_dir = "/dev/shm/nio-ssh-keys"
+                os.makedirs(shm_dir, mode=0o700, exist_ok=True)
+
                 with tempfile.NamedTemporaryFile(
-                    mode="w", delete=False, suffix="_ssh_key"
+                    mode="w",
+                    delete=False,
+                    suffix="_ssh_key",
+                    dir=shm_dir,  # Use memory-backed tmpfs
                 ) as temp_file:
                     temp_file.write(secret_data["ssh-privatekey"])
                     ssh_key_temp_file = temp_file.name
 
-                # Set correct permissions for SSH key
-                os.chmod(ssh_key_temp_file, 0o600)
+                # Set correct permissions for SSH key (owner read-only)
+                os.chmod(ssh_key_temp_file, 0o400)
 
                 ssh_config["client_keys"] = [ssh_key_temp_file]
                 has_credentials = True

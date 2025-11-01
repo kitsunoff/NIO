@@ -214,13 +214,18 @@ async def apply_nixos_configuration(
                 )
                 return False
 
-            # Save to temporary file
+            # SECURITY: Save to temporary file in memory-backed tmpfs
+            # This prevents keys from persisting on disk after crashes
+            shm_dir = "/dev/shm/nio-nix-keys"
+            os.makedirs(shm_dir, mode=0o700, exist_ok=True)
+
             with tempfile.NamedTemporaryFile(
-                mode="w", prefix="ssh_key_", delete=False
+                mode="w", prefix="ssh_key_", delete=False, dir=shm_dir
             ) as tmp:
                 tmp.write(ssh_private_key.strip() + "\n")
                 tmp_key_path = tmp.name
-            os.chmod(tmp_key_path, 0o600)
+            # Owner read-only for additional security
+            os.chmod(tmp_key_path, 0o400)
 
             # Form NIX_SSHOPTS for nixos-rebuild (host keys verified via known_hosts)
             nix_sshopts = f"-i {tmp_key_path}"
