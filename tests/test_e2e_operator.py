@@ -21,6 +21,25 @@ from pathlib import Path
 pytestmark = pytest.mark.e2e
 
 
+class MockSSHServerAuth(asyncssh.SSHServer):
+    """SSH Server auth handler."""
+
+    def __init__(self, test_password="test123"):
+        self.test_password = test_password
+
+    def begin_auth(self, username):
+        """Begin authentication for a user."""
+        return True
+
+    def password_auth_supported(self):
+        """Enable password authentication."""
+        return True
+
+    def validate_password(self, username, password):
+        """Validate password."""
+        return password == self.test_password
+
+
 class MockSSHServer:
     """Mock SSH server for E2E testing."""
 
@@ -29,33 +48,26 @@ class MockSSHServer:
         self.port = port
         self.server = None
         self.host_key = None
-        self.client_key = None
         self.commands_executed = []
+        self.test_password = "test123"
 
     async def start(self):
         """Start the mock SSH server."""
-        # Generate host key and client key for testing
+        # Generate host key
         self.host_key = asyncssh.generate_private_key("ssh-rsa")
-        self.client_key = asyncssh.generate_private_key("ssh-rsa")
 
-        # Write authorized key to temp file
-        self.temp_dir = tempfile.mkdtemp(prefix="mock-ssh-")
-        authorized_keys_file = os.path.join(self.temp_dir, "authorized_keys")
-        with open(authorized_keys_file, "w") as f:
-            f.write(self.client_key.export_public_key().decode())
-
-        # Start server with client's public key authorized
+        # Start server with password auth
         self.server = await asyncssh.listen(
             "localhost",
             self.port,
             server_host_keys=[self.host_key],
-            authorized_client_keys=authorized_keys_file,
+            server_factory=lambda: MockSSHServerAuth(self.test_password),
             process_factory=self.handle_client,
         )
 
-    def get_client_key(self):
-        """Get the client private key for connections."""
-        return self.client_key
+    def get_password(self):
+        """Get the test password for connections."""
+        return self.test_password
 
     async def handle_client(self, process):
         """Handle client commands."""
@@ -83,10 +95,6 @@ class MockSSHServer:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
-        # Clean up temp directory
-        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
-            import shutil
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def get_executed_commands(self):
         """Get list of executed commands."""
@@ -96,7 +104,7 @@ class MockSSHServer:
 class TestE2EBasicWorkflow:
     """E2E tests for basic operator workflow."""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     async def mock_ssh_server(self):
         """Start mock SSH server for tests."""
         server = MockSSHServer(port=2222)
@@ -123,12 +131,12 @@ class TestE2EBasicWorkflow:
     @pytest.mark.asyncio
     async def test_ssh_connection_mock(self, mock_ssh_server):
         """Test SSH connection to mock server."""
-        # Connect to mock server with authorized key
+        # Connect to mock server with password
         async with asyncssh.connect(
             "localhost",
             port=2222,
             username="test",
-            client_keys=[mock_ssh_server.get_client_key()],
+            password=mock_ssh_server.get_password(),
             known_hosts=None,  # Accept any host key for testing
         ) as conn:
             # Execute test command
@@ -143,7 +151,7 @@ class TestE2EBasicWorkflow:
             "localhost",
             port=2222,
             username="test",
-            client_keys=[mock_ssh_server.get_client_key()],
+            password=mock_ssh_server.get_password(),
             known_hosts=None,
         ) as conn:
             # Execute nixos-rebuild command
@@ -192,7 +200,7 @@ class TestE2EMachineDiscovery:
             "localhost",
             port=2223,
             username="test",
-            client_keys=[mock_ssh_server.get_client_key()],
+            password=mock_ssh_server.get_password(),
             known_hosts=None,
         ) as conn:
             result = await conn.run("echo test")
@@ -219,7 +227,7 @@ class TestE2EHardwareScanning:
                 else:
                     await super().handle_client(process)
 
-        server = HardwareSSHServer(port=2224)
+        server = HardwareSSHServer(port=2225)
         await server.start()
         yield server
         await server.stop()
@@ -229,9 +237,9 @@ class TestE2EHardwareScanning:
         """Test hardware scanning returns data."""
         async with asyncssh.connect(
             "localhost",
-            port=2224,
+            port=2225,
             username="test",
-            client_keys=[mock_ssh_server_with_hardware.get_client_key()],
+            password=mock_ssh_server_with_hardware.get_password(),
             known_hosts=None,
         ) as conn:
             # Execute hardware scan
