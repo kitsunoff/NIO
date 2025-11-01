@@ -17,9 +17,9 @@ if ! command -v kubectl &> /dev/null; then
     exit 1
 fi
 
-# Проверка наличия Docker
-if ! command -v docker &> /dev/null; then
-    echo "❌ Docker не установлен. Установите Docker: https://docs.docker.com/get-docker/"
+# Проверка наличия Podman
+if ! command -v podman &> /dev/null; then
+    echo "❌ Podman не установлен. Установите Podman: https://podman.io/getting-started/installation"
     exit 1
 fi
 
@@ -61,13 +61,13 @@ kubectl create namespace nixos-operator-system --dry-run=client -o yaml | kubect
 echo "📋 Применение Custom Resource Definitions..."
 kubectl apply -f crds/
 
-# Сборка Docker образа оператора
-echo "🐳 Сборка Docker образа оператора..."
-docker build -t nixos-operator:latest .
+# Сборка образа оператора
+echo "🐳 Сборка образа оператора..."
+podman build -t nixos-operator:latest .
 
 # Загрузка образа в kind кластер
 echo "📤 Загрузка образа в kind кластер..."
-kind load docker-image nixos-operator:latest --name "$CLUSTER_NAME"
+podman save nixos-operator:latest | kind load image-archive /dev/stdin --name "$CLUSTER_NAME"
 
 # Применение deployment
 echo "🚀 Запуск оператора..."

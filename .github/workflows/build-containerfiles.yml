@@ -30,11 +30,11 @@ jobs:
       matrix:
         containerfile:
           - Containerfile
-          - Dockerfile.ipxe
+          - Containerfile.ipxe
         include:
           - containerfile: Containerfile
             image_postfix: ""
-          - containerfile: Dockerfile.ipxe
+          - containerfile: Containerfile.ipxe
             image_postfix: "-ipxe"
 
     permissions:

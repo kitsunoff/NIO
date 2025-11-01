@@ -11,9 +11,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-dockerfiles:
-    name: Build All Docker Images for Nightly
-    uses: ./.github/workflows/build-dockerfiles.yml
+  build-containerfiles:
+    name: Build All Container Images for Nightly
+    uses: ./.github/workflows/build-containerfiles.yml
     with:
       tag_pattern: |
         nightly
@@ -87,18 +87,18 @@ jobs:
   notify:
     name: Notify Status
     runs-on: ubuntu-latest
-    needs: [build-dockerfiles, security-scan]
+    needs: [build-containerfiles, security-scan]
     if: always()
 
     steps:
     - name: Notify on success
-      if: needs.build-dockerfiles.result == 'success' && needs.security-scan.result == 'success'
+      if: needs.build-containerfiles.result == 'success' && needs.security-scan.result == 'success'
       run: |
         echo "Nightly build completed successfully!"
         # Add notifications here (Slack, Discord, etc.)
 
     - name: Notify on failure
-      if: needs.build-dockerfiles.result == 'failure' || needs.security-scan.result == 'failure'
+      if: needs.build-containerfiles.result == 'failure' || needs.security-scan.result == 'failure'
       run: |
         echo "Nightly build failed! Check the logs."
         # Add failure notifications here

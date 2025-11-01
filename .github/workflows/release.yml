@@ -12,9 +12,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-dockerfiles:
-    name: Build All Docker Images for Release
-    uses: ./.github/workflows/build-dockerfiles.yml
+  build-containerfiles:
+    name: Build All Container Images for Release
+    uses: ./.github/workflows/build-containerfiles.yml
     with:
       tag_pattern: |
         type=semver,pattern={{version}}
@@ -26,7 +26,7 @@ jobs:
   generate-manifests:
     name: Generate Release Manifests
     runs-on: ubuntu-latest
-    needs: build-dockerfiles
+    needs: build-containerfiles
     permissions:
       contents: read
 

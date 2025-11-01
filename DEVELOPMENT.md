@@ -2,6 +2,8 @@
 
 This document describes tools and processes for developing and debugging the nixos-operator.
 
+> **Note on Container Tools:** This project uses Podman by default for building OCI images, but you can use any OCI-compatible tool (Docker, Buildah, etc.). All `podman` commands can be replaced with `docker` if preferred. The `docker-compose.yml` file works with both `docker compose` and `podman compose`.
+
 ## 📁 Created Files
 
 ### 1. Kind Cluster Setup Script (`kind-setup.sh`)
@@ -13,7 +15,7 @@ chmod +x kind-setup.sh
 ./kind-setup.sh
 ```
 
-### 2. Docker Compose for Development (`docker-compose.yml`)
+### 2. Compose for Development (`docker-compose.yml`)
 Starts a complete development environment with Kind cluster and operator in debug mode.
 
 **Usage:**
@@ -40,9 +42,9 @@ docker-compose logs -f nixos-operator-dev
 3. Select "NixOS Operator: Local Debug"
 4. Click "Start Debugging"
 
-### Remote Debugging in Docker
+### Remote Debugging in Container
 1. Start docker-compose: `docker-compose up -d`
-2. In VS Code select "NixOS Operator: Remote Debug (Docker)"
+2. In VS Code select "NixOS Operator: Remote Debug (Container)"
 3. Click "Start Debugging"
 
 ### Debugging with Kind Cluster
@@ -61,7 +63,7 @@ kubectl apply -f examples/machine-example.yaml
 kubectl apply -f examples/nixosconfiguration-example.yaml
 ```
 
-### Option 2: Development with Docker Compose
+### Option 2: Development with Compose
 ```bash
 # Start complete development environment
 docker-compose up -d
@@ -106,8 +108,8 @@ kubectl describe nixosconfiguration <name>
 Available tasks (Ctrl+Shift+P → "Tasks: Run Task"):
 - `setup-k8s-environment` - configure Kubernetes environment
 - `setup-kind-cluster` - create Kind cluster
-- `start-docker-compose-dev` - start Docker Compose
-- `build-operator-image` - build Docker image
+- `start-compose-dev` - start Compose
+- `build-operator-image` - build container image
 - `install-dependencies` - install Python dependencies
 
 ## 🔍 Monitoring
@@ -128,13 +130,13 @@ kubectl logs -f deployment/nixos-operator -n nixos-operator-system | grep -E "(E
 ## 🛠️ Troubleshooting
 
 ### Issue: Kind Cluster Not Creating
-**Solution:** Ensure Docker is running and you have permissions to create containers.
+**Solution:** Ensure your container runtime (Podman/Docker) is running and you have permissions to create containers.
 
 ### Issue: Operator Not Connecting to Kubernetes
 **Solution:** Check KUBECONFIG configuration and ensure Kind cluster is running.
 
 ### Issue: Debugger Not Connecting
-**Solution:** Ensure port 5678 is not occupied and Docker Compose is running.
+**Solution:** Ensure port 5678 is not occupied and Compose is running.
 
 ### Issue: CRDs Not Applying
 **Solution:** Check access permissions and ensure you're in the correct namespace.
@@ -193,8 +195,8 @@ kubectl logs -f deployment/nixos-operator -n nixos-operator-system
 
 ### 4. Build and Deploy
 ```bash
-# Build Docker image
-docker build -t nixos-operator:latest .
+# Build container image (use podman or docker)
+podman build -t nixos-operator:latest .
 
 # Update deployment
 kubectl rollout restart deployment/nixos-operator -n nixos-operator-system
@@ -235,8 +237,8 @@ pip install -r requirements.txt
 
 ### Production Deployment
 ```bash
-# Build production image
-docker build -t nixos-operator:latest .
+# Build production image (use podman or docker)
+podman build -t nixos-operator:latest .
 
 # Apply to production cluster
 kubectl apply -f crds/
@@ -245,8 +247,8 @@ kubectl apply -f deployment.yaml
 
 ### Development Deployment
 ```bash
-# Use development setup
-docker-compose up -d
+# Use development setup (use podman compose or docker compose)
+podman compose up -d
 ```
 
 ## 📚 Additional Resources

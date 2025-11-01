@@ -25,7 +25,7 @@ services:
   nio-ipxe:
     build:
       context: .
-      dockerfile: Dockerfile.ipxe
+      dockerfile: Containerfile.ipxe
     container_name: ipxe-server
     network_mode: host
     volumes:
