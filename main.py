@@ -11,6 +11,7 @@ from nixosconfiguration_handlers import reconcile_nixos_configuration
 from clients import update_machine_status, get_machine
 from metrics import init_metrics
 from prometheus_client import start_http_server
+from health import run_health_server, HealthCheckServer
 import config
 
 
@@ -21,6 +22,9 @@ logger.info("NixOS Infrastructure Operator starting")
 
 # Global flag for graceful shutdown
 _shutdown_event = asyncio.Event()
+
+# Global health check server instance
+_health_server: HealthCheckServer = None
 
 # --- Add Nix path to PATH ---
 nix_bin_path = "/nix/var/nix/profiles/default/bin"
@@ -94,7 +98,9 @@ async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwa
 
 
 @kopf.on.startup()
-def configure(settings: kopf.OperatorSettings, **_):
+async def configure(settings: kopf.OperatorSettings, **_):
+    global _health_server
+
     settings.posting.level = logging.WARNING
 
     # Initialize Prometheus metrics
@@ -103,6 +109,15 @@ def configure(settings: kopf.OperatorSettings, **_):
     # Start Prometheus metrics server
     start_http_server(config.METRICS_PORT)
     logger.info(f"Prometheus metrics server started on port {config.METRICS_PORT}")
+
+    # Start health check server
+    _health_server = await run_health_server(
+        host="0.0.0.0",
+        port=config.HEALTH_CHECK_PORT
+    )
+    # Mark as ready after initialization
+    _health_server.mark_ready()
+    logger.info(f"Health check server started on port {config.HEALTH_CHECK_PORT}")
 
     # Log configuration summary
     logger.info(config.get_config_summary())
@@ -118,9 +133,21 @@ def handle_shutdown_signal(signum, frame):
 @kopf.on.cleanup()
 async def cleanup_handler(**kwargs):
     """Cleanup handler called on operator shutdown"""
+    global _health_server
+
     logger.info("Operator cleanup: draining active reconciliations...")
+
+    # Mark as not ready to stop receiving traffic
+    if _health_server:
+        _health_server.mark_not_ready()
+
     # Give active reconciliations time to complete
     await asyncio.sleep(5)
+
+    # Stop health check server
+    if _health_server:
+        await _health_server.stop()
+
     logger.info("Operator cleanup complete")
 
 

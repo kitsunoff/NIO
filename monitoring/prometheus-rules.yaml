@@ -1,0 +1,258 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nixos-operator-alerts
+  namespace: nixos-operator-system
+  labels:
+    app: nixos-operator
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: nixos-operator.rules
+    interval: 30s
+    rules:
+    # Operator health alerts
+    - alert: NixOSOperatorDown
+      expr: up{job="nixos-operator-metrics"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: operator
+      annotations:
+        summary: "NixOS Operator is down"
+        description: "NixOS Infrastructure Operator has been down for more than 5 minutes. No reconciliation is happening."
+        runbook_url: "https://github.com/homystack/NIO/blob/main/docs/runbooks/operator-down.md"
+
+    - alert: NixOSOperatorNotReady
+      expr: |
+        nio_operator_info{version!=""} == 0
+        or absent(nio_operator_info)
+      for: 10m
+      labels:
+        severity: warning
+        component: operator
+      annotations:
+        summary: "NixOS Operator is not ready"
+        description: "NixOS Infrastructure Operator has not reported ready status for 10 minutes."
+
+    # Reconciliation alerts
+    - alert: HighReconciliationFailureRate
+      expr: |
+        (
+          sum(rate(nio_configurations_failed_total[5m]))
+          /
+          (sum(rate(nio_configurations_applied_total[5m])) + sum(rate(nio_configurations_failed_total[5m])))
+        ) > 0.5
+      for: 15m
+      labels:
+        severity: warning
+        component: reconciliation
+      annotations:
+        summary: "High configuration reconciliation failure rate"
+        description: "More than 50% of configuration reconciliations are failing in the last 15 minutes. Current rate: {{ $value | humanizePercentage }}."
+
+    - alert: ReconciliationStuck
+      expr: |
+        (time() - max(nio_reconcile_duration_seconds_sum) by (namespace, configuration)) > 7200
+      for: 15m
+      labels:
+        severity: critical
+        component: reconciliation
+      annotations:
+        summary: "Reconciliation appears stuck"
+        description: "Configuration {{ $labels.configuration }} in namespace {{ $labels.namespace }} hasn't completed reconciliation in over 2 hours."
+
+    - alert: SlowReconciliation
+      expr: |
+        histogram_quantile(0.95, sum(rate(nio_reconcile_duration_seconds_bucket[10m])) by (le, namespace, configuration)) > 1800
+      for: 30m
+      labels:
+        severity: warning
+        component: reconciliation
+      annotations:
+        summary: "Slow configuration reconciliation"
+        description: "P95 reconciliation duration for {{ $labels.configuration }} in {{ $labels.namespace }} is above 30 minutes: {{ $value | humanizeDuration }}."
+
+    # SSH connection alerts
+    - alert: HighSSHConnectionFailureRate
+      expr: |
+        (
+          sum(rate(nio_ssh_connections_total{result="failure"}[5m]))
+          /
+          sum(rate(nio_ssh_connections_total[5m]))
+        ) > 0.3
+      for: 10m
+      labels:
+        severity: warning
+        component: ssh
+      annotations:
+        summary: "High SSH connection failure rate"
+        description: "More than 30% of SSH connection attempts are failing. Current rate: {{ $value | humanizePercentage }}."
+
+    - alert: SSHConnectionsCompletelyFailing
+      expr: |
+        (
+          sum(rate(nio_ssh_connections_total{result="success"}[10m]))
+          ==
+          0
+        )
+        and
+        (
+          sum(rate(nio_ssh_connections_total{result="failure"}[10m]))
+          >
+          0
+        )
+      for: 15m
+      labels:
+        severity: critical
+        component: ssh
+      annotations:
+        summary: "All SSH connections failing"
+        description: "All SSH connection attempts have been failing for the past 15 minutes. Machines are unreachable."
+
+    - alert: SlowSSHConnections
+      expr: |
+        histogram_quantile(0.95, sum(rate(nio_ssh_connection_duration_seconds_bucket[10m])) by (le, machine)) > 10
+      for: 20m
+      labels:
+        severity: warning
+        component: ssh
+      annotations:
+        summary: "Slow SSH connections"
+        description: "P95 SSH connection time to {{ $labels.machine }} is above 10 seconds: {{ $value | humanizeDuration }}."
+
+    # Git operation alerts
+    - alert: HighGitCloneFailureRate
+      expr: |
+        (
+          sum(rate(nio_git_clones_total{result="failure"}[5m]))
+          /
+          sum(rate(nio_git_clones_total[5m]))
+        ) > 0.3
+      for: 15m
+      labels:
+        severity: warning
+        component: git
+      annotations:
+        summary: "High Git clone failure rate"
+        description: "More than 30% of Git clone operations are failing. Current rate: {{ $value | humanizePercentage }}. Check repository access and network connectivity."
+
+    # NixOS build alerts
+    - alert: HighNixOSBuildFailureRate
+      expr: |
+        (
+          sum(rate(nio_nixos_builds_total{result="failure"}[10m]))
+          /
+          sum(rate(nio_nixos_builds_total[10m]))
+        ) > 0.4
+      for: 20m
+      labels:
+        severity: warning
+        component: nixos-build
+      annotations:
+        summary: "High NixOS build failure rate"
+        description: "More than 40% of NixOS builds are failing. Current rate: {{ $value | humanizePercentage }}. Check configurations and build logs."
+
+    - alert: SlowNixOSBuilds
+      expr: |
+        histogram_quantile(0.95, sum(rate(nio_nixos_build_duration_seconds_bucket[15m])) by (le, machine, build_type)) > 5400
+      for: 30m
+      labels:
+        severity: info
+        component: nixos-build
+      annotations:
+        summary: "Slow NixOS builds"
+        description: "P95 NixOS build time for {{ $labels.build_type }} on {{ $labels.machine }} is above 90 minutes: {{ $value | humanizeDuration }}."
+
+    # Machine status alerts
+    - alert: MachinesNotDiscoverable
+      expr: |
+        (nio_machines_total - nio_machines_discoverable) > 0
+      for: 30m
+      labels:
+        severity: warning
+        component: machines
+      annotations:
+        summary: "Machines not discoverable"
+        description: "{{ $value }} machine(s) in namespace {{ $labels.namespace }} are not discoverable via SSH. Check network connectivity and SSH configuration."
+
+    - alert: NoMachinesWithConfiguration
+      expr: |
+        nio_machines_total > 0 and nio_machines_with_configuration == 0
+      for: 1h
+      labels:
+        severity: warning
+        component: machines
+      annotations:
+        summary: "No machines have applied configuration"
+        description: "There are {{ $value }} managed machines but none have successfully applied configuration in namespace {{ $labels.namespace }}."
+
+    # Error rate alerts
+    - alert: HighErrorRate
+      expr: |
+        sum(rate(nio_errors_total[5m])) by (component) > 1
+      for: 10m
+      labels:
+        severity: warning
+        component: errors
+      annotations:
+        summary: "High error rate in component"
+        description: "Component {{ $labels.component }} is experiencing high error rate: {{ $value | humanize }} errors/second."
+
+    - alert: HighValidationErrorRate
+      expr: |
+        sum(rate(nio_validation_errors_total[5m])) > 0.5
+      for: 15m
+      labels:
+        severity: info
+        component: validation
+      annotations:
+        summary: "High input validation error rate"
+        description: "High rate of input validation errors detected: {{ $value | humanize }} errors/second. Check CRD specifications and user inputs."
+
+    # Retry alerts
+    - alert: HighRetryExhaustionRate
+      expr: |
+        sum(rate(nio_retries_exhausted_total[10m])) by (operation) > 0.1
+      for: 15m
+      labels:
+        severity: warning
+        component: retries
+      annotations:
+        summary: "High retry exhaustion rate"
+        description: "Operation {{ $labels.operation }} is exhausting all retry attempts at a high rate: {{ $value | humanize }} exhaustions/second. Indicates persistent failures."
+
+    # Reconciliation error alerts by type
+    - alert: ReconciliationErrorsIncreasing
+      expr: |
+        sum(rate(nio_reconcile_errors_total[15m])) by (namespace, configuration, error_type) > 0.05
+      for: 20m
+      labels:
+        severity: info
+        component: reconciliation
+      annotations:
+        summary: "Increasing reconciliation errors"
+        description: "Reconciliation errors of type {{ $labels.error_type }} for {{ $labels.configuration }} in {{ $labels.namespace }} are increasing: {{ $value | humanize }} errors/second."
+
+    # Health check alerts (requires health endpoint scraping)
+    - alert: OperatorHealthCheckFailing
+      expr: |
+        probe_success{job="nixos-operator-health"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: health
+      annotations:
+        summary: "Operator health check failing"
+        description: "Health check endpoint is failing. Operator may be unhealthy or unreachable."
+
+    - alert: OperatorReadinessCheckFailing
+      expr: |
+        probe_success{job="nixos-operator-readiness"} == 0
+      for: 10m
+      labels:
+        severity: warning
+        component: health
+      annotations:
+        summary: "Operator readiness check failing"
+        description: "Readiness check endpoint is failing. Operator may not be ready to process requests."

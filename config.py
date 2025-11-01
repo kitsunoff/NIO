@@ -59,8 +59,9 @@ RETRY_INITIAL_DELAY = get_env_float("NIO_RETRY_INITIAL_DELAY", 2.0)
 RETRY_MAX_DELAY = get_env_float("NIO_RETRY_MAX_DELAY", 30.0)
 RETRY_EXPONENTIAL_BASE = get_env_float("NIO_RETRY_EXPONENTIAL_BASE", 2.0)
 
-# Metrics
+# Metrics and health checks
 METRICS_PORT = get_env_int("METRICS_PORT", 8000)
+HEALTH_CHECK_PORT = get_env_int("HEALTH_CHECK_PORT", 8080)
 
 
 def get_config_summary() -> str:
@@ -85,6 +86,7 @@ def get_config_summary() -> str:
     - Max delay: {RETRY_MAX_DELAY}s
     - Exponential base: {RETRY_EXPONENTIAL_BASE}
 
-  Metrics:
-    - Port: {METRICS_PORT}
+  Observability:
+    - Metrics port: {METRICS_PORT}
+    - Health check port: {HEALTH_CHECK_PORT}
 """
