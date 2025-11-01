@@ -92,7 +92,8 @@ kubectl get crds | grep nio.homystack.com
 ```
 
 Expected output:
-```
+
+```text
 machines.nio.homystack.com
 nixosconfigurations.nio.homystack.com
 ```
@@ -104,6 +105,7 @@ kubectl apply --filename deployment.yaml
 ```
 
 This creates:
+
 - ServiceAccount with RBAC permissions
 - Deployment with operator pod
 - Service for Prometheus metrics (port 8000)
@@ -124,7 +126,8 @@ kubectl logs --namespace nixos-operator-system deployment/nixos-operator --follo
 ```
 
 Look for these initialization messages:
-```
+
+```console
 INFO:__main__:NixOS Infrastructure Operator starting
 INFO:__main__:Prometheus metrics server started on port 8000
 INFO:__main__:Health check server started on port 8080
@@ -164,6 +167,7 @@ kubectl apply --filename monitoring/prometheus-rules.yaml
 ```
 
 This creates PrometheusRule with alerts for:
+
 - Operator health and readiness
 - High reconciliation failure rates
 - SSH connection failures
