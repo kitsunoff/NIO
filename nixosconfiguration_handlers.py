@@ -339,236 +339,100 @@ async def apply_nixos_configuration(
 async def reconcile_nixos_configuration(
     body: Dict[str, Any], spec: Dict[str, Any], name: str, namespace: str, **kwargs
 ) -> None:
-    """Main reconciliation point for NixosConfiguration"""
+    """
+    Main reconciliation point for NixosConfiguration.
+
+    Refactored into smaller, focused functions for better maintainability.
+    """
     logger.info(f"Reconciling NixosConfiguration: {name}")
 
+    # Import helper functions
+    from reconcile_helpers import (
+        check_machine_availability,
+        prepare_git_repository,
+        detect_configuration_changes,
+        apply_and_update_status,
+        cleanup_repository,
+    )
+
     try:
-        # Check deletion timestamp
         deletion_timestamp = body.get("metadata", {}).get("deletionTimestamp")
 
-        # Get associated machine
-        machine_name = spec["machineRef"]["name"]
-        machine = get_machine(machine_name, namespace)
-
-        # Check machine availability before applying configuration
-        is_discoverable = await check_machine_discoverable(
-            machine["spec"], machine_name, namespace
-        )
-        if not is_discoverable:
-            logger.warning(
-                f"Skipping configuration application for {name}: machine {machine_name} is not discoverable due to missing credentials"
-            )
-            # Update configuration status
-            await update_configuration_status(
-                name,
-                namespace,
-                {
-                    "appliedCommit": None,
-                    "lastAppliedTime": None,
-                    "targetMachine": machine_name,
-                    "conditions": [
-                        {
-                            "type": "Applied",
-                            "status": "False",
-                            "lastTransitionTime": datetime.utcnow().isoformat() + "Z",
-                            "reason": "MissingCredentials",
-                            "message": "Configuration application skipped due to missing SSH credentials",
-                        }
-                    ],
-                },
-            )
+        # Step 1: Check machine availability
+        is_available, machine = await check_machine_availability(spec, name, namespace)
+        if not is_available:
             return
 
-        # Simple git repo handling - just use gitRepo directly
-        repo_url = spec["gitRepo"]
-        repo_name = extract_repo_name_from_url(repo_url)
-        
-        # Get git reference (branch, tag, or commit) - default to "main"
-        git_ref = spec.get("ref", "main")
-        
-        # Get current commit hash from the repository
-        new_commit_hash = await get_remote_commit_hash(
-            repo_url, git_ref, spec.get("credentialsRef"), namespace
-        )
+        machine_name = spec["machineRef"]["name"]
 
-        # Create predictable path
-        workdir_path = get_workdir_path(namespace, name, repo_name, new_commit_hash)
-
-        # Clone repository to predictable path
-        repo_path, actual_commit_hash = await clone_git_repo(
-            repo_url, spec.get("credentialsRef"), namespace, target_path=workdir_path
+        # Step 2: Prepare Git repository
+        repo_path, actual_commit_hash, workdir_path = await prepare_git_repository(
+            spec, name, namespace
         )
 
         try:
-            # Calculate additionalFiles hash
+            # Step 3: Calculate hashes and detect changes
             additional_files_hash = get_additional_files_hash(
                 spec, namespace, machine["spec"]
             )
 
-            # Get current status for change detection
-            current_status = body.get("status", {})
-            current_applied_commit = current_status.get("appliedCommit")
-            current_additional_files_hash = current_status.get(
-                "additionalFilesHash", ""
-            )
-            current_has_full_install = current_status.get(
-                "fullDiskInstallCompleted", False
+            should_reconcile, commit_changed, files_changed = detect_configuration_changes(
+                body, spec, actual_commit_hash, additional_files_hash, deletion_timestamp
             )
 
-            # Check if commit changed
-            commit_changed = current_applied_commit != actual_commit_hash
-            # Check if additional files changed
-            additional_files_changed = (
-                current_additional_files_hash != additional_files_hash
-            )
-
-            # Check if reconciliation should be triggered
-            should_reconcile = False
-
-            if deletion_timestamp:
-                if spec.get("onRemoveFlake"):
-                    logger.info(
-                        f"Deletion detected with onRemoveFlake, triggering reconcile for {name}"
-                    )
-                    should_reconcile = True
-                else:
-                    logger.info(
-                        f"Deletion detected but no onRemoveFlake specified, cleaning up for {name}"
-                    )
-                    # Handle deletion without onRemoveFlake
-                    await update_machine_status(
-                        machine_name,
-                        namespace,
-                        {
-                            "hasConfiguration": False,
-                            "appliedConfiguration": None,
-                            "appliedCommit": None,
-                        },
-                    )
-                    return
-            else:
-                # Check changes for normal reconciliation
-                if commit_changed or additional_files_changed:
-                    logger.info(
-                        f"Changes detected - commit: {commit_changed}, additionalFiles: {additional_files_changed}, triggering reconcile for {name}"
-                    )
-                    should_reconcile = True
+            # Handle deletion without onRemoveFlake
+            if deletion_timestamp and not spec.get("onRemoveFlake"):
+                logger.info(f"Deletion without onRemoveFlake for {name}, cleaning up")
+                await update_machine_status(
+                    machine_name,
+                    namespace,
+                    {
+                        "hasConfiguration": False,
+                        "appliedConfiguration": None,
+                        "appliedCommit": None,
+                    },
+                )
+                return
 
             if not should_reconcile:
                 logger.info(f"No changes detected, skipping reconcile for {name}")
                 return
 
-            # Inject additionalFiles
+            # Step 4: Inject additional files
             config_hash = await inject_additional_files(
                 repo_path, spec, namespace, machine["spec"]
             )
 
-            # Determine if fullInstall is needed (only for first time)
-            needs_full_install = (
-                spec.get("fullInstall", False) and not current_has_full_install
-            )
+            # Step 5: Determine if full install is needed
+            current_status = body.get("status", {})
+            current_has_full_install = current_status.get("fullDiskInstallCompleted", False)
+            needs_full_install = spec.get("fullInstall", False) and not current_has_full_install
 
-            # Apply configuration
-            success = await apply_nixos_configuration(
+            # Step 6: Apply configuration and update statuses
+            success = await apply_and_update_status(
+                name,
+                namespace,
+                machine_name,
                 machine["spec"],
                 spec,
                 repo_path,
                 actual_commit_hash,
-                bool(
-                    deletion_timestamp
-                ),  # is_remove = True if deletionTimestamp exists
+                config_hash,
+                additional_files_hash,
+                deletion_timestamp,
                 needs_full_install,
+                current_has_full_install,
             )
 
-            if success:
-                # Update statuses
-                current_time = datetime.utcnow().isoformat() + "Z"
-
-                if deletion_timestamp:
-                    # On deletion, remove configuration from machine status
-                    await update_machine_status(
-                        machine_name,
-                        namespace,
-                        {
-                            "hasConfiguration": False,
-                            "appliedConfiguration": None,
-                            "appliedCommit": None,
-                        },
-                    )
-
-                    await update_configuration_status(
-                        name,
-                        namespace,
-                        {
-                            "appliedCommit": actual_commit_hash,
-                            "lastAppliedTime": current_time,
-                            "targetMachine": machine_name,
-                            "configurationHash": config_hash,
-                            "additionalFilesHash": additional_files_hash,
-                            "hasFullInstall": current_has_full_install,  # preserve flag
-                            "conditions": [
-                                {
-                                    "type": "Applied",
-                                    "status": "True",
-                                    "lastTransitionTime": current_time,
-                                    "reason": "Removed",
-                                    "message": "Configuration successfully removed",
-                                }
-                            ],
-                        },
-                    )
-                else:
-                    # On normal reconciliation, update statuses
-                    await update_machine_status(
-                        machine_name,
-                        namespace,
-                        {
-                            "hasConfiguration": True,
-                            "appliedConfiguration": name,
-                            "appliedCommit": actual_commit_hash,
-                            "lastAppliedTime": current_time,
-                        },
-                    )
-
-                    await update_configuration_status(
-                        name,
-                        namespace,
-                        {
-                            "appliedCommit": actual_commit_hash,
-                            "lastAppliedTime": current_time,
-                            "targetMachine": machine_name,
-                            "configurationHash": config_hash,
-                            "additionalFilesHash": additional_files_hash,
-                            "hasFullInstall": needs_full_install
-                            or current_has_full_install,  # set or preserve flag
-                            "conditions": [
-                                {
-                                    "type": "Applied",
-                                    "status": "True",
-                                    "lastTransitionTime": current_time,
-                                    "reason": "Success",
-                                    "message": "Configuration successfully applied",
-                                }
-                            ],
-                        },
-                    )
-
-                logger.info(
-                    f"Successfully reconciled configuration {name} to machine {machine_name}"
-                )
-
-                # Run GC for old versions
-                await garbage_collect_old_versions(namespace, name, workdir_path)
-
-            else:
+            if not success:
                 raise kopf.TemporaryError("Failed to apply configuration", delay=60)
 
         finally:
-            # Clean up temporary directory
-            shutil.rmtree(repo_path, ignore_errors=True)
+            # Step 7: Cleanup
+            await cleanup_repository(repo_path, namespace, name, workdir_path)
 
     except Exception as e:
-        logger.error(f"Failed to reconcile NixosConfiguration {name}: {e}")
+        logger.error(f"Failed to reconcile NixosConfiguration {name}: {e}", exc_info=True)
         raise kopf.TemporaryError(f"Configuration reconciliation failed: {e}", delay=60)
 
 

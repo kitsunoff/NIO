@@ -46,6 +46,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY machine_handlers.py .
 COPY nixosconfiguration_handlers.py .
+COPY reconcile_helpers.py .
+COPY retry_utils.py .
+COPY metrics.py .
 COPY clients.py .
 COPY utils.py .
 COPY events.py .
@@ -54,6 +57,9 @@ COPY known_hosts_manager.py .
 COPY input_validation.py .
 COPY scripts/ ./scripts/
 COPY crds/ ./crds/
+
+# Expose metrics port
+EXPOSE 8000
 
 ENV KUBECONFIG=/app/.kube/config PYTHONUNBUFFERED=1 PYTHONPATH=/app
 CMD ["python", "main.py"]
