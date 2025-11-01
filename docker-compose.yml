@@ -7,7 +7,7 @@ services:
     # image: ghcr.io/homystack/nio:main
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Containerfile
     container_name: nixos-operator-dev
     network_mode: host
     volumes:

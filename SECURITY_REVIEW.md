@@ -69,7 +69,7 @@ with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_ssh_key") as t
 
 ### 3. Disabled Nix Isolation
 
-**Location:** `Dockerfile:30-31`
+**Location:** `Containerfile:30-31`
 
 ```dockerfile
 --extra-conf "sandbox = false" \
@@ -395,7 +395,7 @@ else:
 asyncio  # Part of stdlib, not needed in requirements
 ```
 
-**Location:** `Dockerfile:6`
+**Location:** `Containerfile:6`
 ```dockerfile
 kubectl  # Never used in code
 ```

@@ -40,7 +40,7 @@ jobs:
         mkdir -p manifests/release
         cp deployment.yaml manifests/release/
 
-        # Update image version in manifest for all Dockerfiles
+        # Update image version in manifest for all Containerfiles
         # Main image
         sed -i "s|nixos-operator:latest|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${GITHUB_REF_NAME}|g" manifests/release/deployment.yaml
         # iPXE image (if used in deployment)
