@@ -1,0 +1,18 @@
+[tool.black]
+line-length = 100
+target-version = ['py311']
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | venv
+  | build
+  | dist
+)/
+'''
+
+[tool.flake8]
+max-line-length = 127
+max-complexity = 15
+exclude = [".git", "__pycache__", "build", "dist", ".venv", "venv"]
+ignore = ["E203", "W503"]

@@ -4,20 +4,21 @@ import base64
 import kubernetes
 import logging
 import sys
-from typing import Dict
 import os
+from typing import Dict, Any
 from pathlib import Path
+
 logger = logging.getLogger(__name__)
 
 
-def setup_kubernetes_client():
+def setup_kubernetes_client() -> None:
     kubeconfig_path = os.environ.get("KUBECONFIG", "~/.kube/config")
     expanded_kubeconfig = os.path.expanduser(kubeconfig_path)
     kubeconfig_file = Path(expanded_kubeconfig)
 
-    print(f"Attempting to connect to Kubernetes")
-    print(f"KUBECONFIG variable: {kubeconfig_path}")
-    print(f"Expanded kubeconfig path: {expanded_kubeconfig}")
+    logger.info(f"Attempting to connect to Kubernetes")
+    logger.info(f"KUBECONFIG variable: {kubeconfig_path}")
+    logger.info(f"Expanded kubeconfig path: {expanded_kubeconfig}")
 
     # Check if file exists
     if kubeconfig_file.exists():
@@ -32,12 +33,12 @@ def setup_kubernetes_client():
         # Try to load kubeconfig
         try:
             kubernetes.config.load_kube_config(config_file=expanded_kubeconfig)
-            logger.info("✅ Successfully loaded kubeconfig")
+            logger.info("Successfully loaded kubeconfig")
             return
         except kubernetes.config.ConfigException as e:
-            logger.warning(f"❌ Failed to load kubeconfig: {e}")
+            logger.warning(f"Failed to load kubeconfig: {e}")
         except Exception as e:
-            logger.error(f"❗ Unexpected error loading kubeconfig: {e}", exc_info=True)
+            logger.error(f"Unexpected error loading kubeconfig: {e}", exc_info=True)
     else:
         logger.warning(f"Kubeconfig file NOT found: {kubeconfig_file}")
 
@@ -51,16 +52,16 @@ def setup_kubernetes_client():
     logger.info(f"KUBERNETES_SERVICE_PORT: {port}")
 
     if not host or not port:
-        logger.error("❌ KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT variables not set — in-cluster config impossible")
+        logger.error("KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT variables not set - in-cluster config impossible")
 
     try:
         kubernetes.config.load_incluster_config()
-        logger.info("✅ Successfully loaded in-cluster config")
+        logger.info("Successfully loaded in-cluster config")
     except kubernetes.config.ConfigException as e:
-        logger.error(f"❌ In-cluster connection error: {e}")
+        logger.error(f"In-cluster connection error: {e}")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"❗ Critical error during in-cluster connection: {e}", exc_info=True)
+        logger.error(f"Critical error during in-cluster connection: {e}", exc_info=True)
         sys.exit(1)
 
 # Call initialization
@@ -88,8 +89,8 @@ async def get_secret_data(secret_name: str, namespace: str) -> Dict[str, str]:
 
 
 async def update_machine_status(
-    machine_name: str, namespace: str, status_updates: Dict, patch: bool = True
-):
+    machine_name: str, namespace: str, status_updates: Dict[str, Any], patch: bool = True
+) -> None:
     """Update Machine resource status"""
     try:
         body = {"status": status_updates}
@@ -103,18 +104,15 @@ async def update_machine_status(
                 name=machine_name,
                 body=body,
             )
-        else:
-            # For creating status
-            pass
 
     except Exception as e:
-        logger.error(f"Failed to update machine status: {e}")
+        logger.error(f"Failed to update machine status: {e}", exc_info=True)
         raise
 
 
 async def update_configuration_status(
-    config_name: str, namespace: str, status_updates: Dict
-):
+    config_name: str, namespace: str, status_updates: Dict[str, Any]
+) -> None:
     """Update NixosConfiguration resource status"""
     try:
         body = {"status": status_updates}
@@ -129,11 +127,11 @@ async def update_configuration_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to update configuration status: {e}")
+        logger.error(f"Failed to update configuration status: {e}", exc_info=True)
         raise
 
 
-def get_machine(machine_name: str, namespace: str):
+def get_machine(machine_name: str, namespace: str) -> Dict[str, Any]:
     """Get Machine resource"""
     return custom_objects_api.get_namespaced_custom_object(
         group="nio.homystack.com",

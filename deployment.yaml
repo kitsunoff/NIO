@@ -54,7 +54,33 @@ spec:
       containers:
       - name: operator
         image: ghcr.io/homystack/nio:main
-        imagePullPolicy: IfNotPresent   # ←←← ЭТО ОБЯЗАТЕЛЬНО ДЛЯ :latest
+        imagePullPolicy: IfNotPresent   # Required for :latest tag
+
+        ports:
+        - name: metrics
+          containerPort: 8000
+          protocol: TCP
+        - name: health
+          containerPort: 8080
+          protocol: TCP
+
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: health
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
 
         env:
         - name: KUBERNETES_SERVICE_HOST
@@ -75,3 +101,37 @@ spec:
           capabilities:
             drop:
             - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nixos-operator-metrics
+  namespace: nixos-operator-system
+  labels:
+    app: nixos-operator
+spec:
+  type: ClusterIP
+  selector:
+    app: nixos-operator
+  ports:
+  - name: metrics
+    port: 8000
+    targetPort: metrics
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nixos-operator-health
+  namespace: nixos-operator-system
+  labels:
+    app: nixos-operator
+spec:
+  type: ClusterIP
+  selector:
+    app: nixos-operator
+  ports:
+  - name: health
+    port: 8080
+    targetPort: health
+    protocol: TCP

@@ -3,14 +3,16 @@
 import logging
 import shutil
 import asyncio
-from datetime import datetime
 import tempfile
 import kopf
 import os
 import json
 import hashlib
-from typing import Dict, Optional
 import subprocess
+from datetime import datetime
+from typing import Dict, Optional, Any
+
+import config
 
 from machine_handlers import check_machine_discoverable
 from clients import (
@@ -32,9 +34,9 @@ logger = logging.getLogger(__name__)
 
 async def inject_additional_files(
     repo_path: str,
-    config_spec: dict,
+    config_spec: Dict[str, Any],
     namespace: str,
-    machine_spec: Optional[dict] = None,
+    machine_spec: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Inject additionalFiles into configurationSubdir and return directory hash"""
     if not config_spec.get("additionalFiles"):
@@ -43,7 +45,7 @@ async def inject_additional_files(
     config_subdir = config_spec.get("configurationSubdir", "")
     base_path = os.path.join(repo_path, config_subdir) if config_subdir else repo_path
 
-    injected_files = []  # 👈 Store paths of injected files
+    injected_files = []  # Store paths of injected files
 
     for file_spec in config_spec["additionalFiles"]:
         file_path = os.path.join(base_path, file_spec["path"])
@@ -60,7 +62,7 @@ async def inject_additional_files(
             with open(file_path, "w") as f:
                 f.write(content)
             logger.info(f"Injected inline file: {file_spec['path']}")
-            injected_files.append(file_path)  # 👈 Add to list
+            injected_files.append(file_path)
 
         elif value_type == "SecretRef":
             secret_ref = file_spec.get("secretRef", {})
@@ -80,7 +82,7 @@ async def inject_additional_files(
                     logger.info(
                         f"Injected secret file: {file_spec['path']} from secret {secret_name}"
                     )
-                    injected_files.append(file_path)  # 👈 Add to list
+                    injected_files.append(file_path)
                 else:
                     logger.warning(
                         f"Empty secret {secret_name} for file {file_spec['path']}"
@@ -101,9 +103,9 @@ async def inject_additional_files(
             with open(file_path, "w") as f:
                 f.write(content)
             logger.info(f"Generated NixosFacter file: {file_spec['path']}")
-            injected_files.append(file_path)  # 👈 Add to list
+            injected_files.append(file_path)
 
-    # 👇 ADD FILES TO GIT INDEX WITHOUT COMMIT
+    # Add files to git index without commit
     if injected_files:
         try:
             # Add each file to git index with --intend-to-add
@@ -132,7 +134,7 @@ async def inject_additional_files(
     return calculate_directory_hash(base_path)
 
 
-def generate_nixos_facts(machine_spec: dict) -> dict:
+def generate_nixos_facts(machine_spec: Dict[str, Any]) -> Dict[str, Any]:
     """Generate NixOS facts for machine"""
     facts = {
         "machine-id": machine_spec.get("hostname", "unknown"),
@@ -148,7 +150,7 @@ def generate_nixos_facts(machine_spec: dict) -> dict:
 
 
 def get_additional_files_hash(
-    config_spec: dict, namespace: str, machine_spec: Optional[dict] = None
+    config_spec: Dict[str, Any], namespace: str, machine_spec: Optional[dict] = None
 ) -> str:
     """Calculate hash from additionalFiles specification"""
     if not config_spec.get("additionalFiles"):
@@ -170,14 +172,16 @@ def get_additional_files_hash(
             if machine_spec:
                 file_info["nixosFacter"] = generate_nixos_facts(machine_spec)
 
-    content_str = json.dumps(file_info, sort_keys=True)
+        files_content.append(file_info)
+
+    content_str = json.dumps(files_content, sort_keys=True)
     return hashlib.sha256(content_str.encode("utf-8")).hexdigest()
 
 
 # ...
 async def apply_nixos_configuration(
-    machine_spec: dict,
-    config_spec: dict,
+    machine_spec: Dict[str, Any],
+    config_spec: Dict[str, Any],
     repo_path: str,
     commit_hash: str,
     is_remove: bool,
@@ -212,16 +216,21 @@ async def apply_nixos_configuration(
                 )
                 return False
 
-            # Save to temporary file
+            # SECURITY: Save to temporary file in memory-backed tmpfs
+            # This prevents keys from persisting on disk after crashes
+            shm_dir = "/dev/shm/nio-nix-keys"
+            os.makedirs(shm_dir, mode=0o700, exist_ok=True)
+
             with tempfile.NamedTemporaryFile(
-                mode="w", prefix="ssh_key_", delete=False
+                mode="w", prefix="ssh_key_", delete=False, dir=shm_dir
             ) as tmp:
                 tmp.write(ssh_private_key.strip() + "\n")
                 tmp_key_path = tmp.name
-            os.chmod(tmp_key_path, 0o600)
+            # Owner read-only for additional security
+            os.chmod(tmp_key_path, 0o400)
 
-            # Form NIX_SSHOPTS for nixos-rebuild
-            nix_sshopts = f"-i {tmp_key_path} -o StrictHostKeyChecking=no"
+            # Form NIX_SSHOPTS for nixos-rebuild (host keys verified via known_hosts)
+            nix_sshopts = f"-i {tmp_key_path}"
             # Form argument for nixos-anywhere
             identity_arg_anywhere = f"-i {tmp_key_path}"
 
@@ -295,12 +304,23 @@ async def apply_nixos_configuration(
                     if decoded:
                         log_func(decoded)
 
-        # Start reading stdout and stderr in parallel
-        await asyncio.gather(
-            read_stream(process.stdout, logger.info),
-            read_stream(process.stderr, logger.error),
-            process.wait(),  # wait for process completion
-        )
+        # Start reading stdout and stderr in parallel with configurable timeout
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    read_stream(process.stdout, logger.info),
+                    read_stream(process.stderr, logger.error),
+                    process.wait(),  # wait for process completion
+                ),
+                timeout=config.NIXOS_APPLY_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Command timed out after {config.NIXOS_APPLY_TIMEOUT}s: {cmd}"
+            )
+            process.kill()
+            await process.wait()
+            return False
 
         if process.returncode != 0:
             logger.error(f"Command failed (code {process.returncode})")
@@ -320,241 +340,107 @@ async def apply_nixos_configuration(
 # ...
 
 
-async def reconcile_nixos_configuration(body, spec, name, namespace, **kwargs):
-    """Main reconciliation point for NixosConfiguration"""
+async def reconcile_nixos_configuration(
+    body: Dict[str, Any], spec: Dict[str, Any], name: str, namespace: str, **kwargs
+) -> None:
+    """
+    Main reconciliation point for NixosConfiguration.
+
+    Refactored into smaller, focused functions for better maintainability.
+    """
     logger.info(f"Reconciling NixosConfiguration: {name}")
 
+    # Import helper functions
+    from reconcile_helpers import (
+        check_machine_availability,
+        prepare_git_repository,
+        detect_configuration_changes,
+        apply_and_update_status,
+        cleanup_repository,
+    )
+
     try:
-        # Check deletion timestamp
         deletion_timestamp = body.get("metadata", {}).get("deletionTimestamp")
 
-        # Get associated machine
-        machine_name = spec["machineRef"]["name"]
-        machine = get_machine(machine_name, namespace)
-
-        # Check machine availability before applying configuration
-        is_discoverable = await check_machine_discoverable(
-            machine["spec"], machine_name, namespace
-        )
-        if not is_discoverable:
-            logger.warning(
-                f"Skipping configuration application for {name}: machine {machine_name} is not discoverable due to missing credentials"
-            )
-            # Update configuration status
-            await update_configuration_status(
-                name,
-                namespace,
-                {
-                    "appliedCommit": None,
-                    "lastAppliedTime": None,
-                    "targetMachine": machine_name,
-                    "conditions": [
-                        {
-                            "type": "Applied",
-                            "status": "False",
-                            "lastTransitionTime": datetime.utcnow().isoformat() + "Z",
-                            "reason": "MissingCredentials",
-                            "message": "Configuration application skipped due to missing SSH credentials",
-                        }
-                    ],
-                },
-            )
+        # Step 1: Check machine availability
+        is_available, machine = await check_machine_availability(spec, name, namespace)
+        if not is_available:
             return
 
-        # Simple git repo handling - just use gitRepo directly
-        repo_url = spec["gitRepo"]
-        repo_name = extract_repo_name_from_url(repo_url)
-        
-        # Get git reference (branch, tag, or commit) - default to "main"
-        git_ref = spec.get("ref", "main")
-        
-        # Get current commit hash from the repository
-        new_commit_hash = await get_remote_commit_hash(
-            repo_url, git_ref, spec.get("credentialsRef"), namespace
-        )
+        machine_name = spec["machineRef"]["name"]
 
-        # Create predictable path
-        workdir_path = get_workdir_path(namespace, name, repo_name, new_commit_hash)
-
-        # Clone repository to predictable path
-        repo_path, actual_commit_hash = await clone_git_repo(
-            repo_url, spec.get("credentialsRef"), namespace, target_path=workdir_path
+        # Step 2: Prepare Git repository
+        repo_path, actual_commit_hash, workdir_path = await prepare_git_repository(
+            spec, name, namespace
         )
 
         try:
-            # Calculate additionalFiles hash
+            # Step 3: Calculate hashes and detect changes
             additional_files_hash = get_additional_files_hash(
                 spec, namespace, machine["spec"]
             )
 
-            # Get current status for change detection
-            current_status = body.get("status", {})
-            current_applied_commit = current_status.get("appliedCommit")
-            current_additional_files_hash = current_status.get(
-                "additionalFilesHash", ""
-            )
-            current_has_full_install = current_status.get(
-                "fullDiskInstallCompleted", False
+            should_reconcile, commit_changed, files_changed = detect_configuration_changes(
+                body, spec, actual_commit_hash, additional_files_hash, deletion_timestamp
             )
 
-            # Check if commit changed
-            commit_changed = current_applied_commit != actual_commit_hash
-            # Check if additional files changed
-            additional_files_changed = (
-                current_additional_files_hash != additional_files_hash
-            )
-
-            # Check if reconciliation should be triggered
-            should_reconcile = False
-
-            if deletion_timestamp:
-                if spec.get("onRemoveFlake"):
-                    logger.info(
-                        f"Deletion detected with onRemoveFlake, triggering reconcile for {name}"
-                    )
-                    should_reconcile = True
-                else:
-                    logger.info(
-                        f"Deletion detected but no onRemoveFlake specified, cleaning up for {name}"
-                    )
-                    # Handle deletion without onRemoveFlake
-                    await update_machine_status(
-                        machine_name,
-                        namespace,
-                        {
-                            "hasConfiguration": False,
-                            "appliedConfiguration": None,
-                            "appliedCommit": None,
-                        },
-                    )
-                    return
-            else:
-                # Check changes for normal reconciliation
-                if commit_changed or additional_files_changed:
-                    logger.info(
-                        f"Changes detected - commit: {commit_changed}, additionalFiles: {additional_files_changed}, triggering reconcile for {name}"
-                    )
-                    should_reconcile = True
+            # Handle deletion without onRemoveFlake
+            if deletion_timestamp and not spec.get("onRemoveFlake"):
+                logger.info(f"Deletion without onRemoveFlake for {name}, cleaning up")
+                await update_machine_status(
+                    machine_name,
+                    namespace,
+                    {
+                        "hasConfiguration": False,
+                        "appliedConfiguration": None,
+                        "appliedCommit": None,
+                    },
+                )
+                return
 
             if not should_reconcile:
                 logger.info(f"No changes detected, skipping reconcile for {name}")
                 return
 
-            # Inject additionalFiles
+            # Step 4: Inject additional files
             config_hash = await inject_additional_files(
                 repo_path, spec, namespace, machine["spec"]
             )
 
-            # Determine if fullInstall is needed (only for first time)
-            needs_full_install = (
-                spec.get("fullInstall", False) and not current_has_full_install
-            )
+            # Step 5: Determine if full install is needed
+            current_status = body.get("status", {})
+            current_has_full_install = current_status.get("fullDiskInstallCompleted", False)
+            needs_full_install = spec.get("fullInstall", False) and not current_has_full_install
 
-            # Apply configuration
-            success = await apply_nixos_configuration(
+            # Step 6: Apply configuration and update statuses
+            success = await apply_and_update_status(
+                name,
+                namespace,
+                machine_name,
                 machine["spec"],
                 spec,
                 repo_path,
                 actual_commit_hash,
-                bool(
-                    deletion_timestamp
-                ),  # is_remove = True if deletionTimestamp exists
+                config_hash,
+                additional_files_hash,
+                deletion_timestamp,
                 needs_full_install,
+                current_has_full_install,
             )
 
-            if success:
-                # Update statuses
-                current_time = datetime.utcnow().isoformat() + "Z"
-
-                if deletion_timestamp:
-                    # On deletion, remove configuration from machine status
-                    await update_machine_status(
-                        machine_name,
-                        namespace,
-                        {
-                            "hasConfiguration": False,
-                            "appliedConfiguration": None,
-                            "appliedCommit": None,
-                        },
-                    )
-
-                    await update_configuration_status(
-                        name,
-                        namespace,
-                        {
-                            "appliedCommit": actual_commit_hash,
-                            "lastAppliedTime": current_time,
-                            "targetMachine": machine_name,
-                            "configurationHash": config_hash,
-                            "additionalFilesHash": additional_files_hash,
-                            "hasFullInstall": current_has_full_install,  # preserve flag
-                            "conditions": [
-                                {
-                                    "type": "Applied",
-                                    "status": "True",
-                                    "lastTransitionTime": current_time,
-                                    "reason": "Removed",
-                                    "message": "Configuration successfully removed",
-                                }
-                            ],
-                        },
-                    )
-                else:
-                    # On normal reconciliation, update statuses
-                    await update_machine_status(
-                        machine_name,
-                        namespace,
-                        {
-                            "hasConfiguration": True,
-                            "appliedConfiguration": name,
-                            "appliedCommit": actual_commit_hash,
-                            "lastAppliedTime": current_time,
-                        },
-                    )
-
-                    await update_configuration_status(
-                        name,
-                        namespace,
-                        {
-                            "appliedCommit": actual_commit_hash,
-                            "lastAppliedTime": current_time,
-                            "targetMachine": machine_name,
-                            "configurationHash": config_hash,
-                            "additionalFilesHash": additional_files_hash,
-                            "hasFullInstall": needs_full_install
-                            or current_has_full_install,  # set or preserve flag
-                            "conditions": [
-                                {
-                                    "type": "Applied",
-                                    "status": "True",
-                                    "lastTransitionTime": current_time,
-                                    "reason": "Success",
-                                    "message": "Configuration successfully applied",
-                                }
-                            ],
-                        },
-                    )
-
-                logger.info(
-                    f"Successfully reconciled configuration {name} to machine {machine_name}"
-                )
-
-                # Run GC for old versions
-                await garbage_collect_old_versions(namespace, name, workdir_path)
-
-            else:
+            if not success:
                 raise kopf.TemporaryError("Failed to apply configuration", delay=60)
 
         finally:
-            # Clean up temporary directory
-            shutil.rmtree(repo_path, ignore_errors=True)
+            # Step 7: Cleanup
+            await cleanup_repository(repo_path, namespace, name, workdir_path)
 
     except Exception as e:
-        logger.error(f"Failed to reconcile NixosConfiguration {name}: {e}")
+        logger.error(f"Failed to reconcile NixosConfiguration {name}: {e}", exc_info=True)
         raise kopf.TemporaryError(f"Configuration reconciliation failed: {e}", delay=60)
 
 
-async def garbage_collect_old_versions(namespace: str, name: str, current_path: str):
+async def garbage_collect_old_versions(namespace: str, name: str, current_path: str) -> None:
     """Remove old configuration versions, keeping only current one"""
     base_dir = os.path.dirname(current_path)
     if not os.path.exists(base_dir):
@@ -574,22 +460,22 @@ async def garbage_collect_old_versions(namespace: str, name: str, current_path: 
 @kopf.on.update("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.resume("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
-async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
+async def unified_nixos_configuration_handler(
+    body: Dict[str, Any], spec: Dict[str, Any], name: str, namespace: str, **kwargs
+) -> None:
     """Unified handler for all NixosConfiguration operations"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 
-@kopf.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=3600.0)
-async def garbage_collect_all_old_configurations(**kwargs):
+async def garbage_collect_all_old_configurations(**kwargs) -> None:
     """Background GC for all configurations older than 24 hours"""
-    base_path = "/tmp/nixos-config"
-    if not os.path.exists(base_path):
+    if not os.path.exists(config.BASE_CONFIG_PATH):
         return
 
     current_time = datetime.now().timestamp()
 
-    for namespace in os.listdir(base_path):
-        namespace_path = os.path.join(base_path, namespace)
+    for namespace in os.listdir(config.BASE_CONFIG_PATH):
+        namespace_path = os.path.join(config.BASE_CONFIG_PATH, namespace)
         if not os.path.isdir(namespace_path):
             continue
 

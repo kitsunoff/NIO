@@ -25,10 +25,11 @@ RUN groupadd -g ${USER_GID} operator_group \
 ADD https://install.determinate.systems/nix /tmp/nix-installer
 
 # Install Nix (will be cached if installer doesn't change)
+# SECURITY: Enable sandbox for build isolation
 RUN chmod +x /tmp/nix-installer \
     && /tmp/nix-installer install linux \
-        --extra-conf "sandbox = false" \
-        --extra-conf "filter-syscalls = false" \
+        --extra-conf "sandbox = relaxed" \
+        --extra-conf "filter-syscalls = true" \
         --init none \
         --no-confirm \
     && rm -f /tmp/nix-installer
@@ -43,13 +44,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only essential runtime files
 COPY main.py .
+COPY config.py .
 COPY machine_handlers.py .
 COPY nixosconfiguration_handlers.py .
+COPY reconcile_helpers.py .
+COPY retry_utils.py .
+COPY metrics.py .
 COPY clients.py .
 COPY utils.py .
 COPY events.py .
+COPY ssh_utils.py .
+COPY known_hosts_manager.py .
+COPY input_validation.py .
 COPY scripts/ ./scripts/
 COPY crds/ ./crds/
+
+# Expose metrics port
+EXPOSE 8000
 
 ENV KUBECONFIG=/app/.kube/config PYTHONUNBUFFERED=1 PYTHONPATH=/app
 CMD ["python", "main.py"]

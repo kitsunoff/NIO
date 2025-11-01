@@ -13,12 +13,12 @@ kubectl apply -f crds/
 
 # Сборка и загрузка образа оператора
 echo "Building operator image..."
-docker build -t nixos-operator:latest .
+podman build -t nixos-operator:latest .
 
 # Если используется kind или minikube, загрузить образ в кластер
 if command -v kind &> /dev/null; then
     echo "Loading image into kind cluster..."
-    kind load docker-image nixos-operator:latest
+    podman save nixos-operator:latest | kind load image-archive /dev/stdin
 elif command -v minikube &> /dev/null; then
     echo "Loading image into minikube cluster..."
     minikube image load nixos-operator:latest

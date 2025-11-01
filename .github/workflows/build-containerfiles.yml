@@ -1,4 +1,4 @@
-name: Build All Dockerfiles
+name: Build All Containerfiles
 
 on:
   push:
@@ -23,18 +23,18 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-dockerfiles:
-    name: Build Docker Images
+  build-containerfiles:
+    name: Build Container Images
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        dockerfile:
-          - Dockerfile
-          - Dockerfile.ipxe
+        containerfile:
+          - Containerfile
+          - Containerfile.ipxe
         include:
-          - dockerfile: Dockerfile
+          - containerfile: Containerfile
             image_postfix: ""
-          - dockerfile: Dockerfile.ipxe
+          - containerfile: Containerfile.ipxe
             image_postfix: "-ipxe"
 
     permissions:
@@ -62,11 +62,11 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image_postfix }}
         tags: ${{ inputs.tag_pattern }}
 
-    - name: Build and push Docker image
+    - name: Build and push container image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ${{ matrix.dockerfile }}
+        file: ${{ matrix.containerfile }}
         platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ steps.meta.outputs.tags }}
@@ -85,7 +85,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Run Trivy vulnerability scanner on all Dockerfiles
+    - name: Run Trivy vulnerability scanner on all Containerfiles
       uses: aquasecurity/trivy-action@master
       with:
         scan-type: 'config'

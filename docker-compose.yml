@@ -7,7 +7,7 @@ services:
     # image: ghcr.io/homystack/nio:main
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Containerfile
     container_name: nixos-operator-dev
     network_mode: host
     volumes:
@@ -25,7 +25,7 @@ services:
   nio-ipxe:
     build:
       context: .
-      dockerfile: Dockerfile.ipxe
+      dockerfile: Containerfile.ipxe
     container_name: ipxe-server
     network_mode: host
     volumes:

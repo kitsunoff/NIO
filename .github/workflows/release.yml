@@ -12,9 +12,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-dockerfiles:
-    name: Build All Docker Images for Release
-    uses: ./.github/workflows/build-dockerfiles.yml
+  build-containerfiles:
+    name: Build All Container Images for Release
+    uses: ./.github/workflows/build-containerfiles.yml
     with:
       tag_pattern: |
         type=semver,pattern={{version}}
@@ -26,7 +26,7 @@ jobs:
   generate-manifests:
     name: Generate Release Manifests
     runs-on: ubuntu-latest
-    needs: build-dockerfiles
+    needs: build-containerfiles
     permissions:
       contents: read
 
@@ -36,11 +36,11 @@ jobs:
 
     - name: Generate deployment manifests
       run: |
-        # Создаем версионированные манифесты для релиза
+        # Create versioned manifests for release
         mkdir -p manifests/release
         cp deployment.yaml manifests/release/
-        
-        # Обновляем версию образа в манифесте для всех Dockerfiles
+
+        # Update image version in manifest for all Containerfiles
         # Main image
         sed -i "s|nixos-operator:latest|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${GITHUB_REF_NAME}|g" manifests/release/deployment.yaml
         # iPXE image (if used in deployment)
@@ -88,7 +88,7 @@ jobs:
 
     - name: Update version in README
       run: |
-        # Обновляем версию в README если нужно
+        # Update version in README if needed
         VERSION=${{ github.event.release.tag_name }}
         echo "Updating documentation for version $VERSION"
-        # Здесь можно добавить логику обновления документации
+        # Add documentation update logic here

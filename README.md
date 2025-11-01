@@ -2,6 +2,8 @@
 
 A Kubernetes-native operator for declarative management of bare-metal and virtual machines running NixOS.
 
+> **Note:** This project uses Podman by default for building OCI container images, but you can use any OCI-compatible tool (Docker, Buildah, etc.). All `podman` commands in examples can be replaced with `docker` if preferred.
+
 ## Features
 
 - **GitOps Approach**: Configurations are managed through Git repositories
@@ -63,8 +65,8 @@ spec:
 # Apply CRDs
 kubectl apply -f crds/
 
-# Build and run the operator
-docker build -t nixos-operator:latest .
+# Build and run the operator (using Podman)
+podman build -t nixos-operator:latest .
 kubectl apply -f deployment.yaml
 ```
 

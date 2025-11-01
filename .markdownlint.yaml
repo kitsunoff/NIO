@@ -1,0 +1,23 @@
+# Markdownlint configuration for NIO documentation
+#
+# Technical documentation often requires longer lines for:
+# - Command examples with long paths
+# - URLs and links
+# - Code examples
+# - Configuration snippets
+#
+# This config disables overly restrictive rules while maintaining quality.
+
+# Disable line length limit - technical docs have long commands/URLs
+MD013: false
+
+# Allow bare URLs in documentation for readability
+MD034: false
+
+# Allow lists and code blocks without surrounding blank lines
+# for better readability in technical documentation
+MD031: false
+MD032: false
+
+# All other rules enabled with default settings
+default: true

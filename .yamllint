@@ -1,0 +1,27 @@
+# yamllint configuration for Kubernetes manifests
+#
+# Kubernetes YAML uses 2-space indentation and often has long
+# description fields for alerts and annotations.
+
+extends: default
+
+rules:
+  # Disable document start requirement (optional in Kubernetes)
+  document-start: disable
+
+  # Kubernetes standard is 2-space indentation
+  # Allow consistent 2-space indent for all levels
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+
+  # Allow longer lines for descriptions and annotations
+  # Alert descriptions can be long - increase to 200
+  line-length:
+    max: 200
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+
+  # Allow truthy values (on, off, yes, no) - common in Kubernetes
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off', 'yes', 'no']

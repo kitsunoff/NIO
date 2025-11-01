@@ -7,18 +7,19 @@ import urllib.parse
 import os
 import re
 import hashlib
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Any
 from datetime import datetime
 
 from clients import get_secret_data
+from input_validation import validate_git_url, ValidationError
+import config
 
 
 def get_workdir_path(
     namespace: str, name: str, repo_name: str, commit_hash: str
 ) -> str:
     """Get predictable working directory path"""
-    base_path = "/tmp/nixos-config"
-    workdir = f"{base_path}/{namespace}/{name}/{repo_name}@{commit_hash}"
+    workdir = f"{config.BASE_CONFIG_PATH}/{namespace}/{name}/{repo_name}@{commit_hash}"
     os.makedirs(workdir, exist_ok=True)
     return workdir
 
@@ -71,6 +72,13 @@ def parse_flake_reference(flake_ref: str) -> Tuple[str, str, str]:
 
 def extract_repo_name_from_url(git_url: str) -> str:
     """Extract repository name from Git URL"""
+    # Handle SSH URLs (git@github.com:owner/repo.git)
+    if git_url.startswith("git@"):
+        # Remove git@ prefix and .git suffix
+        clean_url = re.sub(r"^git@[^:]+:", "", git_url)
+        clean_url = re.sub(r"\.git$", "", clean_url)
+        return clean_url
+
     # Remove protocol and .git
     clean_url = re.sub(r"^https?://", "", git_url)
     clean_url = re.sub(r"\.git$", "", clean_url)
@@ -120,6 +128,12 @@ async def clone_git_repo(
     target_path: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Clone Git repository and return path and commit hash"""
+    # SECURITY: Validate Git URL to prevent command injection
+    try:
+        git_url = validate_git_url(git_url)
+    except ValidationError as e:
+        raise ValueError(f"Invalid Git URL: {e}")
+
     if target_path:
         work_dir = target_path
         # If directory already exists, use it
