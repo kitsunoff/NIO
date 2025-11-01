@@ -6,7 +6,7 @@ import pytest
 from input_validation import (
     validate_hostname,
     validate_git_url,
-    validate_username,
+    validate_ssh_username,
     validate_path,
     ValidationError,
 )
@@ -89,7 +89,7 @@ class TestValidateUsername:
             "a",  # single char
         ]
         for username in valid:
-            result = validate_username(username)
+            result = validate_ssh_username(username)
             assert result == username
 
     def test_invalid_usernames(self):
@@ -105,7 +105,7 @@ class TestValidateUsername:
         ]
         for username in invalid:
             with pytest.raises(ValidationError):
-                validate_username(username)
+                validate_ssh_username(username)
 
 
 class TestValidatePath:
