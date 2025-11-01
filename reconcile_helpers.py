@@ -28,6 +28,7 @@ from nixosconfiguration_handlers import (
     garbage_collect_old_versions,
 )
 from retry_utils import with_retry
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,11 @@ async def check_machine_availability(
     return True, machine
 
 
-@with_retry(max_attempts=3, initial_delay=2.0, max_delay=30.0)
+@with_retry(
+    max_attempts=config.RETRY_MAX_ATTEMPTS,
+    initial_delay=config.RETRY_INITIAL_DELAY,
+    max_delay=config.RETRY_MAX_DELAY,
+)
 async def prepare_git_repository(
     spec: Dict[str, Any], name: str, namespace: str
 ) -> Tuple[str, str, str]:

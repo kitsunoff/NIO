@@ -11,6 +11,7 @@ from nixosconfiguration_handlers import reconcile_nixos_configuration
 from clients import update_machine_status, get_machine
 from metrics import init_metrics
 from prometheus_client import start_http_server
+import config
 
 
 # Configure logging
@@ -44,7 +45,7 @@ async def on_machine_create(body, spec, name, namespace, **kwargs):
     )
 
 
-@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=60.0)
+@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=config.MACHINE_DISCOVERY_INTERVAL)
 async def check_machine_discoverability(body, spec, name, namespace, **kwargs):
     """Periodic machine availability check"""
     logger.debug(f"Checking discoverability for machine: {name}")
@@ -56,7 +57,7 @@ async def check_machine_discoverability(body, spec, name, namespace, **kwargs):
     await update_machine_status(name, namespace, {"discoverable": is_discoverable})
 
 
-@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=300.0)  # Every 5 minutes
+@kopf.timer("nio.homystack.com", "v1alpha1", "machines", interval=config.HARDWARE_SCAN_INTERVAL)
 async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwargs):
     """Periodic hardware scanning for machines"""
     logger.debug(f"Scanning hardware for machine: {name}")
@@ -86,7 +87,7 @@ async def scan_machine_hardware_periodically(body, spec, name, namespace, **kwar
 @kopf.on.update("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.resume("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
-@kopf.on.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=120)
+@kopf.on.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=config.CONFIG_RECONCILE_INTERVAL)
 async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
     """Unified handler for all NixosConfiguration operations"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
@@ -99,10 +100,12 @@ def configure(settings: kopf.OperatorSettings, **_):
     # Initialize Prometheus metrics
     init_metrics()
 
-    # Start Prometheus metrics server on port 8000
-    metrics_port = int(os.environ.get("METRICS_PORT", "8000"))
-    start_http_server(metrics_port)
-    logger.info(f"Prometheus metrics server started on port {metrics_port}")
+    # Start Prometheus metrics server
+    start_http_server(config.METRICS_PORT)
+    logger.info(f"Prometheus metrics server started on port {config.METRICS_PORT}")
+
+    # Log configuration summary
+    logger.info(config.get_config_summary())
 
 
 def handle_shutdown_signal(signum, frame):

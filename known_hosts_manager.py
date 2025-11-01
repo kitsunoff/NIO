@@ -13,6 +13,8 @@ import tempfile
 from typing import Optional, Dict, Any
 from pathlib import Path
 
+import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +32,7 @@ class KnownHostsManager:
             self.known_hosts_path = Path(storage_path)
         else:
             # Use persistent temp directory for operator lifetime
-            temp_dir = Path("/tmp/nio-ssh-known-hosts")
+            temp_dir = Path(config.KNOWN_HOSTS_PATH)
             temp_dir.mkdir(parents=True, exist_ok=True)
             self.known_hosts_path = temp_dir / "known_hosts"
 

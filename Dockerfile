@@ -44,6 +44,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only essential runtime files
 COPY main.py .
+COPY config.py .
 COPY machine_handlers.py .
 COPY nixosconfiguration_handlers.py .
 COPY reconcile_helpers.py .

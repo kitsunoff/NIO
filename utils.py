@@ -12,14 +12,14 @@ from datetime import datetime
 
 from clients import get_secret_data
 from input_validation import validate_git_url, ValidationError
+import config
 
 
 def get_workdir_path(
     namespace: str, name: str, repo_name: str, commit_hash: str
 ) -> str:
     """Get predictable working directory path"""
-    base_path = "/tmp/nixos-config"
-    workdir = f"{base_path}/{namespace}/{name}/{repo_name}@{commit_hash}"
+    workdir = f"{config.BASE_CONFIG_PATH}/{namespace}/{name}/{repo_name}@{commit_hash}"
     os.makedirs(workdir, exist_ok=True)
     return workdir
 

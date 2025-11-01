@@ -12,6 +12,8 @@ import subprocess
 from datetime import datetime
 from typing import Dict, Optional, Any
 
+import config
+
 from machine_handlers import check_machine_discoverable
 from clients import (
     get_machine,
@@ -302,7 +304,7 @@ async def apply_nixos_configuration(
                     if decoded:
                         log_func(decoded)
 
-        # Start reading stdout and stderr in parallel with timeout (60 minutes for long operations)
+        # Start reading stdout and stderr in parallel with configurable timeout
         try:
             await asyncio.wait_for(
                 asyncio.gather(
@@ -310,10 +312,12 @@ async def apply_nixos_configuration(
                     read_stream(process.stderr, logger.error),
                     process.wait(),  # wait for process completion
                 ),
-                timeout=3600  # 60 minutes timeout
+                timeout=config.NIXOS_APPLY_TIMEOUT
             )
         except asyncio.TimeoutError:
-            logger.error(f"Command timed out after 60 minutes: {cmd}")
+            logger.error(
+                f"Command timed out after {config.NIXOS_APPLY_TIMEOUT}s: {cmd}"
+            )
             process.kill()
             await process.wait()
             return False
@@ -463,17 +467,15 @@ async def unified_nixos_configuration_handler(
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 
-@kopf.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=3600.0)
 async def garbage_collect_all_old_configurations(**kwargs) -> None:
     """Background GC for all configurations older than 24 hours"""
-    base_path = "/tmp/nixos-config"
-    if not os.path.exists(base_path):
+    if not os.path.exists(config.BASE_CONFIG_PATH):
         return
 
     current_time = datetime.now().timestamp()
 
-    for namespace in os.listdir(base_path):
-        namespace_path = os.path.join(base_path, namespace)
+    for namespace in os.listdir(config.BASE_CONFIG_PATH):
+        namespace_path = os.path.join(config.BASE_CONFIG_PATH, namespace)
         if not os.path.isdir(namespace_path):
             continue
 

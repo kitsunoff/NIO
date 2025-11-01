@@ -5,6 +5,7 @@ import os
 from typing import Dict, Optional, Any
 
 from ssh_utils import establish_ssh_connection, cleanup_ssh_key
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ async def scan_machine_hardware(
             scanner_content = f.read()
 
         # Create temporary file on remote machine
-        remote_script_path = "/tmp/hardware_scanner.sh"
+        remote_script_path = config.REMOTE_HARDWARE_SCRIPT_PATH
 
         # Transfer script via SCP
         async with conn.start_sftp_client() as sftp:
