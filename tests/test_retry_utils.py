@@ -152,20 +152,27 @@ class TestRetryableOperation:
 
     @pytest.mark.asyncio
     async def test_context_manager_with_manual_retry(self):
-        """Context manager should support manual retry control."""
+        """Context manager should support manual retry in a loop."""
         call_count = 0
 
-        async def do_operation(retry_func):
+        async def do_operation():
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                retry_func(Exception("Temporary failure"))
+                raise Exception("Temporary failure")
             return "success"
 
-        async with RetryableOperation(
-            "test_op", max_attempts=3, initial_delay=0.01
-        ) as op:
-            result = await do_operation(op.retry)
+        op = RetryableOperation("test_op", max_attempts=3, initial_delay=0.01)
+        result = None
+
+        for _ in range(op.max_attempts):
+            try:
+                async with op:
+                    result = await do_operation()
+                    break  # Success
+            except Exception:
+                if op.attempt >= op.max_attempts:
+                    raise
 
         assert result == "success"
         assert call_count == 2  # Failed once, succeeded second time

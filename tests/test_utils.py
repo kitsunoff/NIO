@@ -162,3 +162,35 @@ class TestParseFlakeReference:
         assert repo_name == "local"
         assert repo_url == "."
         assert commit == "local"
+
+    def test_unknown_flake_source(self):
+        """Parse unknown flake source."""
+        ref = "unknown:some/path#hostname"
+        repo_name, repo_url, commit = parse_flake_reference(ref)
+
+        assert repo_name == "unknown"
+        assert repo_url == "unknown:some/path"
+        assert commit == "unknown"
+
+
+class TestExtractRepoNameEdgeCases:
+    """Tests for repository name extraction edge cases."""
+
+    def test_http_url(self):
+        """Extract from HTTP URL (not HTTPS)."""
+        url = "http://gitlab.com/owner/repo.git"
+        result = extract_repo_name_from_url(url)
+        assert result == "owner/repo"
+
+    def test_ssh_url_without_git_suffix(self):
+        """Extract from SSH URL without .git suffix."""
+        url = "git@github.com:owner/repo"
+        result = extract_repo_name_from_url(url)
+        assert result == "owner/repo"
+
+    def test_url_with_subdirectories(self):
+        """Extract from URL with more than 2 path components."""
+        url = "https://example.com/group/subgroup/owner/repo.git"
+        result = extract_repo_name_from_url(url)
+        # Should extract last two components
+        assert result == "owner/repo"
