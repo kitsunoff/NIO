@@ -49,10 +49,10 @@ jobs:
     #   run: |
     #     pytest -v
 
-  build-dockerfiles:
-    name: Build All Docker Images
+  build-containerfiles:
+    name: Build All Container Images
     needs: test
-    uses: ./.github/workflows/build-dockerfiles.yml
+    uses: ./.github/workflows/build-containerfiles.yml
     with:
       tag_pattern: |
         type=ref,event=branch
