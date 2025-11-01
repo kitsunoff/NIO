@@ -25,10 +25,11 @@ RUN groupadd -g ${USER_GID} operator_group \
 ADD https://install.determinate.systems/nix /tmp/nix-installer
 
 # Install Nix (will be cached if installer doesn't change)
+# SECURITY: Enable sandbox for build isolation
 RUN chmod +x /tmp/nix-installer \
     && /tmp/nix-installer install linux \
-        --extra-conf "sandbox = false" \
-        --extra-conf "filter-syscalls = false" \
+        --extra-conf "sandbox = relaxed" \
+        --extra-conf "filter-syscalls = true" \
         --init none \
         --no-confirm \
     && rm -f /tmp/nix-installer
@@ -49,6 +50,7 @@ COPY clients.py .
 COPY utils.py .
 COPY events.py .
 COPY ssh_utils.py .
+COPY known_hosts_manager.py .
 COPY scripts/ ./scripts/
 COPY crds/ ./crds/
 

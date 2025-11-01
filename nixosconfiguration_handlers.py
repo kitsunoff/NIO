@@ -222,8 +222,8 @@ async def apply_nixos_configuration(
                 tmp_key_path = tmp.name
             os.chmod(tmp_key_path, 0o600)
 
-            # Form NIX_SSHOPTS for nixos-rebuild
-            nix_sshopts = f"-i {tmp_key_path} -o StrictHostKeyChecking=no"
+            # Form NIX_SSHOPTS for nixos-rebuild (host keys verified via known_hosts)
+            nix_sshopts = f"-i {tmp_key_path}"
             # Form argument for nixos-anywhere
             identity_arg_anywhere = f"-i {tmp_key_path}"
 

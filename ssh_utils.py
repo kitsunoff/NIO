@@ -7,6 +7,7 @@ import os
 from typing import Dict, Optional, Tuple, Any
 from clients import get_secret_data
 from events import emit_missing_credentials_event
+from known_hosts_manager import get_known_hosts_manager
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +21,20 @@ async def establish_ssh_connection(
     """
     Establish SSH connection to a machine using key, password, or no authentication.
 
+    Uses Trust On First Use (TOFU) policy for host key verification.
+
     Returns:
         Tuple of (connection, temp_key_path) where connection is the SSH connection
         and temp_key_path is the path to temporary SSH key file (if created, None otherwise).
         Returns (None, None) if connection fails.
     """
+    # Get known_hosts manager for host verification
+    known_hosts_mgr = get_known_hosts_manager()
+
     ssh_config = {
         "host": machine_spec["hostname"],
         "username": machine_spec.get("sshUser", "root"),
-        "known_hosts": None,  # TODO: Enable host verification for security
+        "known_hosts": known_hosts_mgr.get_known_hosts_path(),  # Enable host verification
     }
 
     has_credentials = False
