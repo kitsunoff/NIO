@@ -15,7 +15,6 @@ import asyncio
 import asyncssh
 import tempfile
 import os
-from pathlib import Path
 
 
 pytestmark = pytest.mark.e2e
@@ -63,6 +62,7 @@ class MockSSHServer:
             server_host_keys=[self.host_key],
             server_factory=lambda: MockSSHServerAuth(self.test_password),
             process_factory=self.handle_client,
+            reuse_address=True,  # Allow reuse of address to avoid port conflicts
         )
 
     def get_password(self):
@@ -111,6 +111,8 @@ class TestE2EBasicWorkflow:
         await server.start()
         yield server
         await server.stop()
+        # Give asyncssh time to fully clean up the server
+        await asyncio.sleep(0.1)
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(True, reason="Requires kind cluster setup")
@@ -174,26 +176,14 @@ class TestE2EMachineDiscovery:
         await server.start()
         yield server
         await server.stop()
+        # Give asyncssh time to fully clean up the server
+        await asyncio.sleep(0.1)
 
     @pytest.mark.asyncio
     async def test_machine_discoverable_check(self, mock_ssh_server):
         """Test machine discoverability check via SSH."""
-        from machine_handlers import check_machine_discoverable
-
-        machine_spec = {
-            "hostname": "localhost:2223",
-            "username": "test",
-            "credentialsRef": None,  # No auth for mock
-        }
-
-        # Note: This would need adjustment in actual code to support no-auth
-        # For E2E, we'd use actual SSH keys
-        # This is a simplified test showing the pattern
-
-        # is_discoverable = await check_machine_discoverable(
-        #     machine_spec, None, "test-machine", "default"
-        # )
-        # assert is_discoverable
+        # Note: Full implementation would import and use check_machine_discoverable
+        # from machine_handlers, but for now we just verify SSH connectivity
 
         # For now, just verify mock server is running
         async with asyncssh.connect(
@@ -224,6 +214,7 @@ class TestE2EHardwareScanning:
                     # Mock hardware output
                     hardware_json = '{"cpu": "8", "memory": "16GB", "disk": "500GB"}'
                     process.stdout.write(hardware_json)
+                    process.exit(0)
                 else:
                     await super().handle_client(process)
 
@@ -231,6 +222,8 @@ class TestE2EHardwareScanning:
         await server.start()
         yield server
         await server.stop()
+        # Give asyncssh time to fully clean up the server
+        await asyncio.sleep(0.1)
 
     @pytest.mark.asyncio
     async def test_hardware_scan_execution(self, mock_ssh_server_with_hardware):
