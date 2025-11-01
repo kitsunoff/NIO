@@ -72,6 +72,13 @@ def parse_flake_reference(flake_ref: str) -> Tuple[str, str, str]:
 
 def extract_repo_name_from_url(git_url: str) -> str:
     """Extract repository name from Git URL"""
+    # Handle SSH URLs (git@github.com:owner/repo.git)
+    if git_url.startswith("git@"):
+        # Remove git@ prefix and .git suffix
+        clean_url = re.sub(r"^git@[^:]+:", "", git_url)
+        clean_url = re.sub(r"\.git$", "", clean_url)
+        return clean_url
+
     # Remove protocol and .git
     clean_url = re.sub(r"^https?://", "", git_url)
     clean_url = re.sub(r"\.git$", "", clean_url)

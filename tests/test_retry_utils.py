@@ -8,6 +8,7 @@ from retry_utils import (
     retry_with_backoff,
     with_retry,
     RetryableOperation,
+    RetryExhaustedError,
 )
 
 
@@ -58,7 +59,7 @@ class TestRetryWithBackoff:
             call_count += 1
             raise Exception("Permanent failure")
 
-        with pytest.raises(Exception, match="Permanent failure"):
+        with pytest.raises(RetryExhaustedError, match="failed after 3 attempts"):
             await retry_with_backoff(
                 always_fails, max_attempts=3, initial_delay=0.01
             )
@@ -158,7 +159,7 @@ class TestRetryableOperation:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                await retry_func(Exception("Temporary failure"))
+                retry_func(Exception("Temporary failure"))
             return "success"
 
         async with RetryableOperation(

@@ -212,3 +212,17 @@ class RetryableOperation:
     def success(self):
         """Mark operation as successful"""
         self.succeeded = True
+
+    def retry(self, exception: Exception):
+        """Explicitly trigger a retry by raising an exception.
+
+        This method is useful when you want to manually control retry logic
+        from within the context manager block.
+
+        Args:
+            exception: The exception that triggered the retry
+
+        Raises:
+            The provided exception, which will be handled by __aexit__
+        """
+        raise exception

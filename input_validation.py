@@ -43,8 +43,8 @@ def validate_hostname(hostname: str) -> str:
     # Allow hostnames, IPv4, and IPv6
     # Hostname pattern: alphanumeric, hyphens, dots
     # IPv4: digits and dots
-    # IPv6: hex digits, colons, brackets
-    safe_pattern = r"^[a-zA-Z0-9]([a-zA-Z0-9\-\.:\[\]])*[a-zA-Z0-9\]]?$"
+    # IPv6: hex digits, colons, brackets (can start with [)
+    safe_pattern = r"^[\[a-zA-Z0-9]([a-zA-Z0-9\-\.:\[\]])*[a-zA-Z0-9\]]?$"
 
     if not re.match(safe_pattern, hostname):
         raise ValidationError(
