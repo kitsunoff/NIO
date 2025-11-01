@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Dict
+from typing import Dict, Optional, Any
 
 from ssh_utils import establish_ssh_connection, cleanup_ssh_key
 
@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 async def check_machine_discoverable(
-    machine_spec: Dict, body=None, machine_name: str = None, namespace: str = None
+    machine_spec: Dict[str, Any],
+    body: Optional[Dict[str, Any]] = None,
+    machine_name: Optional[str] = None,
+    namespace: Optional[str] = None,
 ) -> bool:
     """Check machine availability via SSH with support for key, password, and no authentication"""
     conn, ssh_key_temp_file = await establish_ssh_connection(
@@ -36,8 +39,11 @@ async def check_machine_discoverable(
 
 
 async def scan_machine_hardware(
-    machine_spec: Dict, body=None, machine_name: str = None, namespace: str = None
-) -> Dict:
+    machine_spec: Dict[str, Any],
+    body: Optional[Dict[str, Any]] = None,
+    machine_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+) -> Dict[str, Any]:
     """Scan machine hardware and return facts"""
     conn, ssh_key_temp_file = await establish_ssh_connection(
         machine_spec, body, machine_name, namespace

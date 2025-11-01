@@ -10,7 +10,7 @@ import json
 import hashlib
 import subprocess
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 from machine_handlers import check_machine_discoverable
 from clients import (
@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 
 async def inject_additional_files(
     repo_path: str,
-    config_spec: dict,
+    config_spec: Dict[str, Any],
     namespace: str,
-    machine_spec: Optional[dict] = None,
+    machine_spec: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Inject additionalFiles into configurationSubdir and return directory hash"""
     if not config_spec.get("additionalFiles"):
@@ -132,7 +132,7 @@ async def inject_additional_files(
     return calculate_directory_hash(base_path)
 
 
-def generate_nixos_facts(machine_spec: dict) -> dict:
+def generate_nixos_facts(machine_spec: Dict[str, Any]) -> Dict[str, Any]:
     """Generate NixOS facts for machine"""
     facts = {
         "machine-id": machine_spec.get("hostname", "unknown"),
@@ -148,7 +148,7 @@ def generate_nixos_facts(machine_spec: dict) -> dict:
 
 
 def get_additional_files_hash(
-    config_spec: dict, namespace: str, machine_spec: Optional[dict] = None
+    config_spec: Dict[str, Any], namespace: str, machine_spec: Optional[dict] = None
 ) -> str:
     """Calculate hash from additionalFiles specification"""
     if not config_spec.get("additionalFiles"):
@@ -178,8 +178,8 @@ def get_additional_files_hash(
 
 # ...
 async def apply_nixos_configuration(
-    machine_spec: dict,
-    config_spec: dict,
+    machine_spec: Dict[str, Any],
+    config_spec: Dict[str, Any],
     repo_path: str,
     commit_hash: str,
     is_remove: bool,
@@ -331,7 +331,9 @@ async def apply_nixos_configuration(
 # ...
 
 
-async def reconcile_nixos_configuration(body, spec, name, namespace, **kwargs):
+async def reconcile_nixos_configuration(
+    body: Dict[str, Any], spec: Dict[str, Any], name: str, namespace: str, **kwargs
+) -> None:
     """Main reconciliation point for NixosConfiguration"""
     logger.info(f"Reconciling NixosConfiguration: {name}")
 
@@ -565,7 +567,7 @@ async def reconcile_nixos_configuration(body, spec, name, namespace, **kwargs):
         raise kopf.TemporaryError(f"Configuration reconciliation failed: {e}", delay=60)
 
 
-async def garbage_collect_old_versions(namespace: str, name: str, current_path: str):
+async def garbage_collect_old_versions(namespace: str, name: str, current_path: str) -> None:
     """Remove old configuration versions, keeping only current one"""
     base_dir = os.path.dirname(current_path)
     if not os.path.exists(base_dir):
@@ -585,13 +587,15 @@ async def garbage_collect_old_versions(namespace: str, name: str, current_path: 
 @kopf.on.update("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.resume("nio.homystack.com", "v1alpha1", "nixosconfigurations")
 @kopf.on.delete("nio.homystack.com", "v1alpha1", "nixosconfigurations")
-async def unified_nixos_configuration_handler(body, spec, name, namespace, **kwargs):
+async def unified_nixos_configuration_handler(
+    body: Dict[str, Any], spec: Dict[str, Any], name: str, namespace: str, **kwargs
+) -> None:
     """Unified handler for all NixosConfiguration operations"""
     await reconcile_nixos_configuration(body, spec, name, namespace, **kwargs)
 
 
 @kopf.timer("nio.homystack.com", "v1alpha1", "nixosconfigurations", interval=3600.0)
-async def garbage_collect_all_old_configurations(**kwargs):
+async def garbage_collect_all_old_configurations(**kwargs) -> None:
     """Background GC for all configurations older than 24 hours"""
     base_path = "/tmp/nixos-config"
     if not os.path.exists(base_path):

@@ -4,13 +4,14 @@ import base64
 import kubernetes
 import logging
 import sys
-from typing import Dict
 import os
+from typing import Dict, Any
 from pathlib import Path
+
 logger = logging.getLogger(__name__)
 
 
-def setup_kubernetes_client():
+def setup_kubernetes_client() -> None:
     kubeconfig_path = os.environ.get("KUBECONFIG", "~/.kube/config")
     expanded_kubeconfig = os.path.expanduser(kubeconfig_path)
     kubeconfig_file = Path(expanded_kubeconfig)
@@ -88,8 +89,8 @@ async def get_secret_data(secret_name: str, namespace: str) -> Dict[str, str]:
 
 
 async def update_machine_status(
-    machine_name: str, namespace: str, status_updates: Dict, patch: bool = True
-):
+    machine_name: str, namespace: str, status_updates: Dict[str, Any], patch: bool = True
+) -> None:
     """Update Machine resource status"""
     try:
         body = {"status": status_updates}
@@ -110,8 +111,8 @@ async def update_machine_status(
 
 
 async def update_configuration_status(
-    config_name: str, namespace: str, status_updates: Dict
-):
+    config_name: str, namespace: str, status_updates: Dict[str, Any]
+) -> None:
     """Update NixosConfiguration resource status"""
     try:
         body = {"status": status_updates}
@@ -130,7 +131,7 @@ async def update_configuration_status(
         raise
 
 
-def get_machine(machine_name: str, namespace: str):
+def get_machine(machine_name: str, namespace: str) -> Dict[str, Any]:
     """Get Machine resource"""
     return custom_objects_api.get_namespaced_custom_object(
         group="nio.homystack.com",

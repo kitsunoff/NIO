@@ -7,7 +7,7 @@ import urllib.parse
 import os
 import re
 import hashlib
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Any
 from datetime import datetime
 
 from clients import get_secret_data

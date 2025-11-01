@@ -4,7 +4,7 @@ import logging
 import asyncssh
 import tempfile
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 from clients import get_secret_data
 from events import emit_missing_credentials_event
 
@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 async def establish_ssh_connection(
-    machine_spec: Dict,
-    body: Optional[Dict] = None,
+    machine_spec: Dict[str, Any],
+    body: Optional[Dict[str, Any]] = None,
     machine_name: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> Tuple[Optional[asyncssh.SSHClientConnection], Optional[str]]:
