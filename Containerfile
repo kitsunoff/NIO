@@ -28,8 +28,8 @@ ADD https://install.determinate.systems/nix /tmp/nix-installer
 # SECURITY: Enable sandbox for build isolation
 RUN chmod +x /tmp/nix-installer \
     && /tmp/nix-installer install linux \
-        --extra-conf "sandbox = relaxed" \
-        --extra-conf "filter-syscalls = true" \
+        --extra-conf "sandbox = false" \
+        --extra-conf "filter-syscalls = false" \
         --init none \
         --no-confirm \
     && rm -f /tmp/nix-installer
