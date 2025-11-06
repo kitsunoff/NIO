@@ -39,6 +39,8 @@ RUN chmod +x /tmp/nix-installer \
         --init none \
         --no-confirm \
     && rm -f /tmp/nix-installer \
+    && chown -R operator_user:operator_group /nix
+
 # Настройка PATH для Nix
 ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 
@@ -63,4 +65,4 @@ ENV KUBECONFIG=/app/.kube/config \
     PIP_NO_BUILD_ISOLATION=0 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-CMD ["python", "main.py"]
+CMD ["python", "ipxe.py"]

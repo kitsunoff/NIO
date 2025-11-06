@@ -56,6 +56,7 @@ COPY events.py .
 COPY ssh_utils.py .
 COPY known_hosts_manager.py .
 COPY input_validation.py .
+COPY health.py .
 COPY scripts/ ./scripts/
 COPY crds/ ./crds/
 
