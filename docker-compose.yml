@@ -8,32 +8,27 @@ services:
     build:
       context: .
       dockerfile: Containerfile
-    container_name: nixos-operator-dev
-    network_mode: host
     volumes:
       - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
       - ~/.kube/config:/app/.kube/config
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - PYDEVD_DISABLE_FILE_VALIDATION=1 
     ports:
-      - "5678:5678"  # Python debugger port
+      - "5679:5678"  # Python debugger port
 
   # PXE сервер для загрузки машин через iPXE
   nio-ipxe:
     build:
       context: .
       dockerfile: Containerfile.ipxe
-    container_name: ipxe-server
     network_mode: host
     volumes:
       - .:/app
       - .pxe:/app/.pxe
-      - ~/.kube/config:/root/.kube/config
+      - ~/.kube/config:/app/.kube/config
     environment:
-      - KUBECONFIG=/root/.kube/config
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
     command: python ipxe.py
