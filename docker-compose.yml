@@ -16,7 +16,7 @@ services:
       - PYTHONUNBUFFERED=1
       - PYDEVD_DISABLE_FILE_VALIDATION=1 
     ports:
-      - "5679:5678"  # Python debugger port
+      - "5678:5678"  # Python debugger port
 
   # PXE сервер для загрузки машин через iPXE
   nio-ipxe:
