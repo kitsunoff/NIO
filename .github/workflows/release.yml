@@ -15,6 +15,10 @@ jobs:
   build-containerfiles:
     name: Build All Container Images for Release
     uses: ./.github/workflows/build-containerfiles.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     with:
       tag_pattern: |
         type=semver,pattern={{version}}
