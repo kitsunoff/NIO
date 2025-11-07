@@ -55,6 +55,10 @@ RUN pip install --no-cache-dir -r ipxe-requirements.txt
 # Копирование только необходимых файлов
 COPY --chown=operator_user:operator_group ipxe.py .
 
+# Создание структуры директорий для .pxe с правильными правами
+RUN mkdir -p /app/.pxe/result /app/.pxe/ssh /app/.pxe/temp-result \
+    && chown -R operator_user:operator_group /app/.pxe
+
 USER operator_user
 
 # Настройка окружения
@@ -65,4 +69,4 @@ ENV KUBECONFIG=/app/.kube/config \
     PIP_NO_BUILD_ISOLATION=0 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-CMD ["python", "ipxe.py"]
+CMD ["sh", "-c", "mkdir -p /app/.pxe/result /app/.pxe/ssh /app/.pxe/temp-result && python ipxe.py"]
