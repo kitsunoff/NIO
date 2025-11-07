@@ -20,13 +20,8 @@ ARG KIND_VERSION=v0.20.0
 RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
 
-# Создание пользователя (оптимизированная версия)
-ARG USER_UID=1000
-ARG USER_GID=1000
-RUN groupadd -g ${USER_GID} operator_group \
-    && useradd -u ${USER_UID} -g operator_group -m -s /bin/bash operator_user \
-    && mkdir -p /home/operator_user/.kube /app/.kube \
-    && chown -R operator_user:operator_group /home/operator_user /app
+# Создание необходимых директорий
+RUN mkdir -p /app/.kube
 
 # Кэширование установщика Nix через ADD (инвалидируется при изменении установщика)
 ADD https://install.determinate.systems/nix /tmp/nix-installer
@@ -38,8 +33,7 @@ RUN chmod +x /tmp/nix-installer \
         --extra-conf "filter-syscalls = false" \
         --init none \
         --no-confirm \
-    && rm -f /tmp/nix-installer \
-    && chown -R operator_user:operator_group /nix
+    && rm -f /tmp/nix-installer
 
 # Настройка PATH для Nix
 ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
@@ -53,13 +47,7 @@ COPY ipxe-requirements.txt .
 RUN pip install --no-cache-dir -r ipxe-requirements.txt
 
 # Копирование только необходимых файлов
-COPY --chown=operator_user:operator_group ipxe.py .
-
-# Создание структуры директорий для .pxe с правильными правами
-RUN mkdir -p /app/.pxe/result /app/.pxe/ssh /app/.pxe/temp-result \
-    && chown -R operator_user:operator_group /app/.pxe
-
-USER operator_user
+COPY ipxe.py .
 
 # Настройка окружения
 ENV KUBECONFIG=/app/.kube/config \

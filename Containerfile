@@ -13,14 +13,8 @@ ARG KIND_VERSION=v0.20.0
 RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
 
-# Create user
-ARG USER_UID=1000
-ARG USER_GID=1000
-RUN groupadd -g ${USER_GID} operator_group \
-    && useradd -u ${USER_UID} -g operator_group -m -s /bin/bash operator_user \
-    && mkdir -p /home/operator_user/.kube /app/.kube \
-    && chown -R operator_user:operator_group /home/operator_user /app
-
+# Create necessary directories
+RUN mkdir -p /app/.kube
 
 ADD https://install.determinate.systems/nix /tmp/nix-installer
 

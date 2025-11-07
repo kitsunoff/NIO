@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   # # Оператор в режиме разработки
@@ -30,5 +28,4 @@ services:
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-    command: python ipxe.py
     privileged: true
