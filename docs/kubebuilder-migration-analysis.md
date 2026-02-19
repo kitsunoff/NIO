@@ -67,9 +67,8 @@ KOPF uses decorators for event handling:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `hostname` | string | No | Machine hostname |
-| `ipAddress` | string | No | Machine IP address |
-| `sshUser` | string | No | SSH user for connection |
+| `host` | string | Yes | Target machine address (hostname or IP) for SSH connection |
+| `sshUser` | string | No | SSH user for connection (default: "root") |
 | `sshKeySecretRef.name` | string | No | Secret name with SSH private key |
 | `sshKeySecretRef.namespace` | string | No | Secret namespace |
 | `sshPasswordSecretRef.name` | string | No | Secret name with SSH password |
@@ -94,12 +93,11 @@ KOPF uses decorators for event handling:
 
 ```yaml
 additionalPrinterColumns:
-  - name: Hostname        | jsonPath: .spec.hostname
-  - name: IP Address      | jsonPath: .spec.ipAddress
+  - name: Host            | jsonPath: .spec.host
   - name: Discoverable    | jsonPath: .status.discoverable
   - name: Has Config      | jsonPath: .status.hasConfiguration
   - name: Applied Config  | jsonPath: .status.appliedConfiguration
-  - name: Age             | jsonPath: .metadata.creationTimestamp
+  # Age is built-in kubectl column, no need to define
 ```
 
 ### 3.2 NixosConfiguration CRD
@@ -122,8 +120,15 @@ additionalPrinterColumns:
 | `additionalFiles[].path` | string | Yes | Path relative to repo root |
 | `additionalFiles[].valueType` | enum | Yes | Inline, SecretRef, or NixosFacter |
 | `additionalFiles[].inline` | string | No | Inline content |
-| `additionalFiles[].secretRef.name` | string | No | Secret reference |
+| `additionalFiles[].secretRef.name` | string | No | Secret name |
+| `additionalFiles[].secretRef.key` | string | No | Key in secret (required for SecretRef) |
 | `additionalFiles[].nixosFacter` | boolean | No | Generate from machine facts |
+| `jobTemplate` | object | No | Customization for apply Job pods |
+| `jobTemplate.image` | string | No | Custom container image for apply jobs |
+| `jobTemplate.nodeSelector` | map[string]string | No | Node selector for job pods |
+| `jobTemplate.tolerations` | array | No | Tolerations for job pods |
+| `jobTemplate.resources` | ResourceRequirements | No | Resource limits/requests for job container |
+| `jobTemplate.serviceAccountName` | string | No | Custom ServiceAccount for jobs |
 
 #### Status Fields
 
@@ -144,7 +149,7 @@ additionalPrinterColumns:
   - name: Target Machine  | jsonPath: .spec.machineRef.name
   - name: Full Install    | jsonPath: .spec.fullInstall
   - name: Applied Commit  | jsonPath: .status.appliedCommit
-  - name: Age             | jsonPath: .metadata.creationTimestamp
+  # Age is built-in kubectl column, no need to define
 ```
 
 ## 4. Reconciliation Logic
@@ -302,9 +307,54 @@ conditions:
 
 ## 7. Recommended Status Schema for Kubebuilder
 
-### 7.1 Machine Status
+### 7.1 Machine Spec and Status
 
 ```go
+type MachineSpec struct {
+    // Host is the target machine address (hostname or IP) for SSH connection.
+    // +kubebuilder:validation:MinLength=1
+    Host string `json:"host"`
+
+    // SSHUser is the SSH username for connection.
+    // +kubebuilder:default="root"
+    // +optional
+    SSHUser string `json:"sshUser,omitempty"`
+
+    // SSHKeySecretRef references a Secret containing SSH private key.
+    // +optional
+    SSHKeySecretRef *SecretReference `json:"sshKeySecretRef,omitempty"`
+
+    // SSHPasswordSecretRef references a Secret containing SSH password.
+    // +optional
+    SSHPasswordSecretRef *SSHPasswordSecretRef `json:"sshPasswordSecretRef,omitempty"`
+}
+
+// SecretReference references a Secret in a namespace.
+type SecretReference struct {
+    // Name is the Secret name.
+    Name string `json:"name"`
+
+    // Namespace is the Secret namespace.
+    // If empty, defaults to the same namespace as the referencing resource.
+    // +optional
+    Namespace string `json:"namespace,omitempty"`
+}
+
+// SSHPasswordSecretRef references a specific key in a Secret for SSH password.
+type SSHPasswordSecretRef struct {
+    // Name is the Secret name.
+    Name string `json:"name"`
+
+    // Namespace is the Secret namespace.
+    // +optional
+    Namespace string `json:"namespace,omitempty"`
+
+    // Key is the key in the Secret containing the password.
+    // +kubebuilder:default="password"
+    // +optional
+    Key string `json:"key,omitempty"`
+}
+
 type MachineStatus struct {
     // ObservedGeneration is the most recent generation observed by the controller.
     // +optional
@@ -353,7 +403,109 @@ type MachineStatus struct {
 }
 ```
 
-### 7.2 NixosConfiguration Status
+### 7.2 NixosConfiguration Spec (with JobTemplate)
+
+```go
+type NixosConfigurationSpec struct {
+    // MachineRef is a reference to the target Machine resource.
+    MachineRef MachineReference `json:"machineRef"`
+
+    // GitRepo is the URL of the git repository containing NixOS configuration.
+    // +optional
+    GitRepo string `json:"gitRepo,omitempty"`
+
+    // Ref is the git reference (branch, tag, or commit) to checkout.
+    // +kubebuilder:default="main"
+    // +optional
+    Ref string `json:"ref,omitempty"`
+
+    // CredentialsRef references a Secret for private repository access.
+    // +optional
+    CredentialsRef *SecretReference `json:"credentialsRef,omitempty"`
+
+    // Flake is the flake reference (e.g., "#worker").
+    // +optional
+    Flake string `json:"flake,omitempty"`
+
+    // OnRemoveFlake is the flake to apply when this resource is deleted.
+    // +optional
+    OnRemoveFlake string `json:"onRemoveFlake,omitempty"`
+
+    // ConfigurationSubdir is the subdirectory containing Nix configuration.
+    // +optional
+    ConfigurationSubdir string `json:"configurationSubdir,omitempty"`
+
+    // FullInstall enables nixos-anywhere for full disk installation.
+    // +optional
+    FullInstall bool `json:"fullInstall,omitempty"`
+
+    // AdditionalFiles are files to inject into the repository before apply.
+    // +optional
+    AdditionalFiles []AdditionalFile `json:"additionalFiles,omitempty"`
+
+    // JobTemplate customizes the apply Job pods.
+    // +optional
+    JobTemplate *JobTemplate `json:"jobTemplate,omitempty"`
+}
+
+// JobTemplate defines customization for apply Job pods.
+type JobTemplate struct {
+    // Image is the container image for apply jobs.
+    // If not specified, uses the operator's default image.
+    // +optional
+    Image string `json:"image,omitempty"`
+
+    // NodeSelector is a selector for job pod assignment.
+    // +optional
+    NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+    // Tolerations are tolerations for job pods.
+    // +optional
+    Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+    // Resources are resource requirements for the job container.
+    // +optional
+    Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+    // ServiceAccountName is the ServiceAccount for job pods.
+    // If not specified, uses the default job ServiceAccount.
+    // +optional
+    ServiceAccountName string `json:"serviceAccountName,omitempty"`
+}
+
+// AdditionalFile defines a file to inject into the repository.
+type AdditionalFile struct {
+    // Path is the file path relative to repository root.
+    Path string `json:"path"`
+
+    // ValueType specifies how to obtain the file content.
+    // +kubebuilder:validation:Enum=Inline;SecretRef;NixosFacter
+    ValueType string `json:"valueType"`
+
+    // Inline is the literal file content (for ValueType=Inline).
+    // +optional
+    Inline string `json:"inline,omitempty"`
+
+    // SecretRef references a Secret key (for ValueType=SecretRef).
+    // +optional
+    SecretRef *SecretKeyReference `json:"secretRef,omitempty"`
+
+    // NixosFacter generates content from Machine facts (for ValueType=NixosFacter).
+    // +optional
+    NixosFacter bool `json:"nixosFacter,omitempty"`
+}
+
+// SecretKeyReference references a specific key in a Secret.
+type SecretKeyReference struct {
+    // Name is the Secret name.
+    Name string `json:"name"`
+
+    // Key is the key in the Secret.
+    Key string `json:"key"`
+}
+```
+
+### 7.3 NixosConfiguration Status
 
 ```go
 type NixosConfigurationStatus struct {
@@ -395,7 +547,7 @@ type NixosConfigurationStatus struct {
 }
 ```
 
-### 7.3 Standard Condition Types
+### 7.4 Standard Condition Types
 
 ```go
 const (
@@ -428,7 +580,7 @@ const (
 )
 ```
 
-### 7.4 Condition Reasons
+### 7.5 Condition Reasons
 
 ```go
 // Generic reasons
@@ -465,12 +617,9 @@ const (
 
 ```yaml
 additionalPrinterColumns:
-  - name: Hostname
+  - name: Host
     type: string
-    jsonPath: .spec.hostname
-  - name: IP
-    type: string
-    jsonPath: .spec.ipAddress
+    jsonPath: .spec.host
   - name: Ready
     type: string
     jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -480,9 +629,7 @@ additionalPrinterColumns:
   - name: Config
     type: string
     jsonPath: .status.appliedConfiguration
-  - name: Age
-    type: date
-    jsonPath: .metadata.creationTimestamp
+  # Age is built-in kubectl column
 ```
 
 ### 8.2 NixosConfiguration
@@ -804,16 +951,14 @@ data:
 | Type | Source | Processing |
 |------|--------|------------|
 | `Inline` | `spec.additionalFiles[].inline` | Write content directly to file |
-| `SecretRef` | Secret referenced by name | Get **first key** from secret, write value |
+| `SecretRef` | Secret referenced by name and key | Get specified key from secret, write value |
 | `NixosFacter` | Machine spec + hardwareFacts | Generate JSON with machine info |
 
 ### 15.2 NixosFacter Output Format
 
 ```json
 {
-  "machine-id": "<spec.hostname>",
-  "hostname": "<spec.hostname>",
-  "ip-address": "<spec.ipAddress>",
+  "host": "<spec.host>",
   // All fields from status.hardwareFacts merged in:
   "os": { "name": "NixOS", "id": "nixos" },
   "cpu": { "model": "...", "cores": "4" },
@@ -901,7 +1046,7 @@ Raw `key=value` format is parsed into nested JSON:
 
 | Function | Max Length | Allowed Characters | Blocked Patterns |
 |----------|------------|-------------------|------------------|
-| `validate_hostname()` | 253 | `[a-zA-Z0-9\-\.:\[\]]` | `;$\`|&><(){}` newlines |
+| `validate_host()` | 253 | `[a-zA-Z0-9\-\.:\[\]]` | `;$\`|&><(){}` newlines |
 | `validate_git_url()` | 2048 | Valid URL, schemes: `https/http/git/ssh` | `;$\`|&` newlines |
 | `validate_ssh_username()` | 32 | `[a-zA-Z0-9_\-]` | Everything else |
 | `validate_path()` | 4096 | Most chars except dangerous | null bytes, `;$\`|&` newlines |
@@ -914,9 +1059,10 @@ In Go, implement via:
 3. **Runtime validation** (in reconciler before external calls)
 
 ```go
+// +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=253
 // +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9]$`
-Hostname string `json:"hostname"`
+Host string `json:"host"`
 ```
 
 ## 19. Kubernetes Events
@@ -951,12 +1097,10 @@ metadata:
   name: worker-01
   namespace: default
 spec:
-  hostname: worker-01.example.com
-  ipAddress: 192.168.1.100
+  host: worker-01.example.com  # hostname or IP address
   sshUser: root
   sshKeySecretRef:
     name: worker-ssh-key
-    namespace: default
 ```
 
 ### 20.2 NixosConfiguration
@@ -983,12 +1127,30 @@ spec:
       valueType: SecretRef
       secretRef:
         name: worker-api-key
+        key: api-key
     - path: local.nix
       valueType: Inline
       inline: |
         { config, ... }: {
           networking.hostName = "worker-01";
         }
+  jobTemplate:
+    image: ghcr.io/homystack/nixos-operator:v1.0.0
+    nodeSelector:
+      kubernetes.io/arch: amd64
+      node-role.kubernetes.io/builder: "true"
+    tolerations:
+      - key: "dedicated"
+        operator: "Equal"
+        value: "nixos-builder"
+        effect: "NoSchedule"
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 4
+        memory: 4Gi
 ```
 
 ## 21. Error Handling Strategy
@@ -1097,6 +1259,40 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
         timeout = 1800 // 30 min for nixos-rebuild
     }
 
+    // Apply jobTemplate customizations
+    image := r.DefaultJobImage
+    nodeSelector := map[string]string{}
+    var tolerations []corev1.Toleration
+    resources := corev1.ResourceRequirements{
+        Requests: corev1.ResourceList{
+            corev1.ResourceCPU:    resource.MustParse("100m"),
+            corev1.ResourceMemory: resource.MustParse("256Mi"),
+        },
+        Limits: corev1.ResourceList{
+            corev1.ResourceCPU:    resource.MustParse("2"),
+            corev1.ResourceMemory: resource.MustParse("2Gi"),
+        },
+    }
+    serviceAccountName := "nixos-operator-job"
+
+    if jt := config.Spec.JobTemplate; jt != nil {
+        if jt.Image != "" {
+            image = jt.Image
+        }
+        if jt.NodeSelector != nil {
+            nodeSelector = jt.NodeSelector
+        }
+        if jt.Tolerations != nil {
+            tolerations = jt.Tolerations
+        }
+        if jt.Resources != nil {
+            resources = *jt.Resources
+        }
+        if jt.ServiceAccountName != "" {
+            serviceAccountName = jt.ServiceAccountName
+        }
+    }
+
     job := &batchv1.Job{
         ObjectMeta: metav1.ObjectMeta{
             Name:      jobName,
@@ -1125,7 +1321,9 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
                 },
                 Spec: corev1.PodSpec{
                     RestartPolicy:      corev1.RestartPolicyNever,
-                    ServiceAccountName: "nixos-operator-job",
+                    ServiceAccountName: serviceAccountName,
+                    NodeSelector:       nodeSelector,
+                    Tolerations:        tolerations,
                     SecurityContext: &corev1.PodSecurityContext{
                         RunAsNonRoot: ptr.To(true),
                         RunAsUser:    ptr.To(int64(1000)),
@@ -1136,7 +1334,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
                     },
                     Containers: []corev1.Container{{
                         Name:  "nixos-apply",
-                        Image: r.JobImage,
+                        Image: image,
                         Args: []string{
                             "apply",
                             "--config-name=" + config.Name,
@@ -1155,16 +1353,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
                                 MountPath: "/work",
                             },
                         },
-                        Resources: corev1.ResourceRequirements{
-                            Requests: corev1.ResourceList{
-                                corev1.ResourceCPU:    resource.MustParse("100m"),
-                                corev1.ResourceMemory: resource.MustParse("256Mi"),
-                            },
-                            Limits: corev1.ResourceList{
-                                corev1.ResourceCPU:    resource.MustParse("2"),
-                                corev1.ResourceMemory: resource.MustParse("2Gi"),
-                            },
-                        },
+                        Resources: resources,
                         SecurityContext: &corev1.SecurityContext{
                             AllowPrivilegeEscalation: ptr.To(false),
                             ReadOnlyRootFilesystem:   ptr.To(true),
