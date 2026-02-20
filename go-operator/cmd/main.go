@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	niov1alpha1 "github.com/homystack/nixos-operator/api/v1alpha1"
+	"github.com/homystack/nixos-operator/cmd/apply"
 	"github.com/homystack/nixos-operator/internal/controller"
 	"github.com/homystack/nixos-operator/internal/ssh"
 	// +kubebuilder:scaffold:imports
@@ -55,6 +57,22 @@ func init() {
 
 // nolint:gocyclo
 func main() {
+	// Check for subcommands
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "apply":
+			if err := apply.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "version":
+			fmt.Println("nixos-operator v0.1.0")
+			return
+		}
+	}
+
+	// Default: run controller
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string

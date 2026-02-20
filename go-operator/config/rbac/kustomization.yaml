@@ -28,4 +28,6 @@ resources:
 - machine_admin_role.yaml
 - machine_editor_role.yaml
 - machine_viewer_role.yaml
+# RBAC for apply jobs (used by Jobs that apply NixOS configurations)
+- apply_job_role.yaml
 

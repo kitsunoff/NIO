@@ -31,12 +31,12 @@ RUN chmod +x /tmp/nix-installer \
     && /tmp/nix-installer install linux \
         --extra-conf "sandbox = false" \
         --extra-conf "filter-syscalls = false" \
-        --init none \
         --no-confirm \
+        --init none \
     && rm -f /tmp/nix-installer
 
 # Настройка PATH для Nix
-ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
+ENV PATH="/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:${PATH}"
 
 WORKDIR /app
 

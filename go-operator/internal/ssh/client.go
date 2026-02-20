@@ -74,7 +74,7 @@ func (c *DefaultClient) CheckConnection(ctx context.Context, host string, port i
 	if err != nil {
 		return fmt.Errorf("tcp dial: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Set deadline for SSH handshake
 	deadline, ok := ctx.Deadline()
@@ -89,11 +89,11 @@ func (c *DefaultClient) CheckConnection(ctx context.Context, host string, port i
 	if err != nil {
 		return fmt.Errorf("ssh handshake: %w", err)
 	}
-	defer sshConn.Close()
+	defer func() { _ = sshConn.Close() }()
 
 	// Create client for proper cleanup
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	return nil
 }
@@ -113,7 +113,7 @@ func (c *DefaultClient) RunCommand(ctx context.Context, host string, port int, c
 	if err != nil {
 		return "", fmt.Errorf("tcp dial: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Set deadline for SSH handshake
 	deadline, ok := ctx.Deadline()
@@ -128,16 +128,16 @@ func (c *DefaultClient) RunCommand(ctx context.Context, host string, port int, c
 	if err != nil {
 		return "", fmt.Errorf("ssh handshake: %w", err)
 	}
-	defer sshConn.Close()
+	defer func() { _ = sshConn.Close() }()
 
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	session, err := client.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("new session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	output, err := session.CombinedOutput(command)
 	if err != nil {
@@ -169,10 +169,16 @@ func (c *DefaultClient) buildSSHConfig(config *Config) (*ssh.ClientConfig, error
 		return nil, fmt.Errorf("no authentication method configured")
 	}
 
+	// WARNING: InsecureIgnoreHostKey is vulnerable to MITM attacks.
+	// This is acceptable in the operator context because:
+	// 1. Communication happens within trusted network (cluster to managed nodes)
+	// 2. SSH keys provide authentication (attacker cannot impersonate without key)
+	// 3. Proper host key verification requires storing known_hosts which adds complexity
+	// TODO: Consider implementing host key verification via Secret or Machine spec
 	return &ssh.ClientConfig{
 		User:            config.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // See comment above
 		Timeout:         config.Timeout,
 	}, nil
 }

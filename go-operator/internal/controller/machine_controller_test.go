@@ -321,5 +321,261 @@ var _ = Describe("Machine resource not found", func() {
 	})
 })
 
+var _ = Describe("Machine state transitions", func() {
+	var testCounter int
+
+	Context("Machine Undiscoverable → Discoverable transition", func() {
+		var resourceName string
+		var secretName string
+		var typeNamespacedName types.NamespacedName
+
+		ctx := context.Background()
+
+		BeforeEach(func() {
+			testCounter++
+			resourceName = fmt.Sprintf("test-transition-%d", testCounter)
+			secretName = fmt.Sprintf("test-ssh-key-transition-%d", testCounter)
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+
+			By("creating the SSH key secret")
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: "default",
+				},
+				Type: corev1.SecretTypeSSHAuth,
+				Data: map[string][]byte{
+					"ssh-privatekey": []byte("fake-private-key"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			By("creating Machine resource")
+			resource := &niov1alpha1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: niov1alpha1.MachineSpec{
+					Host:    "test-host.example.com",
+					SSHUser: "root",
+					SSHKeySecretRef: &niov1alpha1.SecretReference{
+						Name: secretName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &niov1alpha1.Machine{}
+			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+			if err == nil {
+				if len(resource.Finalizers) > 0 {
+					resource.Finalizers = nil
+					Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+				}
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			}
+
+			secret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
+			}
+		})
+
+		It("should transition from Undiscoverable to Discoverable on SSH success", func() {
+			// First reconcile with failing SSH
+			failingSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return fmt.Errorf("connection refused")
+				},
+			}
+
+			reconciler := &MachineReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(10),
+				SSHClient: failingSSH,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			machine := &niov1alpha1.Machine{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(machine.Status.Discoverable).To(BeFalse())
+
+			// Second reconcile with successful SSH
+			successSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return nil
+				},
+			}
+
+			reconciler.SSHClient = successSSH
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(machine.Status.Discoverable).To(BeTrue())
+		})
+
+		It("should transition from Discoverable to Undiscoverable on SSH failure", func() {
+			// First reconcile with successful SSH
+			successSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return nil
+				},
+			}
+
+			reconciler := &MachineReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(10),
+				SSHClient: successSSH,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			machine := &niov1alpha1.Machine{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(machine.Status.Discoverable).To(BeTrue())
+
+			// Second reconcile with failing SSH
+			failingSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return fmt.Errorf("connection timeout")
+				},
+			}
+
+			reconciler.SSHClient = failingSSH
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(machine.Status.Discoverable).To(BeFalse())
+		})
+	})
+})
+
+var _ = Describe("Machine finalizer handling", func() {
+	var testCounter int
+
+	Context("When Machine is deleted", func() {
+		var resourceName string
+		var secretName string
+		var typeNamespacedName types.NamespacedName
+
+		ctx := context.Background()
+
+		BeforeEach(func() {
+			testCounter++
+			resourceName = fmt.Sprintf("test-finalizer-%d", testCounter)
+			secretName = fmt.Sprintf("test-ssh-key-finalizer-%d", testCounter)
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+
+			By("creating the SSH key secret")
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: "default",
+				},
+				Type: corev1.SecretTypeSSHAuth,
+				Data: map[string][]byte{
+					"ssh-privatekey": []byte("fake-private-key"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			By("creating Machine resource")
+			resource := &niov1alpha1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: niov1alpha1.MachineSpec{
+					Host:    "test-host.example.com",
+					SSHUser: "root",
+					SSHKeySecretRef: &niov1alpha1.SecretReference{
+						Name: secretName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			secret := &corev1.Secret{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
+			}
+		})
+
+		It("should add finalizer on first reconcile", func() {
+			mockSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return nil
+				},
+			}
+
+			reconciler := &MachineReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(10),
+				SSHClient: mockSSH,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			machine := &niov1alpha1.Machine{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(machine.Finalizers).To(ContainElement(niov1alpha1.FinalizerName))
+		})
+
+		It("should remove finalizer on deletion", func() {
+			mockSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return nil
+				},
+			}
+
+			reconciler := &MachineReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(10),
+				SSHClient: mockSSH,
+			}
+
+			// First reconcile to add finalizer
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete the machine
+			machine := &niov1alpha1.Machine{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, machine)).To(Succeed())
+
+			// Reconcile to process deletion
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Machine should be gone
+			err = k8sClient.Get(ctx, typeNamespacedName, machine)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+})
+
 // Suppress unused import error
 var _ = errors.IsNotFound

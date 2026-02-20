@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	niov1alpha1 "github.com/homystack/nixos-operator/api/v1alpha1"
+	"github.com/homystack/nixos-operator/internal/metrics"
 	"github.com/homystack/nixos-operator/internal/ssh"
 )
 
@@ -169,6 +170,8 @@ func (r *MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // reconcile performs the main reconciliation logic.
+//
+//nolint:unparam // error return kept for controller-runtime pattern consistency
 func (r *MachineReconciler) reconcile(ctx context.Context, machine *niov1alpha1.Machine) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -229,6 +232,7 @@ func (r *MachineReconciler) checkDiscoverable(ctx context.Context, machine *niov
 			Message:            err.Error(),
 		})
 		r.Recorder.Event(machine, corev1.EventTypeWarning, "CredentialsMissing", err.Error())
+		metrics.RecordError("ssh")
 		return false, err
 	}
 
@@ -236,12 +240,15 @@ func (r *MachineReconciler) checkDiscoverable(ctx context.Context, machine *niov
 	checkCtx, cancel := context.WithTimeout(ctx, DefaultSSHTimeout)
 	defer cancel()
 
-	// Check connection
+	// Check connection and record metrics
+	startTime := time.Now()
 	if err := r.SSHClient.CheckConnection(checkCtx, machine.Spec.Host, DefaultSSHPort, sshConfig); err != nil {
 		log.Info("SSH connection failed", "host", machine.Spec.Host, "error", err)
+		metrics.RecordSSHConnection(false, time.Since(startTime).Seconds())
 		return false, err
 	}
 
+	metrics.RecordSSHConnection(true, time.Since(startTime).Seconds())
 	log.Info("SSH connection successful", "host", machine.Spec.Host)
 	return true, nil
 }

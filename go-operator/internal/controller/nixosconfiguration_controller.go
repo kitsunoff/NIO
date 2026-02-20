@@ -37,10 +37,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-)
 
-import (
 	niov1alpha1 "github.com/homystack/nixos-operator/api/v1alpha1"
+	"github.com/homystack/nixos-operator/internal/metrics"
 )
 
 const (
@@ -283,7 +282,7 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 	}
 
 	// Create apply job
-	job, err := r.createApplyJob(ctx, config, &machine)
+	job, err := r.createAndSubmitApplyJob(ctx, config, &machine)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -361,6 +360,16 @@ func (r *NixosConfigurationReconciler) monitorJob(ctx context.Context, config *n
 func (r *NixosConfigurationReconciler) handleJobSuccess(ctx context.Context, config *niov1alpha1.NixosConfiguration, job *batchv1.Job, machine *niov1alpha1.Machine) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Record metrics
+	operation := "rebuild"
+	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
+		operation = "anywhere"
+	}
+	if job.Status.CompletionTime != nil && job.Status.StartTime != nil {
+		duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
+		metrics.RecordJobCompletion(operation, true, duration)
+	}
+
 	// Calculate configuration hash for change detection
 	configHash := r.calculateConfigHash(config)
 
@@ -416,6 +425,19 @@ func (r *NixosConfigurationReconciler) handleJobSuccess(ctx context.Context, con
 
 // handleJobFailure handles failed job completion.
 func (r *NixosConfigurationReconciler) handleJobFailure(ctx context.Context, config *niov1alpha1.NixosConfiguration, job *batchv1.Job) (ctrl.Result, error) {
+	_ = ctx // ctx reserved for future use (e.g., fetching pod logs)
+
+	// Record metrics
+	operation := "rebuild"
+	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
+		operation = "anywhere"
+	}
+	if job.Status.StartTime != nil {
+		duration := time.Since(job.Status.StartTime.Time).Seconds()
+		metrics.RecordJobCompletion(operation, false, duration)
+	}
+	metrics.RecordError("nix")
+
 	// Get failure reason from job conditions
 	failureMessage := "Apply job failed"
 	for _, condition := range job.Status.Conditions {
@@ -469,8 +491,10 @@ func (r *NixosConfigurationReconciler) reconcileDelete(ctx context.Context, conf
 
 	// Apply onRemoveFlake if specified
 	if config.Spec.OnRemoveFlake != "" {
-		// TODO: Implement onRemoveFlake application with retries
-		log.Info("onRemoveFlake specified but not yet implemented", "flake", config.Spec.OnRemoveFlake)
+		result, err := r.applyOnRemoveFlake(ctx, config)
+		if err != nil || result.RequeueAfter > 0 {
+			return result, err
+		}
 	}
 
 	// Clear Machine status
@@ -516,7 +540,7 @@ func (r *NixosConfigurationReconciler) findExistingJob(ctx context.Context, conf
 	for i := range jobList.Items {
 		job := &jobList.Items[i]
 		// Find active or recently completed job
-		if job.Status.Active > 0 || job.Status.Succeeded == 0 && job.Status.Failed == 0 {
+		if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
 			return job, nil
 		}
 	}
@@ -526,6 +550,8 @@ func (r *NixosConfigurationReconciler) findExistingJob(ctx context.Context, conf
 
 // needsApply determines if configuration needs to be applied.
 func (r *NixosConfigurationReconciler) needsApply(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (bool, string) {
+	_ = ctx // ctx reserved for future use (e.g., checking external state)
+
 	// First time application
 	if config.Status.AppliedCommit == "" {
 		return true, "never applied"
@@ -573,18 +599,15 @@ func (r *NixosConfigurationReconciler) hasActiveJobForMachine(ctx context.Contex
 func (r *NixosConfigurationReconciler) countActiveJobs(ctx context.Context) (int, error) {
 	var jobList batchv1.JobList
 	if err := r.List(ctx, &jobList,
-		client.MatchingLabels{LabelConfigName: ""}, // This won't work correctly
+		client.HasLabels{LabelConfigName},
 	); err != nil {
 		return 0, err
 	}
 
 	count := 0
 	for _, job := range jobList.Items {
-		// Check if it's our job by label
-		if _, ok := job.Labels[LabelConfigName]; ok {
-			if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
-				count++
-			}
+		if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
+			count++
 		}
 	}
 
@@ -592,7 +615,10 @@ func (r *NixosConfigurationReconciler) countActiveJobs(ctx context.Context) (int
 }
 
 // createApplyJob creates a Kubernetes Job to apply the configuration.
+//
+//nolint:unparam // ctx reserved for future use (e.g., fetching secrets for job spec)
 func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*batchv1.Job, error) {
+	_ = ctx // ctx reserved for future use
 	jobName := fmt.Sprintf("%s-apply-%d", config.Name, time.Now().Unix())
 
 	// Determine timeout
@@ -759,6 +785,16 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		return nil, err
 	}
 
+	return job, nil
+}
+
+// createAndSubmitApplyJob creates and submits an apply job to Kubernetes.
+func (r *NixosConfigurationReconciler) createAndSubmitApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*batchv1.Job, error) {
+	job, err := r.createApplyJob(ctx, config, machine)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := r.Create(ctx, job); err != nil {
 		return nil, err
 	}
@@ -792,17 +828,117 @@ func (r *NixosConfigurationReconciler) cancelRunningJobs(ctx context.Context, co
 	return nil
 }
 
+// applyOnRemoveFlake creates a Job to apply the onRemoveFlake configuration.
+func (r *NixosConfigurationReconciler) applyOnRemoveFlake(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Check retry count
+	retryCount := 0
+	if countStr, ok := config.Annotations[AnnotationOnRemoveRetries]; ok {
+		if _, err := fmt.Sscanf(countStr, "%d", &retryCount); err != nil {
+			log.Error(err, "failed to parse retry count")
+		}
+	}
+
+	if retryCount >= MaxOnRemoveRetries {
+		log.Info("max onRemoveFlake retries exceeded, skipping", "retries", retryCount)
+		r.Recorder.Event(config, corev1.EventTypeWarning, "OnRemoveFlakeFailed",
+			fmt.Sprintf("Max retries (%d) exceeded for onRemoveFlake", MaxOnRemoveRetries))
+		return ctrl.Result{}, nil
+	}
+
+	// Get machine
+	var machine niov1alpha1.Machine
+	machineKey := types.NamespacedName{
+		Name:      config.Spec.MachineRef.Name,
+		Namespace: config.Namespace,
+	}
+	if err := r.Get(ctx, machineKey, &machine); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("machine not found for onRemoveFlake, skipping")
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Check if machine is discoverable
+	if !machine.Status.Discoverable {
+		log.Info("machine not discoverable, retrying onRemoveFlake later")
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	}
+
+	// Check for existing onRemove job
+	jobName := fmt.Sprintf("%s-onremove", config.Name)
+	var existingJob batchv1.Job
+	jobKey := types.NamespacedName{Name: jobName, Namespace: config.Namespace}
+	err := r.Get(ctx, jobKey, &existingJob)
+	if err == nil {
+		// Job exists - check status
+		if existingJob.Status.Succeeded > 0 {
+			log.Info("onRemoveFlake job completed successfully")
+			return ctrl.Result{}, nil
+		}
+		if existingJob.Status.Failed > 0 {
+			log.Info("onRemoveFlake job failed, incrementing retry count")
+			// Increment retry count
+			if config.Annotations == nil {
+				config.Annotations = make(map[string]string)
+			}
+			config.Annotations[AnnotationOnRemoveRetries] = fmt.Sprintf("%d", retryCount+1)
+			if err := r.Update(ctx, config); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Delete failed job to allow retry
+			if err := r.Delete(ctx, &existingJob); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+		}
+		// Job still running
+		log.Info("onRemoveFlake job still running")
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	// Create onRemove job (similar to apply job but with OnRemoveFlake)
+	log.Info("creating onRemoveFlake job", "flake", config.Spec.OnRemoveFlake)
+
+	// Create a modified config for the onRemove job
+	onRemoveConfig := config.DeepCopy()
+	onRemoveConfig.Spec.Flake = config.Spec.OnRemoveFlake
+
+	job, err := r.createApplyJob(ctx, onRemoveConfig, &machine)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("build onRemove job: %w", err)
+	}
+
+	// Override job name and add onRemove label
+	job.Name = jobName
+	job.Labels["nio.homystack.com/operation"] = "onRemove"
+
+	if err := r.Create(ctx, job); err != nil {
+		return ctrl.Result{}, fmt.Errorf("submit onRemove job: %w", err)
+	}
+
+	r.Recorder.Event(config, corev1.EventTypeNormal, "OnRemoveFlakeStarted",
+		fmt.Sprintf("Started onRemoveFlake job with flake %s", config.Spec.OnRemoveFlake))
+
+	return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+}
+
 // calculateConfigHash calculates a hash of the configuration spec.
 func (r *NixosConfigurationReconciler) calculateConfigHash(config *niov1alpha1.NixosConfiguration) string {
 	h := sha256.New()
-	h.Write([]byte(config.Spec.GitRepo))
-	h.Write([]byte(config.Spec.Ref))
-	h.Write([]byte(config.Spec.Flake))
-	h.Write([]byte(config.Spec.ConfigurationSubdir))
-	h.Write([]byte(fmt.Sprintf("%v", config.Spec.FullInstall)))
+	_, _ = h.Write([]byte(config.Spec.GitRepo))
+	_, _ = h.Write([]byte(config.Spec.Ref))
+	_, _ = h.Write([]byte(config.Spec.Flake))
+	_, _ = h.Write([]byte(config.Spec.ConfigurationSubdir))
+	_, _ = fmt.Fprintf(h, "%v", config.Spec.FullInstall)
 	for _, f := range config.Spec.AdditionalFiles {
-		h.Write([]byte(f.Path))
-		h.Write([]byte(f.Inline))
+		_, _ = h.Write([]byte(f.Path))
+		_, _ = h.Write([]byte(f.Inline))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
