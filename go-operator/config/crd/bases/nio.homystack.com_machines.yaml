@@ -14,10 +14,26 @@ spec:
     singular: machine
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.host
+      name: Host
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Discoverable")].status
+      name: Discoverable
+      type: string
+    - jsonPath: .status.appliedConfiguration
+      name: Config
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Machine is the Schema for the machines API
+        description: Machine is the Schema for the machines API.
         properties:
           apiVersion:
             description: |-
@@ -37,27 +53,65 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of Machine
+            description: Spec defines the desired state of Machine.
             properties:
-              foo:
-                description: foo is an example field of Machine. Edit machine_types.go
-                  to remove/update
+              host:
+                description: Host is the target machine address (hostname or IP) for
+                  SSH connection.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-zA-Z0-9][a-zA-Z0-9\-\.\:]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$
                 type: string
+              sshKeySecretRef:
+                description: |-
+                  SSHKeySecretRef references a Secret containing SSH private key.
+                  The Secret must be in the same namespace as the Machine resource.
+                properties:
+                  name:
+                    description: Name is the Secret name (must be in the same namespace
+                      as the referencing resource).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              sshPasswordSecretRef:
+                description: |-
+                  SSHPasswordSecretRef references a Secret containing SSH password.
+                  The Secret must be in the same namespace as the Machine resource.
+                properties:
+                  key:
+                    default: password
+                    description: Key is the key in the Secret containing the password.
+                    type: string
+                  name:
+                    description: Name is the Secret name (must be in the same namespace
+                      as the Machine).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              sshUser:
+                default: root
+                description: SSHUser is the SSH username for connection.
+                maxLength: 32
+                pattern: ^[a-zA-Z_][a-zA-Z0-9_\-]*$
+                type: string
+            required:
+            - host
             type: object
           status:
-            description: status defines the observed state of Machine
+            description: Status defines the observed state of Machine.
             properties:
+              appliedCommit:
+                description: AppliedCommit is the git commit hash of applied configuration.
+                type: string
+              appliedConfiguration:
+                description: AppliedConfiguration is the name of applied NixosConfiguration.
+                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the Machine resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: Conditions represent the latest available observations.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +170,99 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              discoverable:
+                description: Discoverable indicates if machine is reachable via SSH.
+                type: boolean
+              hardwareFacts:
+                description: HardwareFacts contains collected hardware information.
+                properties:
+                  architecture:
+                    description: Architecture is the system architecture (e.g., x86_64,
+                      aarch64).
+                    type: string
+                  cpu:
+                    description: CPU contains processor information.
+                    properties:
+                      cores:
+                        description: Cores is the number of CPU cores.
+                        type: string
+                      model:
+                        description: Model is the CPU model name.
+                        type: string
+                    type: object
+                  disks:
+                    additionalProperties:
+                      type: string
+                    description: Disks contains disk information (name -> size).
+                    type: object
+                  hostname:
+                    description: Hostname is the system hostname.
+                    type: string
+                  interfaces:
+                    additionalProperties:
+                      type: string
+                    description: Interfaces contains network interface information
+                      (name -> IP).
+                    type: object
+                  kernel:
+                    description: Kernel contains kernel information.
+                    properties:
+                      version:
+                        description: Version is the kernel version.
+                        type: string
+                    type: object
+                  memory:
+                    description: Memory contains memory information in MB.
+                    properties:
+                      mb:
+                        description: MB is the total memory in megabytes.
+                        type: string
+                    type: object
+                  os:
+                    description: OS contains operating system information.
+                    properties:
+                      id:
+                        description: ID is the OS identifier (e.g., "nixos").
+                        type: string
+                      name:
+                        description: Name is the OS name (e.g., "NixOS").
+                        type: string
+                    type: object
+                  virtualization:
+                    description: Virtualization contains virtualization type information.
+                    properties:
+                      containerEngine:
+                        description: ContainerEngine is the container engine if running
+                          in a container.
+                        type: string
+                      type:
+                        description: Type is the virtualization type (physical, vm,
+                          docker, etc.).
+                        type: string
+                    type: object
+                type: object
+              hasConfiguration:
+                description: HasConfiguration indicates if a NixOS configuration is
+                  applied.
+                type: boolean
+              lastAppliedTime:
+                description: LastAppliedTime is the timestamp of last successful application.
+                format: date-time
+                type: string
+              lastHardwareScanTime:
+                description: LastHardwareScanTime is the timestamp of last hardware
+                  scan.
+                format: date-time
+                type: string
+              nixFacterResult:
+                description: NixFacterResult contains nix facter command output.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

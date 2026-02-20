@@ -38,7 +38,7 @@ var _ = Describe("NixosConfiguration Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default",
 		}
 		nixosconfiguration := &niov1alpha1.NixosConfiguration{}
 
@@ -51,14 +51,20 @@ var _ = Describe("NixosConfiguration Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: niov1alpha1.NixosConfigurationSpec{
+						MachineRef: niov1alpha1.MachineReference{
+							Name: "test-machine",
+						},
+						GitRepo: "https://github.com/example/nixos-config.git",
+						Ref:     "main",
+						Flake:   "#default",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &niov1alpha1.NixosConfiguration{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -66,6 +72,7 @@ var _ = Describe("NixosConfiguration Controller", func() {
 			By("Cleanup the specific resource instance NixosConfiguration")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
+
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &NixosConfigurationReconciler{
@@ -77,8 +84,6 @@ var _ = Describe("NixosConfiguration Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 })

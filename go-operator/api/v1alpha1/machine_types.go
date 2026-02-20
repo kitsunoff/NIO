@@ -18,72 +18,218 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// MachineSpec defines the desired state of Machine
+// MachineSpec defines the desired state of Machine.
 type MachineSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// Host is the target machine address (hostname or IP) for SSH connection.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9\-\.\:]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$`
+	Host string `json:"host"`
 
-	// foo is an example field of Machine. Edit machine_types.go to remove/update
+	// SSHUser is the SSH username for connection.
+	// +kubebuilder:default="root"
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z_][a-zA-Z0-9_\-]*$`
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	SSHUser string `json:"sshUser,omitempty"`
+
+	// SSHKeySecretRef references a Secret containing SSH private key.
+	// The Secret must be in the same namespace as the Machine resource.
+	// +optional
+	SSHKeySecretRef *SecretReference `json:"sshKeySecretRef,omitempty"`
+
+	// SSHPasswordSecretRef references a Secret containing SSH password.
+	// The Secret must be in the same namespace as the Machine resource.
+	// +optional
+	SSHPasswordSecretRef *SSHPasswordSecretRef `json:"sshPasswordSecretRef,omitempty"`
+}
+
+// SecretReference references a Secret in the same namespace.
+// Cross-namespace references are not supported by design.
+type SecretReference struct {
+	// Name is the Secret name (must be in the same namespace as the referencing resource).
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// SSHPasswordSecretRef references a specific key in a Secret for SSH password.
+// Must be in the same namespace as the Machine resource.
+type SSHPasswordSecretRef struct {
+	// Name is the Secret name (must be in the same namespace as the Machine).
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Key is the key in the Secret containing the password.
+	// +kubebuilder:default="password"
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // MachineStatus defines the observed state of Machine.
 type MachineStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// Discoverable indicates if machine is reachable via SSH.
+	// +optional
+	Discoverable bool `json:"discoverable,omitempty"`
 
-	// conditions represent the current state of the Machine resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// HasConfiguration indicates if a NixOS configuration is applied.
+	// +optional
+	HasConfiguration bool `json:"hasConfiguration,omitempty"`
+
+	// AppliedConfiguration is the name of applied NixosConfiguration.
+	// +optional
+	AppliedConfiguration string `json:"appliedConfiguration,omitempty"`
+
+	// AppliedCommit is the git commit hash of applied configuration.
+	// +optional
+	AppliedCommit string `json:"appliedCommit,omitempty"`
+
+	// LastAppliedTime is the timestamp of last successful application.
+	// +optional
+	LastAppliedTime *metav1.Time `json:"lastAppliedTime,omitempty"`
+
+	// LastHardwareScanTime is the timestamp of last hardware scan.
+	// +optional
+	LastHardwareScanTime *metav1.Time `json:"lastHardwareScanTime,omitempty"`
+
+	// HardwareFacts contains collected hardware information.
+	// +optional
+	HardwareFacts *HardwareFacts `json:"hardwareFacts,omitempty"`
+
+	// NixFacterResult contains nix facter command output.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	NixFacterResult *runtime.RawExtension `json:"nixFacterResult,omitempty"`
+
+	// Conditions represent the latest available observations.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
 	// +listType=map
 	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+}
+
+// HardwareFacts contains hardware information collected from the machine.
+type HardwareFacts struct {
+	// OS contains operating system information.
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	OS *OSInfo `json:"os,omitempty"`
+
+	// Kernel contains kernel information.
+	// +optional
+	Kernel *KernelInfo `json:"kernel,omitempty"`
+
+	// CPU contains processor information.
+	// +optional
+	CPU *CPUInfo `json:"cpu,omitempty"`
+
+	// Memory contains memory information in MB.
+	// +optional
+	Memory *MemoryInfo `json:"memory,omitempty"`
+
+	// Architecture is the system architecture (e.g., x86_64, aarch64).
+	// +optional
+	Architecture string `json:"architecture,omitempty"`
+
+	// Hostname is the system hostname.
+	// +optional
+	Hostname string `json:"hostname,omitempty"`
+
+	// Virtualization contains virtualization type information.
+	// +optional
+	Virtualization *VirtualizationInfo `json:"virtualization,omitempty"`
+
+	// Disks contains disk information (name -> size).
+	// +optional
+	Disks map[string]string `json:"disks,omitempty"`
+
+	// Interfaces contains network interface information (name -> IP).
+	// +optional
+	Interfaces map[string]string `json:"interfaces,omitempty"`
+}
+
+// OSInfo contains operating system information.
+type OSInfo struct {
+	// Name is the OS name (e.g., "NixOS").
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// ID is the OS identifier (e.g., "nixos").
+	// +optional
+	ID string `json:"id,omitempty"`
+}
+
+// KernelInfo contains kernel information.
+type KernelInfo struct {
+	// Version is the kernel version.
+	// +optional
+	Version string `json:"version,omitempty"`
+}
+
+// CPUInfo contains CPU information.
+type CPUInfo struct {
+	// Model is the CPU model name.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// Cores is the number of CPU cores.
+	// +optional
+	Cores string `json:"cores,omitempty"`
+}
+
+// MemoryInfo contains memory information.
+type MemoryInfo struct {
+	// MB is the total memory in megabytes.
+	// +optional
+	MB string `json:"mb,omitempty"`
+}
+
+// VirtualizationInfo contains virtualization information.
+type VirtualizationInfo struct {
+	// Type is the virtualization type (physical, vm, docker, etc.).
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// ContainerEngine is the container engine if running in a container.
+	// +optional
+	ContainerEngine string `json:"containerEngine,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Host",type="string",JSONPath=".spec.host"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
+// +kubebuilder:printcolumn:name="Discoverable",type="string",JSONPath=".status.conditions[?(@.type==\"Discoverable\")].status"
+// +kubebuilder:printcolumn:name="Config",type="string",JSONPath=".status.appliedConfiguration"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Machine is the Schema for the machines API
+// Machine is the Schema for the machines API.
 type Machine struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// metadata is a standard object metadata
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
-
-	// spec defines the desired state of Machine
+	// Spec defines the desired state of Machine.
 	// +required
 	Spec MachineSpec `json:"spec"`
 
-	// status defines the observed state of Machine
+	// Status defines the observed state of Machine.
 	// +optional
-	Status MachineStatus `json:"status,omitzero"`
+	Status MachineStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// MachineList contains a list of Machine
+// MachineList contains a list of Machine.
 type MachineList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
+	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []Machine `json:"items"`
 }
 

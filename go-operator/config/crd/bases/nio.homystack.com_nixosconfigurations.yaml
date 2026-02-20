@@ -14,11 +14,28 @@ spec:
     singular: nixosconfiguration
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.machineRef.name
+      name: Target
+      type: string
+    - jsonPath: .spec.flake
+      name: Flake
+      type: string
+    - jsonPath: .status.appliedCommit
+      name: Commit
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: NixosConfiguration is the Schema for the nixosconfigurations
-          API
+          API.
         properties:
           apiVersion:
             description: |-
@@ -38,27 +55,238 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of NixosConfiguration
+            description: Spec defines the desired state of NixosConfiguration.
             properties:
-              foo:
-                description: foo is an example field of NixosConfiguration. Edit nixosconfiguration_types.go
-                  to remove/update
+              additionalFiles:
+                description: AdditionalFiles are files to inject into the repository
+                  before apply.
+                items:
+                  description: AdditionalFile defines a file to inject into the repository.
+                  properties:
+                    inline:
+                      description: Inline is the literal file content (for ValueType=Inline).
+                      type: string
+                    nixosFacter:
+                      description: NixosFacter generates content from Machine facts
+                        (for ValueType=NixosFacter).
+                      type: boolean
+                    path:
+                      description: Path is the file path relative to repository root.
+                      maxLength: 4096
+                      minLength: 1
+                      type: string
+                    secretRef:
+                      description: SecretRef references a Secret key (for ValueType=SecretRef).
+                      properties:
+                        key:
+                          description: Key is the key in the Secret.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the Secret name.
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    valueType:
+                      allOf:
+                      - enum:
+                        - Inline
+                        - SecretRef
+                        - NixosFacter
+                      - enum:
+                        - Inline
+                        - SecretRef
+                        - NixosFacter
+                      description: ValueType specifies how to obtain the file content.
+                      type: string
+                  required:
+                  - path
+                  - valueType
+                  type: object
+                type: array
+              configurationSubdir:
+                description: ConfigurationSubdir is the subdirectory containing Nix
+                  configuration.
                 type: string
+              credentialsRef:
+                description: |-
+                  CredentialsRef references a Secret for private repository access.
+                  Must be in the same namespace.
+                properties:
+                  name:
+                    description: Name is the Secret name (must be in the same namespace
+                      as the referencing resource).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              flake:
+                description: Flake is the flake reference (e.g., "#worker").
+                type: string
+              fullInstall:
+                description: FullInstall enables nixos-anywhere for full disk installation.
+                type: boolean
+              gitRepo:
+                description: GitRepo is the URL of the git repository containing NixOS
+                  configuration.
+                maxLength: 2048
+                type: string
+              jobTemplate:
+                description: JobTemplate customizes the apply Job pods.
+                properties:
+                  image:
+                    description: |-
+                      Image is the container image for apply jobs.
+                      If not specified, uses the operator's default image.
+                    type: string
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector is a selector for job pod assignment.
+                    type: object
+                  resources:
+                    description: Resources are resource requirements for the job container.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  serviceAccountName:
+                    description: |-
+                      ServiceAccountName is the ServiceAccount for job pods.
+                      If not specified, uses the default job ServiceAccount.
+                    type: string
+                  tolerations:
+                    description: Tolerations are tolerations for job pods.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    type: array
+                type: object
+              machineRef:
+                description: |-
+                  MachineRef is a reference to the target Machine resource.
+                  Machine must be in the same namespace as NixosConfiguration (by design).
+                properties:
+                  name:
+                    description: Name is the Machine resource name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              onRemoveFlake:
+                description: OnRemoveFlake is the flake to apply when this resource
+                  is deleted.
+                type: string
+              ref:
+                default: main
+                description: Ref is the git reference (branch, tag, or commit) to
+                  checkout.
+                type: string
+            required:
+            - machineRef
             type: object
           status:
-            description: status defines the observed state of NixosConfiguration
+            description: Status defines the observed state of NixosConfiguration.
             properties:
+              additionalFilesHash:
+                description: AdditionalFilesHash is the hash of injected files.
+                type: string
+              appliedCommit:
+                description: AppliedCommit is the git commit hash that was applied.
+                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the NixosConfiguration resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: Conditions represent the latest available observations.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -117,6 +345,59 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              configurationHash:
+                description: ConfigurationHash is the hash of applied configuration.
+                type: string
+              fullDiskInstallCompleted:
+                description: FullDiskInstallCompleted indicates if nixos-anywhere
+                  was run.
+                type: boolean
+              lastAppliedTime:
+                description: LastAppliedTime is the timestamp of last successful application.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              operationState:
+                description: OperationState tracks long-running operation progress.
+                properties:
+                  jobName:
+                    description: JobName is the name of the Kubernetes Job running
+                      this operation.
+                    type: string
+                  lastLogLine:
+                    description: LastLogLine contains last line of job output for
+                      quick status.
+                    type: string
+                  phase:
+                    description: Phase describes current operation phase.
+                    type: string
+                  startedAt:
+                    description: StartedAt is when the operation began.
+                    format: date-time
+                    type: string
+                  type:
+                    allOf:
+                    - enum:
+                      - NixosRebuild
+                      - FullInstall
+                    - enum:
+                      - NixosRebuild
+                      - FullInstall
+                    description: Type of operation in progress.
+                    type: string
+                required:
+                - jobName
+                - startedAt
+                - type
+                type: object
+              targetMachine:
+                description: TargetMachine is the Machine resource name this config
+                  applies to.
+                type: string
             type: object
         required:
         - spec

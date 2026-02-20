@@ -2,8 +2,24 @@ apiVersion: nio.homystack.com/v1alpha1
 kind: NixosConfiguration
 metadata:
   labels:
-    app.kubernetes.io/name: go-operator
+    app.kubernetes.io/name: nixos-operator
     app.kubernetes.io/managed-by: kustomize
   name: nixosconfiguration-sample
 spec:
-  # TODO(user): Add fields here
+  machineRef:
+    name: machine-sample
+  gitRepo: https://github.com/example/nixos-configs.git
+  ref: main
+  flake: "#worker"
+  fullInstall: true
+  onRemoveFlake: "#minimal"
+  configurationSubdir: hosts/worker
+  additionalFiles:
+    - path: hardware-configuration.nix
+      valueType: NixosFacter
+    - path: local.nix
+      valueType: Inline
+      inline: |
+        { config, ... }: {
+          networking.hostName = "worker-01";
+        }
