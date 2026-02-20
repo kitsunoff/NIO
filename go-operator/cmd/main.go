@@ -189,8 +189,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.NixosConfigurationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("nixosconfiguration-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NixosConfiguration")
 		os.Exit(1)
