@@ -37,6 +37,7 @@ import (
 
 	niov1alpha1 "github.com/homystack/nixos-operator/api/v1alpha1"
 	"github.com/homystack/nixos-operator/internal/controller"
+	"github.com/homystack/nixos-operator/internal/ssh"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -179,8 +180,10 @@ func main() {
 	}
 
 	if err := (&controller.MachineReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorderFor("machine-controller"),
+		SSHClient: ssh.NewClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Machine")
 		os.Exit(1)
