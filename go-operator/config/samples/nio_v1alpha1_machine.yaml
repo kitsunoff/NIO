@@ -1,0 +1,9 @@
+apiVersion: nio.homystack.com/v1alpha1
+kind: Machine
+metadata:
+  labels:
+    app.kubernetes.io/name: go-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: machine-sample
+spec:
+  # TODO(user): Add fields here
