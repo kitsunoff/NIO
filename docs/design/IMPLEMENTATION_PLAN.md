@@ -5,10 +5,12 @@ Living checklist for the "Nix-native Workload Primitives" implementation
 
 ## Current focus
 
-Phase D — controllers. NixStore controller done (StatefulSet + headless
-Service + generated ed25519 signing-key Secret; publishes substituterURL /
-storeURI / publicKey / status; envtest green). Next: NixBuilder controller, then
-the generic workload reconciler and pod rendering.
+Phase D — controllers. Infra controllers (NixStore, NixBuilder) done. Pod
+rendering + revision resolution core done as pure, unit-tested functions
+(compositeRevision, buildNixConfig, renderPodTemplate, resolveRevision:
+Rev>Flux>ls-remote). Next: the generic workload reconciler wiring these into
+per-kind project() for NixDeployment/NixJob/NixCronJob/NixStatefulSet with
+finalizer, Owns(), and Flux/git-creds watches.
 
 ## Blockers
 
