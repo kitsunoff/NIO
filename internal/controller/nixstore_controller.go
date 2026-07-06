@@ -59,6 +59,22 @@ const (
 	nixStoreRequeue = 30 * time.Second
 )
 
+// harmoniaStartScript writes a minimal harmonia config (harmonia rejects
+// workers=0, so it must be set) that serves the PVC-backed /nix on the HTTP
+// port and signs served paths with the mounted key, then execs harmonia from
+// nixpkgs. Runs in the nix image after the bootstrap init seeds /nix.
+const harmoniaStartScript = `set -eu
+mkdir -p /etc/harmonia
+cat > /etc/harmonia/config.toml <<'CFG'
+bind = "[::]:5000"
+workers = 4
+max_connection_rate = 256
+priority = 30
+sign_key_paths = ["/etc/nix/signing/nix-signing-key"]
+CFG
+exec nix run nixpkgs#harmonia
+`
+
 // NixStoreReconciler reconciles a NixStore object: it manages a StatefulSet
 // running a Nix binary-cache server, a headless Service, and a signing-key
 // Secret (generated when absent), then publishes the substituter/store
@@ -297,13 +313,28 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 	if store.Spec.Template != nil {
 		podSpec = *store.Spec.Template.Spec.DeepCopy()
 	}
-	// Ensure the store server container is present and owned.
+	// The store server runs harmonia (a Nix HTTP binary cache) from nixpkgs
+	// inside the nix image. A bootstrap init seeds nix into the PVC-backed /nix
+	// (so the image's nix is not shadowed by the empty volume), mirroring the
+	// workload pod pattern; the server then serves that store, signing paths
+	// with the mounted key (design O8 / ADR-0006).
+	bootstrap := corev1.Container{
+		Name:         "bootstrap",
+		Image:        image,
+		Command:      []string{"sh", "-c", "[ -e /nix-vol/store ] || cp --archive /nix/. /nix-vol/"},
+		VolumeMounts: []corev1.VolumeMount{{Name: nixStoreVolumeName, MountPath: "/nix-vol"}},
+	}
+	podSpec.InitContainers = append([]corev1.Container{bootstrap},
+		filterOutContainers(podSpec.InitContainers, "bootstrap")...)
+
 	serverContainer := corev1.Container{
-		Name:  "store",
-		Image: image,
-		Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: int32(NixStoreHTTPPort)}},
+		Name:    "store",
+		Image:   image,
+		Command: []string{"sh", "-c", harmoniaStartScript},
+		Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: int32(NixStoreHTTPPort)}},
 		Env: []corev1.EnvVar{
-			{Name: "SIGN_KEY_PATHS", Value: "/etc/nix/signing/" + SigningKeySecretPrivateField},
+			{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},
+			{Name: "CONFIG_FILE", Value: "/etc/harmonia/config.toml"},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: nixStoreVolumeName, MountPath: "/nix"},
@@ -352,6 +383,8 @@ func upsertContainer(containers []corev1.Container, c corev1.Container) []corev1
 			// Preserve user-provided fields, override the ones the operator owns.
 			merged := containers[i]
 			merged.Image = c.Image
+			merged.Command = c.Command
+			merged.Args = c.Args
 			merged.Ports = c.Ports
 			merged.Env = c.Env
 			merged.VolumeMounts = c.VolumeMounts

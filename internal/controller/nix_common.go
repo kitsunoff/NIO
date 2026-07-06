@@ -24,8 +24,10 @@ import (
 // image is a Nix HTTP binary cache (harmonia); the exact serving command is
 // validated end-to-end on Kind (design O8 / ADR-0006).
 const (
-	// DefaultNixStoreImage is the default NixStore server image.
-	DefaultNixStoreImage = "ghcr.io/nix-community/harmonia:latest"
+	// DefaultNixStoreImage is the default NixStore server image. It is a
+	// nix-bearing image; the controller runs the harmonia binary cache from
+	// nixpkgs inside it (there is no maintained standalone harmonia OCI image).
+	DefaultNixStoreImage = "nixos/nix:latest"
 
 	// DefaultNixBuilderImage is the default NixBuilder worker image.
 	DefaultNixBuilderImage = "nixos/nix:latest"

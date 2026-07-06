@@ -214,8 +214,13 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		{Name: workspaceVolume, MountPath: workspaceMountPath},
 	}
 
-	// Init-containers (prepended, in order).
-	fetchEnv := []corev1.EnvVar{{Name: "NIO_REVISION", Value: in.resolvedRevision}}
+	// Init-containers (prepended, in order). fetch-source runs `nix shell
+	// nixpkgs#gitMinimal`, so it needs NIX_CONFIG too (to enable nix-command and
+	// to substitute git from the store/cache rather than build it).
+	fetchEnv := []corev1.EnvVar{
+		{Name: "NIX_CONFIG", Value: nixConfig},
+		{Name: "NIO_REVISION", Value: in.resolvedRevision},
+	}
 	if flux {
 		fetchEnv = append(fetchEnv, corev1.EnvVar{Name: "NIO_ARTIFACT_URL", Value: in.artifactURL})
 	} else {
