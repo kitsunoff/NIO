@@ -16,10 +16,34 @@ rules:
   resources:
   - pods
   - pods/log
-  - secrets
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - batch
@@ -37,7 +61,9 @@ rules:
   - nio.homystack.com
   resources:
   - machines
+  - nixbuilders
   - nixosconfigurations
+  - nixstores
   verbs:
   - create
   - delete
@@ -50,14 +76,18 @@ rules:
   - nio.homystack.com
   resources:
   - machines/finalizers
+  - nixbuilders/finalizers
   - nixosconfigurations/finalizers
+  - nixstores/finalizers
   verbs:
   - update
 - apiGroups:
   - nio.homystack.com
   resources:
   - machines/status
+  - nixbuilders/status
   - nixosconfigurations/status
+  - nixstores/status
   verbs:
   - get
   - patch
