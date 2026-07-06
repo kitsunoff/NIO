@@ -20,6 +20,7 @@ import (
 	"context"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
@@ -220,9 +222,17 @@ func (r *NixStatefulSetReconciler) observe(ctx context.Context, nss *niov1alpha1
 
 // SetupWithManager registers the NixStatefulSet controller with the manager.
 func (r *NixStatefulSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	if err := registerWorkloadIndexes(mgr, &niov1alpha1.NixStatefulSet{}, func(o client.Object) *niov1alpha1.NixSource {
+		return &o.(*niov1alpha1.NixStatefulSet).Spec.Nix.Source
+	}); err != nil {
+		return err
+	}
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&niov1alpha1.NixStatefulSet{}).
 		Owns(&appsv1.StatefulSet{}).
-		Named("nixstatefulset").
-		Complete(r)
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			enqueueByIndex(r.Client, &niov1alpha1.NixStatefulSetList{}, IndexByCredentialsSecret))).
+		Named("nixstatefulset")
+	addFluxSourceWatches(b, mgr, r.Client, &niov1alpha1.NixStatefulSetList{})
+	return b.Complete(r)
 }
