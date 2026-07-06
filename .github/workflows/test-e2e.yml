@@ -1,72 +1,35 @@
 name: E2E Tests
 
+# E2E runs manually (workflow_dispatch) rather than on every push/PR: it needs a
+# privileged Kind cluster running the nixos/nix image and performs real Nix
+# builds, which is too heavy and flake-prone for hosted CI on each commit. Run it
+# locally with `make test-e2e`, or trigger it here on demand.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   test-e2e:
-    name: End-to-End Tests
+    name: Run on Ubuntu
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Clone the code
+        uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.11
-        cache: 'pip'
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+      - name: Install the latest version of kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
 
-    - name: Install kind
-      run: |
-        curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
-        chmod +x ./kind
-        sudo mv ./kind /usr/local/bin/kind
-        kind version
+      - name: Verify kind installation
+        run: kind version
 
-    - name: Create kind cluster
-      run: |
-        kind create cluster --name nio-e2e --wait 5m
-        kubectl cluster-info
-        kubectl wait --for=condition=Ready nodes --all --timeout=5m
-
-    - name: Build operator image
-      run: |
-        podman build -t nio-operator:test .
-
-    - name: Load image into kind
-      run: |
-        podman save nio-operator:test | kind load image-archive /dev/stdin --name nio-e2e
-
-    - name: Install CRDs
-      run: |
-        kubectl apply -f crds/
-
-    - name: Run E2E tests
-      run: |
-        # Run only E2E marked tests
-        pytest tests/ -v -m e2e --maxfail=5
-
-    - name: Collect logs on failure
-      if: failure()
-      run: |
-        kubectl get all -A
-        kubectl describe pods -A
-        kubectl logs -l app=nio-operator -n nixos-operator-system --tail=100 || true
-
-    - name: Cleanup
-      if: always()
-      run: |
-        kind delete cluster --name nio-e2e || true
+      - name: Running Test e2e
+        run: |
+          go mod tidy
+          make test-e2e

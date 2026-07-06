@@ -1,0 +1,4 @@
+# Generated code (deepcopy, CRDs) — exclude from language stats and collapse in diffs
+**/zz_generated.*.go linguist-generated
+api/**/zz_generated.deepcopy.go linguist-generated
+config/crd/bases/*.yaml linguist-generated
