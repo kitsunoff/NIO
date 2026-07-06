@@ -151,6 +151,15 @@ func pollInterval(nix niov1alpha1.NixSpec) time.Duration {
 	return defaultPollInterval
 }
 
+// triggerOnChange returns the effective TriggerOnChange for a workload, applying
+// the per-kind default when unset.
+func triggerOnChange(nix niov1alpha1.NixSpec, defaultVal bool) bool {
+	if nix.TriggerOnChange != nil {
+		return *nix.TriggerOnChange
+	}
+	return defaultVal
+}
+
 // setCondition is a thin wrapper over meta.SetStatusCondition.
 func setCondition(conds *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, msg string, gen int64) {
 	meta.SetStatusCondition(conds, metav1.Condition{
