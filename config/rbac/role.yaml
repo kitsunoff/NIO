@@ -65,6 +65,7 @@ rules:
   - nixbuilders
   - nixdeployments
   - nixosconfigurations
+  - nixstatefulsets
   - nixstores
   verbs:
   - create
@@ -81,6 +82,7 @@ rules:
   - nixbuilders/finalizers
   - nixdeployments/finalizers
   - nixosconfigurations/finalizers
+  - nixstatefulsets/finalizers
   - nixstores/finalizers
   verbs:
   - update
@@ -91,6 +93,7 @@ rules:
   - nixbuilders/status
   - nixdeployments/status
   - nixosconfigurations/status
+  - nixstatefulsets/status
   - nixstores/status
   verbs:
   - get

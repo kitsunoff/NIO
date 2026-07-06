@@ -67,7 +67,7 @@ func (r *NixDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !nd.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, removeFinalizer(ctx, r.Client, &nd)
 	}
-	if _, err := ensureFinalizer(ctx, r.Client, &nd); err != nil {
+	if err := ensureFinalizer(ctx, r.Client, &nd); err != nil {
 		return ctrl.Result{}, err
 	}
 

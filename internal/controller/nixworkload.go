@@ -223,14 +223,13 @@ func observePodInit(ctx context.Context, c client.Client, ns, kind, name, revisi
 	return state, nil
 }
 
-// ensureFinalizer adds the workload finalizer if missing; returns whether it
-// patched the object (caller should requeue after an update).
-func ensureFinalizer(ctx context.Context, c client.Client, obj client.Object) (bool, error) {
+// ensureFinalizer adds the workload finalizer if missing, persisting the change.
+func ensureFinalizer(ctx context.Context, c client.Client, obj client.Object) error {
 	if controllerutil.ContainsFinalizer(obj, niov1alpha1.WorkloadFinalizer) {
-		return false, nil
+		return nil
 	}
 	controllerutil.AddFinalizer(obj, niov1alpha1.WorkloadFinalizer)
-	return true, c.Update(ctx, obj)
+	return c.Update(ctx, obj)
 }
 
 // removeFinalizer drops the workload finalizer on deletion. The owned native
