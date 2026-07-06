@@ -12,9 +12,9 @@ condition/phase helpers, pod-init observation) + NixDeployment controller done
 default, managed selector; observes rollout + new-revision pod init failures →
 Ready/Progressing/Building/Degraded+Stalled; envtest green). O7 resolved by
 marking the native <kind>Template fields schemaless + PreserveUnknownFields so a
-minimal workload validates. Next: NixJob + NixCronJob, then watches (Flux/git-creds).
-NixStatefulSet controller done (ordered update, no maxUnavailable default,
-init-fail stall; envtest green).
+minimal workload validates. Next: All four workload controllers done (NixDeployment/NixStatefulSet/NixJob/
+NixCronJob) with envtest. Remaining in D: watches (Flux source enqueue mapper,
+git-creds secret field-indexed watch). Then Phase E/F.
 
 ## Blockers
 
@@ -47,8 +47,8 @@ None.
 
 - [x] `NixStore` controller: StatefulSet + headless Service + signing-key Secret; publish status.
 - [x] `NixBuilder` controller: single-worker StatefulSet wired to `storeRef`; publish `builderEndpoint`.
-- [ ] Generic workload reconciler + per-kind `project()`: resolve revision, infra preflight, SSA native workload with three init-containers, `NIX_CONFIG`, volumes, composite revision annotation, labels, app command.
-- [ ] Deployment `maxUnavailable:0` default; StatefulSet ordered update; NixJob re-run + history GC; NixCronJob scheduling + optional immediate Job.
+- [x] Generic workload reconciler + per-kind `project()`: resolve revision, infra preflight, SSA native workload with three init-containers, `NIX_CONFIG`, volumes, composite revision annotation, labels, app command.
+- [x] Deployment `maxUnavailable:0` default; StatefulSet ordered update; NixJob re-run + history GC; NixCronJob scheduling + optional immediate Job.
 - [ ] Flux source watch/enqueue mapper; git-creds secret field-indexed watch; `Owns()` native kinds; finalizer; RBAC markers.
 
 ## E. Unit tests (TDD, envtest)

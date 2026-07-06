@@ -49,6 +49,7 @@ rules:
 - apiGroups:
   - batch
   resources:
+  - cronjobs
   - jobs
   verbs:
   - create
@@ -63,7 +64,9 @@ rules:
   resources:
   - machines
   - nixbuilders
+  - nixcronjobs
   - nixdeployments
+  - nixjobs
   - nixosconfigurations
   - nixstatefulsets
   - nixstores
@@ -80,7 +83,9 @@ rules:
   resources:
   - machines/finalizers
   - nixbuilders/finalizers
+  - nixcronjobs/finalizers
   - nixdeployments/finalizers
+  - nixjobs/finalizers
   - nixosconfigurations/finalizers
   - nixstatefulsets/finalizers
   - nixstores/finalizers
@@ -91,7 +96,9 @@ rules:
   resources:
   - machines/status
   - nixbuilders/status
+  - nixcronjobs/status
   - nixdeployments/status
+  - nixjobs/status
   - nixosconfigurations/status
   - nixstatefulsets/status
   - nixstores/status
