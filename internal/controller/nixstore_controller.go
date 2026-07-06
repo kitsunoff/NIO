@@ -64,7 +64,24 @@ const (
 // port and signs served paths with the mounted key, then execs harmonia from
 // nixpkgs. Runs in the nix image after the bootstrap init seeds /nix.
 const harmoniaStartScript = `set -eu
-mkdir -p /etc/harmonia
+mkdir -p /etc/harmonia /etc/nix /root/.ssh /run/sshd
+# Accept pushes from the builder/pods over ssh-ng as a trusted user (so unsigned
+# store paths built remotely can be imported).
+cat > /etc/nix/nix.conf <<'NIXCFG'
+experimental-features = nix-command flakes
+trusted-users = root
+NIXCFG
+# Authorize the shared remote-build key and start sshd (ssh-ng runs
+# 'nix daemon --stdio' per connection; no standalone daemon needed).
+cp /etc/nio/ssh/ssh-authorized-key /root/.ssh/authorized_keys
+chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
+nix shell nixpkgs#openssh --command sh -c '
+  ssh-keygen -A
+  $(command -v sshd) -D -e \
+    -o PermitRootLogin=prohibit-password \
+    -o PasswordAuthentication=no \
+    -o UsePAM=no' &
+# Serve the store over HTTP for substituter clients.
 cat > /etc/harmonia/config.toml <<'CFG'
 bind = "[::]:5000"
 workers = 4
@@ -107,6 +124,12 @@ func (r *NixStoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	publicKey, err := r.ensureSigningKey(ctx, &store)
 	if err != nil {
 		return r.fail(ctx, &store, "SigningKeyError", err)
+	}
+
+	// 1b. Ensure the remote-build SSH keypair Secret (used by the builder to push
+	// and by runner pods to dispatch builds; also this store's sshd authorized_keys).
+	if _, err := ensureSSHKeySecret(ctx, r.Client, r.Scheme, &store, store.Name); err != nil {
+		return r.fail(ctx, &store, "SSHKeyError", err)
 	}
 
 	// 2. Ensure the headless Service.
@@ -339,6 +362,7 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: nixStoreVolumeName, MountPath: "/nix"},
 			{Name: signingKeyVolumeName, MountPath: "/etc/nix/signing", ReadOnly: true},
+			{Name: sshVolumeName, MountPath: "/etc/nio/ssh", ReadOnly: true},
 		},
 	}
 	podSpec.Containers = upsertContainer(podSpec.Containers, serverContainer)
@@ -346,6 +370,12 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 		Name: signingKeyVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{SecretName: r.signingKeySecretName(store)},
+		},
+	})
+	podSpec.Volumes = upsertVolume(podSpec.Volumes, corev1.Volume{
+		Name: sshVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: sshSecretName(store.Name)},
 		},
 	})
 

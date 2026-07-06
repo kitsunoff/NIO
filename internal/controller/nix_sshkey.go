@@ -39,6 +39,15 @@ import (
 const (
 	sshSecretPrivateKey = "ssh-privatekey"     // OpenSSH ed25519 private key
 	sshSecretPublicKey  = "ssh-authorized-key" // "ssh-ed25519 AAAA..." single line
+
+	// sshVolumeName carries the SSH keypair Secret into store/builder/runner pods.
+	sshVolumeName = "nio-ssh"
+
+	// sshKeyMountPath is where the SSH keypair Secret is mounted.
+	sshKeyMountPath = "/etc/nio/ssh"
+
+	// sshPrivateKeyPath is the mounted private key path used by nix over ssh-ng.
+	sshPrivateKeyPath = sshKeyMountPath + "/" + sshSecretPrivateKey
 )
 
 // sshSecretName returns the name of the SSH keypair Secret owned by a store.

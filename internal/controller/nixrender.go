@@ -164,6 +164,7 @@ type renderInput struct {
 	artifactURL      string // set in Flux mode
 	store            *storeInfo
 	builder          *builderInfo
+	sshSecretName    string // store-owned SSH key Secret; set only when a builder is used
 	kind             string
 	name             string
 }
@@ -214,6 +215,28 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		{Name: workspaceVolume, MountPath: workspaceMountPath},
 	}
 
+	// When a builder is used, mount the store-owned SSH key so `nix build` can
+	// dispatch to the builder over ssh-ng (builders= is already in NIX_CONFIG).
+	buildMounts := nixAndWorkspace
+	var sshOpts []corev1.EnvVar
+	if in.sshSecretName != "" {
+		mode := int32(0o400)
+		tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, corev1.Volume{
+			Name: sshVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: in.sshSecretName, DefaultMode: &mode},
+			},
+		})
+		buildMounts = make([]corev1.VolumeMount, 0, len(nixAndWorkspace)+1)
+		buildMounts = append(buildMounts, nixAndWorkspace...)
+		buildMounts = append(buildMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
+		sshOpts = []corev1.EnvVar{{
+			Name:  "NIX_SSHOPTS",
+			Value: "-i " + sshPrivateKeyPath + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		}}
+	}
+	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
+
 	// Init-containers (prepended, in order). fetch-source runs `nix shell
 	// nixpkgs#gitMinimal`, so it needs NIX_CONFIG too (to enable nix-command and
 	// to substitute git from the store/cache rather than build it).
@@ -246,8 +269,8 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 			Image:        image,
 			WorkingDir:   workspaceMountPath,
 			Command:      buildCommand(nix.Run, nix.Prebuild, nix.NixFlags),
-			Env:          []corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}},
-			VolumeMounts: nixAndWorkspace,
+			Env:          instantiateEnv,
+			VolumeMounts: buildMounts,
 		},
 	}
 	// Prepend our init-containers, dropping any prior copies (idempotent re-render).
@@ -260,7 +283,10 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	app.Command = runCommand(nix.Run, nix.Args, nix.NixFlags)
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
-	app.VolumeMounts = upsertMounts(app.VolumeMounts, nixAndWorkspace...)
+	for _, e := range sshOpts {
+		app.Env = upsertEnv(app.Env, e)
+	}
+	app.VolumeMounts = upsertMounts(app.VolumeMounts, buildMounts...)
 	tmpl.Spec.Containers = setContainer(tmpl.Spec.Containers, app)
 
 	return tmpl

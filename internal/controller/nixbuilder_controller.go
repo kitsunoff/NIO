@@ -45,6 +45,47 @@ const (
 	nixBuilderRequeue = 30 * time.Second
 )
 
+// builderStartScript builds the shell for the builder container: an sshd that
+// accepts remote builds, and — when a store is referenced — a nix post-build-hook
+// that pushes every build result into the shared NixStore over ssh-ng, so other
+// pods substitute it (ADR-0008). The build itself runs via `nix daemon --stdio`
+// started by sshd per remote-build connection.
+func builderStartScript(storeHost string) string {
+	nixConfExtra := ""
+	pushSetup := ""
+	if storeHost != "" {
+		nixConfExtra = "\npost-build-hook = /etc/nio/upload.sh"
+		pushSetup = fmt.Sprintf(`
+cat > /etc/nio/upload.sh <<'HOOK'
+#!/bin/sh
+set -eu
+[ -n "${OUT_PATHS:-}" ] || exit 0
+exec nix copy --to "ssh-ng://root@%s" $OUT_PATHS
+HOOK
+chmod +x /etc/nio/upload.sh
+cp %s/%s /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+cat > /root/.ssh/config <<'SSHCFG'
+Host *
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  IdentityFile %s
+SSHCFG
+chmod 600 /root/.ssh/config
+`, storeHost, sshKeyMountPath, sshSecretPublicKey, sshPrivateKeyPath)
+	}
+	return fmt.Sprintf(`set -eu
+mkdir -p /etc/nix /etc/nio /root/.ssh /run/sshd
+chmod 700 /root/.ssh
+cat > /etc/nix/nix.conf <<'NIXCFG'
+experimental-features = nix-command flakes
+trusted-users = root%s
+NIXCFG
+%s
+exec nix shell nixpkgs#openssh --command sh -c 'ssh-keygen -A; $(command -v sshd) -D -e -o PermitRootLogin=prohibit-password -o PasswordAuthentication=no -o UsePAM=no'
+`, nixConfExtra, pushSetup)
+}
+
 // NixBuilderReconciler reconciles a NixBuilder object: it manages a single
 // builder-worker StatefulSet and a headless Service, then publishes the
 // remote-build endpoint to status.
@@ -180,29 +221,36 @@ func (r *NixBuilderReconciler) desiredStatefulSet(builder *niov1alpha1.NixBuilde
 		podSpec = *builder.Spec.Template.Spec.DeepCopy()
 	}
 
-	env := []corev1.EnvVar{}
+	env := []corev1.EnvVar{
+		{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},
+	}
 	if builder.Spec.MaxJobs != nil {
 		env = append(env, corev1.EnvVar{Name: "NIX_MAX_JOBS", Value: fmt.Sprintf("%d", *builder.Spec.MaxJobs)})
 	}
-	if storeRef := builder.Spec.StoreRef; storeRef != nil {
-		// The builder realizes into this store; the concrete push mechanism is
-		// wired end-to-end on Kind (design O8 / ADR-0006).
-		env = append(env, corev1.EnvVar{Name: "NIO_STORE_REF", Value: storeRef.Name})
+
+	workerMounts := []corev1.VolumeMount{{Name: builderStoreVolumeName, MountPath: "/nix"}}
+	storeHost := ""
+	if sr := builder.Spec.StoreRef; sr != nil {
+		storeHost = fmt.Sprintf("%s.%s.svc", sr.Name, builder.Namespace)
+		workerMounts = append(workerMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
+		podSpec.Volumes = upsertVolume(podSpec.Volumes, corev1.Volume{
+			Name: sshVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: sshSecretName(sr.Name)},
+			},
+		})
 	}
 
-	env = append(env, corev1.EnvVar{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"})
 	worker := corev1.Container{
 		Name:  "builder",
 		Image: image,
-		// Run the nix daemon in the foreground so the single worker stays up and
-		// can accept builds. (Delegated remote-build transport is a v1.1 follow-up
-		// per ADR-0006; this keeps the builder a Ready nix worker.)
-		Command: []string{"sh", "-c", "exec nix-daemon"},
-		Ports:   []corev1.ContainerPort{{Name: "ssh", ContainerPort: int32(NixBuilderSSHPort)}},
-		Env:     env,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: builderStoreVolumeName, MountPath: "/nix"},
-		},
+		// Accept remote builds over sshd; when a store is referenced, a
+		// post-build-hook pushes every build result into the shared NixStore over
+		// ssh-ng so other pods substitute it (ADR-0008).
+		Command:      []string{"sh", "-c", builderStartScript(storeHost)},
+		Ports:        []corev1.ContainerPort{{Name: "ssh", ContainerPort: int32(NixBuilderSSHPort)}},
+		Env:          env,
+		VolumeMounts: workerMounts,
 	}
 	// bootstrap seeds nix into the volume-backed /nix so the daemon binary is not
 	// shadowed by the empty volume (mirrors the workload/store pattern).
