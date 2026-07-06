@@ -68,9 +68,9 @@ None.
 > feat/e2e-workloads. NEXT: write the six-kind workload e2e specs (substitution
 > path, pinned Rev) and get `make test-e2e` green.
 
-- [ ] Extend `test/e2e`: NixStore Ready; NixBuilder Ready; NixDeployment rolls to Ready; NixJob completes; NixCronJob fires; NixStatefulSet ordered roll; broken-revision stalls rollout while old serves.
-- [ ] Small fast public flake as test workload; Kind config for nixos/nix image documented.
-- [ ] `make test-e2e` fully green on Kind.
+- [x] Extend `test/e2e`: NixStore Ready; NixBuilder Ready; NixDeployment rolls to Ready; NixJob completes; NixCronJob fires; NixStatefulSet ordered roll; broken-revision stalls rollout while old serves.
+- [x] Small fast public flake as test workload; Kind config for nixos/nix image documented.
+- [x] `make test-e2e` fully green on Kind.
 
 ## G. Polish
 
