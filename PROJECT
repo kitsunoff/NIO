@@ -27,4 +27,58 @@ resources:
   kind: NixosConfiguration
   path: github.com/kitsunoff/nixos-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: homystack.com
+  group: nio
+  kind: NixStore
+  path: github.com/kitsunoff/nixos-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: homystack.com
+  group: nio
+  kind: NixBuilder
+  path: github.com/kitsunoff/nixos-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: homystack.com
+  group: nio
+  kind: NixDeployment
+  path: github.com/kitsunoff/nixos-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: homystack.com
+  group: nio
+  kind: NixJob
+  path: github.com/kitsunoff/nixos-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: homystack.com
+  group: nio
+  kind: NixCronJob
+  path: github.com/kitsunoff/nixos-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: homystack.com
+  group: nio
+  kind: NixStatefulSet
+  path: github.com/kitsunoff/nixos-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"
