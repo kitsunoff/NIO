@@ -4,6 +4,12 @@
 resources:
 - bases/nio.homystack.com_machines.yaml
 - bases/nio.homystack.com_nixosconfigurations.yaml
+- bases/nio.homystack.com_nixstores.yaml
+- bases/nio.homystack.com_nixbuilders.yaml
+- bases/nio.homystack.com_nixdeployments.yaml
+- bases/nio.homystack.com_nixjobs.yaml
+- bases/nio.homystack.com_nixcronjobs.yaml
+- bases/nio.homystack.com_nixstatefulsets.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

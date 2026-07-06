@@ -5,9 +5,10 @@ Living checklist for the "Nix-native Workload Primitives" implementation
 
 ## Current focus
 
-Phase A — bootstrap: strip legacy Python operator, promote `go-operator/` to repo
-root, rename Go module to `github.com/kitsunoff/nixos-operator`, seed plan/decisions,
-establish a green baseline.
+Phase C — API types landed (all six kinds + shared types, CRDs + deepcopy
+generated, scheme + deepcopy tests green). Next: Phase D controllers, starting
+with the NixStore and NixBuilder controllers, then the generic workload
+reconciler and pod rendering.
 
 ## Blockers
 
@@ -19,22 +20,22 @@ None.
 - [x] Strip legacy Python/Kopf operator; promote `go-operator/` contents to repo root.
 - [x] Rename Go module to `github.com/kitsunoff/nixos-operator`; update all imports; `go build ./...`.
 - [x] Add `.gitattributes` (linguist-generated for `zz_generated.*.go`, generated CRDs).
-- [ ] CI runs `make test` + `make lint` on push/PR; `make test-e2e` is manual (documented). CI green on default branch.
+- [x] CI runs `make test` + `make lint` on push/PR; `make test-e2e` is manual (documented). CI green on default branch.
 
 ## B. Toolchain readiness (local host)
 
 - [x] Container runtime is OrbStack (`docker info` → OperatingSystem: OrbStack).
 - [x] `kind` installed (v0.31.0 via nixpkgs).
-- [ ] `make build` and `make test` green on untouched (Machine/NixosConfiguration) baseline.
+- [x] `make build` and `make test` green on untouched (Machine/NixosConfiguration) baseline.
 - [ ] Committed `flake.nix` dev shell pinning tools (kind, kubectl, go).
 
 ## C. API types (§3)
 
-- [ ] Shared types `api/v1alpha1/nixworkload_common_types.go`: `NixSource`, `FluxSourceRef`, `NixSpec`, `NixLocalStore`, `NixWorkloadStatus`, `SecretReference`, `LocalObjectReference`.
-- [ ] `NixStore` types (§3.5) + `NixBuilder` types (§3.6).
-- [ ] `NixDeployment` (§4.1), `NixJob` (§4.2), `NixCronJob` (§4.3), `NixStatefulSet` (§4.4).
-- [ ] `kubebuilder create api` for each kind (group `nio`, version `v1alpha1`, domain `homystack.com`); kubebuilder markers per doc.
-- [ ] `make manifests generate` → CRDs + deepcopy committed.
+- [x] Shared types `api/v1alpha1/nixworkload_common_types.go`: `NixSource`, `FluxSourceRef`, `NixSpec`, `NixLocalStore`, `NixWorkloadStatus`, `SecretReference`, `LocalObjectReference`.
+- [x] `NixStore` types (§3.5) + `NixBuilder` types (§3.6).
+- [x] `NixDeployment` (§4.1), `NixJob` (§4.2), `NixCronJob` (§4.3), `NixStatefulSet` (§4.4).
+- [x] `kubebuilder create api` for each kind (group `nio`, version `v1alpha1`, domain `homystack.com`); kubebuilder markers per doc.
+- [x] `make manifests generate` → CRDs + deepcopy committed.
 
 ## D. Controllers & pod rendering (§4.5, §7)
 

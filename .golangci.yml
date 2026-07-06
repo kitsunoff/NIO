@@ -22,6 +22,11 @@ linters:
     - unparam
     - unused
   settings:
+    misspell:
+      # Nix domain terms that misspell wrongly flags as English typos.
+      ignore-rules:
+        - substituters
+        - substituter
     revive:
       rules:
         - name: comment-spacings
