@@ -1,0 +1,13 @@
+# Kind cluster config for the NIO e2e suite.
+#
+# The node image is pinned to a containerd 1.7.x release. containerd 2.2.0+
+# (built with Go 1.24) rejects images whose /etc/passwd and /etc/group are
+# absolute symlinks — which is exactly how the `nixos/nix` runner/store image is
+# built — with "openat etc/passwd: path escapes from parent". Pinning an older
+# node image with containerd 1.7.x lets the Nix workload pods run.
+# See containerd/containerd#12683.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.32.2
