@@ -1,0 +1,18 @@
+# Run a flake attribute on a schedule. With triggerOnChange: true a new revision
+# also fires an immediate one-off Job (honoring concurrencyPolicy).
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixCronJob
+metadata:
+  name: nightly
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/web
+      ref: main
+    run: .#report
+    storeRef:
+      name: store
+  cronJobTemplate:
+    schedule: "0 2 * * *"
+    concurrencyPolicy: Forbid
