@@ -1,0 +1,27 @@
+# An ordered, stateful workload from a flake attribute. Ordering and PVCs are the
+# StatefulSet controller's job; the operator stamps the revision into the pod
+# template and the ordered RollingUpdate halts on the first unready pod.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixStatefulSet
+metadata:
+  name: db
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/db
+      ref: main
+    run: .#server
+    storeRef:
+      name: store
+  statefulSetTemplate:
+    serviceName: db
+    replicas: 3
+    volumeClaimTemplates:
+      - metadata:
+          name: data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi

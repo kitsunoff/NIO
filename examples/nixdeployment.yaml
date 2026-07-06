@@ -1,0 +1,29 @@
+# A long-running service from a flake attribute. On a new commit the operator
+# stamps the revision into the owned Deployment and Kubernetes rolls it out
+# (surge-only by default, so a broken revision stalls without shedding capacity).
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixDeployment
+metadata:
+  name: web
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/web
+      ref: main
+    run: .#server
+    args: ["--port", "8080"]
+    storeRef:
+      name: store
+    builderRef:
+      name: linux-builder
+  deploymentTemplate:
+    replicas: 3
+    template:
+      spec:
+        containers:
+          - name: app                      # only user bits; image+command are owned
+            readinessProbe:
+              httpGet:
+                path: /healthz
+                port: 8080

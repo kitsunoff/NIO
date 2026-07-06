@@ -1,0 +1,15 @@
+# A centralized Nix binary-cache server for the namespace. Workloads reference it
+# via nix.storeRef so their pods substitute already-built paths over HTTP.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixStore
+metadata:
+  name: store
+  namespace: apps
+spec:
+  storage:
+    accessModes: [ReadWriteOnce]
+    resources:
+      requests:
+        storage: 50Gi
+  # image defaults to a nix image running harmonia; signing key is generated
+  # and its public key published to status if signingKeySecretRef is omitted.

@@ -1,135 +1,114 @@
-# go-operator
-// TODO(user): Add simple overview of use/purpose
+# NIO
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+NIO is a Kubernetes operator for running **Nix** on and in your cluster. It has
+two layers:
 
-## Getting Started
+1. **NixOS host management** — `Machine` and `NixosConfiguration` manage NixOS
+   hosts over SSH (connectivity, hardware discovery, and applying whole-system
+   configurations via `nixos-rebuild` / `nixos-anywhere`).
+2. **Nix-native workload primitives** — six CRDs that mirror the core Kubernetes
+   workload kinds but are driven by a **Nix flake attribute** instead of a
+   container image. You point at a git repo, a ref, and a flake installable
+   (e.g. `.#server`), and the operator resolves the revision and compiles it into
+   a native Kubernetes workload whose pods build the flake in init-containers and
+   `nix run` it.
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+The authoritative design is [`docs/design/nix-workloads.md`](docs/design/nix-workloads.md);
+resolved design decisions are in [`docs/design/DECISIONS.md`](docs/design/DECISIONS.md).
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+## The workload kinds
 
-```sh
-make docker-build docker-push IMG=<some-registry>/go-operator:tag
+| NIO kind          | Compiles to            | Semantics                                              |
+| ----------------- | ---------------------- | ------------------------------------------------------ |
+| `NixDeployment`   | `apps/v1 Deployment`   | Long-running service; rolling update on a new revision |
+| `NixJob`          | `batch/v1 Job`         | Run-to-completion; re-run on a new revision            |
+| `NixCronJob`      | `batch/v1 CronJob`     | Scheduled run; optional immediate run on a new revision |
+| `NixStatefulSet`  | `apps/v1 StatefulSet`  | Ordered, stateful; rolling update on a new revision    |
+
+backed by two infrastructure kinds:
+
+| NIO infra kind | Backed by     | Role                                                    |
+| -------------- | ------------- | ------------------------------------------------------- |
+| `NixStore`     | StatefulSet   | A centralized Nix binary-cache **server** (PVC-backed)  |
+| `NixBuilder`   | StatefulSet   | A single **builder worker**                             |
+
+### How a workload runs
+
+The operator is a compiler, not a builder. On each reconcile it:
+
+1. **Resolves** the mutable `ref` into an immutable commit — a pinned `rev`, a
+   Flux source's `status.artifact`, or `git ls-remote` polling.
+2. **Projects** a native workload, stamping the revision into the pod template.
+
+Each pod then, in three init-containers, seeds Nix into a pod-local `/nix`
+(`bootstrap`), checks out the source (`fetch-source`), and materializes the
+flake (`instantiate` — substituting already-built paths from the `NixStore`,
+building on the `NixBuilder` or locally otherwise). The app container then
+`nix run`s the installable. A broken commit fails in `instantiate` and **stalls
+the rollout** while the previous revision keeps serving.
+
+## Quickstart
+
+Declare a store, then a workload that references it:
+
+```yaml
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixStore
+metadata:
+  name: store
+  namespace: apps
+spec:
+  storage:
+    accessModes: [ReadWriteOnce]
+    resources:
+      requests:
+        storage: 50Gi
+---
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixDeployment
+metadata:
+  name: web
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/web
+      ref: main
+    run: .#server
+    args: ["--port", "8080"]
+    storeRef:
+      name: store
+  deploymentTemplate:
+    replicas: 3
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+More manifests for every kind are in [`examples/`](examples/).
 
-**Install the CRDs into the cluster:**
+## Getting started (developers)
 
-```sh
-make install
-```
-
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+Prerequisites: Go (see `go.mod`), Docker (OrbStack/Colima/Docker), `kubectl`,
+and `kind` for e2e. A pinned dev shell is provided:
 
 ```sh
-make deploy IMG=<some-registry>/go-operator:tag
+nix develop        # go, kubectl, kind, golangci-lint, and build tooling
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+Common targets:
 
 ```sh
-kubectl apply -k config/samples/
+make build         # build the manager binary
+make test          # unit + envtest
+make lint          # golangci-lint (must be zero findings)
+make docker-build  # build the manager image
+make test-e2e      # end-to-end on a real Kind cluster (exercises all six kinds)
+make install       # install CRDs into the current-context cluster
+make deploy IMG=<image>   # deploy the operator
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/go-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/go-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+> **Kind note:** the e2e suite pins `kindest/node:v1.32.2` (containerd 2.0.3).
+> containerd 2.2.0+ rejects the `nixos/nix` image's absolute `/etc/passwd`
+> symlink ([containerd#12683](https://github.com/containerd/containerd/issues/12683)).
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache License 2.0.
