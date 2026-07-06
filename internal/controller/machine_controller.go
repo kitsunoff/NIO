@@ -341,8 +341,6 @@ func (r *MachineReconciler) findMachinesForSecret(ctx context.Context, obj clien
 	log := logf.FromContext(ctx)
 	secret := obj.(*corev1.Secret)
 
-	var requests []reconcile.Request
-
 	// Find machines referencing this secret as SSH key
 	var machineList niov1alpha1.MachineList
 	if err := r.List(ctx, &machineList,
@@ -350,8 +348,10 @@ func (r *MachineReconciler) findMachinesForSecret(ctx context.Context, obj clien
 		client.MatchingFields{IndexMachineBySSHKeySecret: secret.Name},
 	); err != nil {
 		log.Error(err, "failed to list machines by SSH key secret")
-		return requests
+		return nil
 	}
+
+	requests := make([]reconcile.Request, 0, len(machineList.Items))
 
 	for _, machine := range machineList.Items {
 		requests = append(requests, reconcile.Request{

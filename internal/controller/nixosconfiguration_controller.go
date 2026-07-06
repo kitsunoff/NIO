@@ -956,16 +956,16 @@ func (r *NixosConfigurationReconciler) findConfigsForMachine(ctx context.Context
 	log := logf.FromContext(ctx)
 	machine := obj.(*niov1alpha1.Machine)
 
-	var requests []reconcile.Request
-
 	var configList niov1alpha1.NixosConfigurationList
 	if err := r.List(ctx, &configList,
 		client.InNamespace(machine.Namespace),
 		client.MatchingFields{IndexConfigByMachine: machine.Name},
 	); err != nil {
 		log.Error(err, "failed to list configurations by machine")
-		return requests
+		return nil
 	}
+
+	requests := make([]reconcile.Request, 0, len(configList.Items))
 
 	for _, config := range configList.Items {
 		requests = append(requests, reconcile.Request{
