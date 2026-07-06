@@ -5,10 +5,10 @@ Living checklist for the "Nix-native Workload Primitives" implementation
 
 ## Current focus
 
-Phase C — API types landed (all six kinds + shared types, CRDs + deepcopy
-generated, scheme + deepcopy tests green). Next: Phase D controllers, starting
-with the NixStore and NixBuilder controllers, then the generic workload
-reconciler and pod rendering.
+Phase D — controllers. NixStore controller done (StatefulSet + headless
+Service + generated ed25519 signing-key Secret; publishes substituterURL /
+storeURI / publicKey / status; envtest green). Next: NixBuilder controller, then
+the generic workload reconciler and pod rendering.
 
 ## Blockers
 
@@ -39,8 +39,8 @@ None.
 
 ## D. Controllers & pod rendering (§4.5, §7)
 
-- [ ] `NixStore` controller: StatefulSet + headless Service + signing-key Secret; publish status.
-- [ ] `NixBuilder` controller: single-worker StatefulSet wired to `storeRef`; publish `builderEndpoint`.
+- [x] `NixStore` controller: StatefulSet + headless Service + signing-key Secret; publish status.
+- [x] `NixBuilder` controller: single-worker StatefulSet wired to `storeRef`; publish `builderEndpoint`.
 - [ ] Generic workload reconciler + per-kind `project()`: resolve revision, infra preflight, SSA native workload with three init-containers, `NIX_CONFIG`, volumes, composite revision annotation, labels, app command.
 - [ ] Deployment `maxUnavailable:0` default; StatefulSet ordered update; NixJob re-run + history GC; NixCronJob scheduling + optional immediate Job.
 - [ ] Flux source watch/enqueue mapper; git-creds secret field-indexed watch; `Owns()` native kinds; finalizer; RBAC markers.
