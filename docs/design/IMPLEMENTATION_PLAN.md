@@ -34,7 +34,7 @@ None.
 - [x] Container runtime is OrbStack (`docker info` → OperatingSystem: OrbStack).
 - [x] `kind` installed (v0.31.0 via nixpkgs).
 - [x] `make build` and `make test` green on untouched (Machine/NixosConfiguration) baseline.
-- [ ] Committed `flake.nix` dev shell pinning tools (kind, kubectl, go).
+- [x] Committed `flake.nix` dev shell pinning tools (kind, kubectl, go).
 
 ## C. API types (§3)
 

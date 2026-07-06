@@ -94,5 +94,39 @@ remote build as a `v1.1` follow-up. A deep, unavoidable infeasibility here is a 
 blocker, not a silent stub, because "all six kinds fully implemented" is a gate
 condition.
 
-**Consequences.** Highest-risk area; the concrete mechanism is confirmed during
-Phase D/F and this ADR updated with the final shipped design.
+**Shipped in 1.0 (confirmed on Kind).**
+
+- `NixStore` server runs **harmonia from nixpkgs inside the `nixos/nix` image**
+  (there is no maintained standalone harmonia OCI image, and mounting the store
+  PVC at `/nix` would shadow the image's own nix). A `bootstrap` init seeds nix
+  into the PVC-backed `/nix`; the server then writes a minimal harmonia config
+  (harmonia rejects `workers = 0`, so `workers = 4`; `sign_key_paths` points at
+  the generated/mounted signing key) and execs `nix run nixpkgs#harmonia`. It
+  publishes `substituterURL` (HTTP) + `publicKey`; `storeURI` is an `ssh-ng://`
+  address for future pushes.
+- `NixBuilder` runs a `bootstrap` init plus a foreground `nix-daemon` so the
+  single worker stays Ready as a nix build backend, wired to its `storeRef`.
+- **Runner pods build in-pod and substitute from the `NixStore`** (which falls
+  through to cache.nixos.org). This is the reliable, e2e-proven path: all six
+  kinds pass on a real Kind cluster via substitution.
+
+**Deferred to v1.1.** The fully-delegated builder→store→substitute remote-build
+handoff (pods dispatch the build to the `NixBuilder`, which realizes directly
+into the shared `NixStore` with no `nix copy` plumbing) is a documented follow-up.
+The `NixBuilder` is a real, Ready worker in 1.0; the remote-build *transport* is
+what lands in v1.1. Blocking 1.0 on it was not warranted.
+
+## ADR-0007 — Pin the e2e Kind node image to containerd < 2.2
+
+**Context.** The Nix runner/store/builder pods use the `nixos/nix` image, whose
+`/etc/passwd` and `/etc/group` are absolute symlinks into `/nix/store`.
+containerd 2.2.0 (built with Go 1.24) rejects such images at container-create
+with `openat etc/passwd: path escapes from parent` (containerd#12683). The
+default `kind` 0.31 node image ships containerd 2.2.0.
+
+**Decision.** Pin the e2e Kind cluster to `kindest/node:v1.32.2` (containerd
+2.0.3) via `test/e2e/kind-config.yaml`, wired into `make setup-test-e2e`.
+
+**Consequences.** e2e runs Nix pods reliably. Production clusters must likewise
+run containerd < 2.2 (or a fixed release) until upstream resolves the symlink
+handling; noted for operators in the README.

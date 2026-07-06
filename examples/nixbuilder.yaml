@@ -1,0 +1,17 @@
+# A single builder worker. Reference it from a workload via nix.builderRef, or
+# construct a dedicated one inline via nix.builderTemplate. It realizes into its
+# storeRef NixStore.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixBuilder
+metadata:
+  name: linux-builder
+  namespace: apps
+spec:
+  storeRef:
+    name: store
+  systems: ["x86_64-linux"]
+  storage:
+    accessModes: [ReadWriteOnce]
+    resources:
+      requests:
+        storage: 50Gi

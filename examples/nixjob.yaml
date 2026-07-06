@@ -1,0 +1,14 @@
+# Run a flake attribute to completion. A new revision creates a fresh run-Job.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixJob
+metadata:
+  name: migrate
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/web
+      ref: main
+    run: .#migrate
+    storeRef:
+      name: store
