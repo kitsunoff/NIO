@@ -32,7 +32,11 @@ type NixStatefulSetSpec struct {
 	// StatefulSetTemplate is the native apps/v1 StatefulSetSpec, verbatim.
 	// Required (serviceName has no default). The operator owns the app container,
 	// init-containers, nix volumes, revision annotation, labels, and (when unset)
-	// the selector.
+	// the selector. Schemaless so a minimal workload can omit the otherwise-
+	// required selector and pod containers, which the reconciler fills
+	// (O7/ADR-0005).
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
 	StatefulSetTemplate appsv1.StatefulSetSpec `json:"statefulSetTemplate"`
 }
 

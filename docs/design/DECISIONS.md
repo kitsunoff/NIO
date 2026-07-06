@@ -61,8 +61,16 @@ validation passes; cert-manager is already wired into the e2e scaffold.
 in the generated CRD schema and default them in the reconciler instead. The chosen
 path is recorded here once e2e is proven.
 
-**Consequences.** A minimal workload is a bare `nix:` block. Status: pending e2e
-validation of webhook cert stability in Kind.
+**Update (chosen path).** Implemented the fallback, not the webhook: the native
+`<kind>Template` fields are marked `+kubebuilder:validation:Schemaless` +
+`+kubebuilder:pruning:PreserveUnknownFields`, so the CRD accepts a partial (or
+absent) template and the reconciler fills the operator-owned fields (selector,
+app container, init-containers, volumes, strategy). This avoids webhook-cert
+flakiness in Kind and needs no cert-manager for the workload path.
+
+**Consequences.** A minimal workload is a bare `nix:` block. Less server-side
+validation of the embedded template (acceptable for v1alpha1; the reconciler and
+native controllers validate downstream).
 
 ## ADR-0006 — O8: NixStore = harmonia, NixBuilder realizes into the store
 

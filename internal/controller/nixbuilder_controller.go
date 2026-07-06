@@ -85,7 +85,7 @@ func (r *NixBuilderReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	builder.Status.Ready = sts.Status.ReadyReplicas >= 1
 
 	if builder.Status.Ready {
-		builder.Status.Phase = "Ready"
+		builder.Status.Phase = niov1alpha1.PhaseReady
 		meta.SetStatusCondition(&builder.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionTrue,
 			Reason: "BuilderReady", Message: "builder worker is ready",
@@ -93,7 +93,7 @@ func (r *NixBuilderReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		})
 		meta.RemoveStatusCondition(&builder.Status.Conditions, niov1alpha1.ConditionStalled)
 	} else {
-		builder.Status.Phase = "Pending"
+		builder.Status.Phase = niov1alpha1.PhasePending
 		meta.SetStatusCondition(&builder.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: "BuilderNotReady", Message: "builder worker is not ready",
@@ -113,7 +113,7 @@ func (r *NixBuilderReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 func (r *NixBuilderReconciler) fail(ctx context.Context, builder *niov1alpha1.NixBuilder, reason string, cause error) (ctrl.Result, error) {
-	builder.Status.Phase = "Degraded"
+	builder.Status.Phase = niov1alpha1.PhaseDegraded
 	builder.Status.Ready = false
 	meta.SetStatusCondition(&builder.Status.Conditions, metav1.Condition{
 		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,

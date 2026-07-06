@@ -119,7 +119,7 @@ func (r *NixStoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	store.Status.StoreURI = fmt.Sprintf("ssh-ng://root@%s.%s.svc", store.Name, store.Namespace)
 
 	if sts.Status.ReadyReplicas >= desired && desired > 0 {
-		store.Status.Phase = "Ready"
+		store.Status.Phase = niov1alpha1.PhaseReady
 		meta.SetStatusCondition(&store.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionTrue,
 			Reason: "StoreReady", Message: "store server is ready",
@@ -127,7 +127,7 @@ func (r *NixStoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		})
 		meta.RemoveStatusCondition(&store.Status.Conditions, niov1alpha1.ConditionStalled)
 	} else {
-		store.Status.Phase = "Pending"
+		store.Status.Phase = niov1alpha1.PhasePending
 		meta.SetStatusCondition(&store.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: "StoreNotReady", Message: fmt.Sprintf("%d/%d server replicas ready", sts.Status.ReadyReplicas, desired),
@@ -148,7 +148,7 @@ func (r *NixStoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // fail records a Degraded/Stalled status and returns the error for requeue.
 func (r *NixStoreReconciler) fail(ctx context.Context, store *niov1alpha1.NixStore, reason string, cause error) (ctrl.Result, error) {
-	store.Status.Phase = "Degraded"
+	store.Status.Phase = niov1alpha1.PhaseDegraded
 	meta.SetStatusCondition(&store.Status.Conditions, metav1.Condition{
 		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
 		Reason: reason, Message: cause.Error(), ObservedGeneration: store.Generation,

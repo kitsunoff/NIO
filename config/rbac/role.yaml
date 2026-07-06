@@ -36,6 +36,7 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - deployments
   - statefulsets
   verbs:
   - create
@@ -62,6 +63,7 @@ rules:
   resources:
   - machines
   - nixbuilders
+  - nixdeployments
   - nixosconfigurations
   - nixstores
   verbs:
@@ -77,6 +79,7 @@ rules:
   resources:
   - machines/finalizers
   - nixbuilders/finalizers
+  - nixdeployments/finalizers
   - nixosconfigurations/finalizers
   - nixstores/finalizers
   verbs:
@@ -86,9 +89,20 @@ rules:
   resources:
   - machines/status
   - nixbuilders/status
+  - nixdeployments/status
   - nixosconfigurations/status
   - nixstores/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - source.toolkit.fluxcd.io
+  resources:
+  - buckets
+  - gitrepositories
+  - ocirepositories
+  verbs:
+  - get
+  - list
+  - watch

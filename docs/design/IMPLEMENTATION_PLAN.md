@@ -5,12 +5,15 @@ Living checklist for the "Nix-native Workload Primitives" implementation
 
 ## Current focus
 
-Phase D — controllers. Infra controllers (NixStore, NixBuilder) done. Pod
-rendering + revision resolution core done as pure, unit-tested functions
-(compositeRevision, buildNixConfig, renderPodTemplate, resolveRevision:
-Rev>Flux>ls-remote). Next: the generic workload reconciler wiring these into
-per-kind project() for NixDeployment/NixJob/NixCronJob/NixStatefulSet with
-finalizer, Owns(), and Flux/git-creds watches.
+Phase D — controllers. Infra controllers + render/resolve core done. Shared
+workload reconcile skeleton (nixworkload.go: infra preflight, finalizer,
+condition/phase helpers, pod-init observation) + NixDeployment controller done
+(projects owned Deployment with rendered pod template, surge-only maxUnavailable:0
+default, managed selector; observes rollout + new-revision pod init failures →
+Ready/Progressing/Building/Degraded+Stalled; envtest green). O7 resolved by
+marking the native <kind>Template fields schemaless + PreserveUnknownFields so a
+minimal workload validates. Next: NixStatefulSet (reuses skeleton), then
+NixJob + NixCronJob, then watches (Flux/git-creds) + Machine/Nixos parity.
 
 ## Blockers
 
