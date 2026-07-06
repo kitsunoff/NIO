@@ -81,9 +81,40 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
+
+	// Deploy the operator once for the whole suite so every Describe can use it.
+	By("creating the manager namespace")
+	_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+
+	By("labeling the manager namespace with the restricted pod-security policy")
+	_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		"pod-security.kubernetes.io/enforce=restricted"))
+	Expect(err).NotTo(HaveOccurred())
+
+	By("installing CRDs")
+	_, err = utils.Run(exec.Command("make", "install"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+	By("deploying the controller-manager")
+	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+	Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+	By("waiting for the controller-manager to be Available")
+	_, err = utils.Run(exec.Command("kubectl", "wait", "--for=condition=Available",
+		"deploy/go-operator-controller-manager", "-n", namespace, "--timeout=180s"))
+	Expect(err).NotTo(HaveOccurred(), "controller-manager did not become Available")
 })
 
 var _ = AfterSuite(func() {
+	By("undeploying the controller-manager")
+	_, _ = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
+
+	By("uninstalling CRDs")
+	_, _ = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
+
+	By("removing the manager namespace")
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found=true"))
+
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
