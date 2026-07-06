@@ -72,6 +72,12 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for the controller-manager to be Available")
+		cmd = exec.Command("kubectl", "wait", "--for=condition=Available",
+			"deploy/go-operator-controller-manager", "-n", namespace, "--timeout=180s")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "controller-manager did not become Available")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,

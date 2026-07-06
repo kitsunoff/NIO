@@ -190,15 +190,30 @@ func (r *NixBuilderReconciler) desiredStatefulSet(builder *niov1alpha1.NixBuilde
 		env = append(env, corev1.EnvVar{Name: "NIO_STORE_REF", Value: storeRef.Name})
 	}
 
+	env = append(env, corev1.EnvVar{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"})
 	worker := corev1.Container{
 		Name:  "builder",
 		Image: image,
-		Ports: []corev1.ContainerPort{{Name: "ssh", ContainerPort: int32(NixBuilderSSHPort)}},
-		Env:   env,
+		// Run the nix daemon in the foreground so the single worker stays up and
+		// can accept builds. (Delegated remote-build transport is a v1.1 follow-up
+		// per ADR-0006; this keeps the builder a Ready nix worker.)
+		Command: []string{"sh", "-c", "exec nix-daemon"},
+		Ports:   []corev1.ContainerPort{{Name: "ssh", ContainerPort: int32(NixBuilderSSHPort)}},
+		Env:     env,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: builderStoreVolumeName, MountPath: "/nix"},
 		},
 	}
+	// bootstrap seeds nix into the volume-backed /nix so the daemon binary is not
+	// shadowed by the empty volume (mirrors the workload/store pattern).
+	bootstrap := corev1.Container{
+		Name:         "bootstrap",
+		Image:        image,
+		Command:      []string{"sh", "-c", "[ -e /nix-vol/store ] || cp --archive /nix/. /nix-vol/"},
+		VolumeMounts: []corev1.VolumeMount{{Name: builderStoreVolumeName, MountPath: "/nix-vol"}},
+	}
+	podSpec.InitContainers = append([]corev1.Container{bootstrap},
+		filterOutContainers(podSpec.InitContainers, "bootstrap")...)
 	podSpec.Containers = upsertContainer(podSpec.Containers, worker)
 
 	sts := &appsv1.StatefulSet{
