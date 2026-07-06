@@ -20,6 +20,7 @@ import (
 	"context"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
@@ -227,10 +229,18 @@ func (r *NixCronJobReconciler) observe(ctx context.Context, ncj *niov1alpha1.Nix
 
 // SetupWithManager registers the NixCronJob controller with the manager.
 func (r *NixCronJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	if err := registerWorkloadIndexes(mgr, &niov1alpha1.NixCronJob{}, func(o client.Object) *niov1alpha1.NixSource {
+		return &o.(*niov1alpha1.NixCronJob).Spec.Nix.Source
+	}); err != nil {
+		return err
+	}
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&niov1alpha1.NixCronJob{}).
 		Owns(&batchv1.CronJob{}).
 		Owns(&batchv1.Job{}).
-		Named("nixcronjob").
-		Complete(r)
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			enqueueByIndex(r.Client, &niov1alpha1.NixCronJobList{}, IndexByCredentialsSecret))).
+		Named("nixcronjob")
+	addFluxSourceWatches(b, mgr, r.Client, &niov1alpha1.NixCronJobList{})
+	return b.Complete(r)
 }
