@@ -59,6 +59,15 @@ None.
 
 ## F. e2e tests on Kind (§2.3 gate)
 
+> Progress: baseline e2e green (operator deploys/runs on Kind, PR#9). Environment
+> de-risked — Kind node pinned to kindest/node:v1.32.2 (containerd 2.0.3) because
+> containerd 2.2.0 rejects the nixos/nix image's absolute /etc/passwd symlink
+> (containerd#12683). NixStore server redesigned to run harmonia from nixpkgs in
+> the nix image (bootstrap init + config with workers>0 + signing); verified the
+> NixStore controller brings a store to Ready on Kind. On branch
+> feat/e2e-workloads. NEXT: write the six-kind workload e2e specs (substitution
+> path, pinned Rev) and get `make test-e2e` green.
+
 - [ ] Extend `test/e2e`: NixStore Ready; NixBuilder Ready; NixDeployment rolls to Ready; NixJob completes; NixCronJob fires; NixStatefulSet ordered roll; broken-revision stalls rollout while old serves.
 - [ ] Small fast public flake as test workload; Kind config for nixos/nix image documented.
 - [ ] `make test-e2e` fully green on Kind.
