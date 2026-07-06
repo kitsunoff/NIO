@@ -65,7 +65,7 @@ None.
 
 ## G. Polish
 
-- [ ] `make lint` zero findings. `make docker-build` succeeds.
+- [x] `make docker-build` succeeds. (make lint zero: also green.)
 - [ ] README (root), `examples/` for new kinds, `docs/design/DECISIONS.md` complete.
 - [ ] Final full run: `make build test lint test-e2e` all green, output captured.
 
