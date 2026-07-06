@@ -1,0 +1,56 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: apply-job-role
+  namespace: system
+rules:
+# Read secrets for SSH keys and git credentials
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+# Read Machine to get target host info
+- apiGroups:
+  - nio.homystack.com
+  resources:
+  - machines
+  verbs:
+  - get
+# Read and update NixosConfiguration status
+- apiGroups:
+  - nio.homystack.com
+  resources:
+  - nixosconfigurations
+  verbs:
+  - get
+- apiGroups:
+  - nio.homystack.com
+  resources:
+  - nixosconfigurations/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: apply-job
+  namespace: system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: apply-job-rolebinding
+  namespace: system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: apply-job-role
+subjects:
+- kind: ServiceAccount
+  name: apply-job
+  namespace: system

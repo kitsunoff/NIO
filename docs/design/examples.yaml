@@ -1,0 +1,336 @@
+# Examples for the Nix-native workload primitives (see nix-workloads.md).
+# API group: nio.homystack.com/v1alpha1
+#
+# Infrastructure (declared once, referenced by workloads):
+#   NixStore    — a centralized nix store/cache SERVER (StatefulSet + PVC)
+#   NixBuilder  — a single builder worker (StatefulSet), optionally → a NixStore
+#
+# Workload spec = two blocks:
+#   nix:                — source, run, args, image, storeRef, builderRef, push
+#   <kind>Template:     — the native Kubernetes workload spec, verbatim
+#
+# These are DESIGN-STAGE examples — the CRDs are not implemented yet.
+---
+# ═════════════════════════════ INFRASTRUCTURE ═══════════════════════════════
+# A centralized store/cache server. Runners substitute from it; builders push
+# into it. One server owns the store db — clients are network substituter
+# clients, so this works the same on one node or many.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixStore
+metadata:
+  name: cluster-store
+  namespace: nio-system
+spec:
+  replicas: 1
+  storage:                         # volumeClaimTemplate backing the real /nix
+    accessModes: ["ReadWriteOnce"]
+    resources:
+      requests:
+        storage: 200Gi
+    storageClassName: fast-ssd
+  # signingKeySecretRef omitted → operator generates a key and publishes the
+  # public key + endpoints in status:
+  #   status.substituterURL: http://cluster-store.nio-system.svc
+  #   status.storeURI:       ssh-ng://cluster-store.nio-system.svc
+  #   status.publicKey:      cluster-store:abc123...==
+---
+# A SINGLE builder worker that realizes directly INTO cluster-store. One STS
+# worker — no pool/balancing (MVP). Heavy workloads get their OWN builder via
+# builderTemplate instead of scaling this one.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixBuilder
+metadata:
+  name: shared-builder
+  namespace: nio-system
+spec:
+  storeRef:
+    name: cluster-store            # builds land in the shared store directly
+  systems: ["x86_64-linux"]
+  maxJobs: 4                       # parallel builds on the one worker
+  storage:                         # the builder's own persistent /nix
+    accessModes: ["ReadWriteOnce"]
+    resources: { requests: { storage: 100Gi } }
+  template:                        # beefy, dedicated node
+    spec:
+      nodeSelector:
+        node-role: builder
+      containers:
+        - name: builder
+          resources:
+            requests: { cpu: "4", memory: 8Gi }
+---
+# ═════════════════════════════ WORKLOADS ════════════════════════════════════
+# 1. NixDeployment — minimal prod: point at repo/branch/app + a store. Builds
+#    locally (no builderRef), pushes to the store, runners substitute + exec.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixDeployment
+metadata:
+  name: bebra
+  namespace: default
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/homystack/bebra
+      ref: main
+    run: .#bebra
+    storeRef:
+      name: cluster-store          # cross-namespace? use a store in this ns
+---
+# 1b. NixDeployment — ephemeral dev (NO storeRef): builds + runs in the pod.
+#     Each replica rebuilds. Dev/throwaway only.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixDeployment
+metadata:
+  name: bebra-dev
+  namespace: default
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/homystack/bebra
+      ref: feature-x
+    run: .#bebra
+---
+# 2. NixDeployment — full. Private repo, dedicated builder, sidecar, scheduling,
+#    explicit rolling-update strategy (all native under deploymentTemplate).
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixDeployment
+metadata:
+  name: web
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: ssh://git@github.com/acme/web.git
+      ref: release
+      dir: deploy                  # flake lives in ./deploy
+      credentialsRef:
+        name: acme-git-creds        # Secret: ssh-privatekey (or username+password)
+      pollInterval: 30s
+    run: .#server
+    args: ["--port", "8080"]
+    image: nixos/nix:2.24.0        # official nix image (default: nixos/nix:latest)
+    containerName: app             # which container the operator owns (default: app)
+    nixFlags: ["--option", "sandbox", "false"]
+    storeRef:
+      name: apps-store             # a NixStore in this namespace
+    builderTemplate:               # construct a DEDICATED single-worker builder
+      systems: ["x86_64-linux"]    # storeRef defaults to nix.storeRef (apps-store)
+      maxJobs: 2
+      storage:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 50Gi } }
+      template:
+        spec:
+          containers:
+            - name: builder
+              resources:
+                requests: { cpu: "8", memory: 16Gi }
+    localStore:                    # big closure → per-pod PVC, not node emptyDir
+      medium: PodPVC
+      sizeLimit: 20Gi
+      storageClassName: fast-ssd
+  deploymentTemplate:              # = appsv1.DeploymentSpec, verbatim
+    replicas: 3
+    minReadySeconds: 10
+    progressDeadlineSeconds: 600
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    template:                      # corev1.PodTemplateSpec
+      metadata:
+        labels:
+          team: platform
+      spec:
+        nodeSelector:
+          kubernetes.io/arch: amd64
+        serviceAccountName: web
+        containers:
+          - name: app              # operator owns .image and .command here
+            resources:
+              requests: { cpu: "250m", memory: 256Mi }
+              limits:   { cpu: "1",    memory: 1Gi }
+            readinessProbe:
+              httpGet: { path: /healthz, port: 8080 }
+              initialDelaySeconds: 5
+            env:
+              - name: LOG_LEVEL
+                value: info
+          - name: log-shipper      # a plain sidecar — passed through untouched
+            image: ghcr.io/acme/log-shipper:2.1
+---
+# A Service the user creates to expose the NixDeployment pods (networking is out
+# of scope for the operator — it only stamps pod labels).
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: apps
+spec:
+  selector:
+    nio.homystack.com/workload-kind: NixDeployment
+    nio.homystack.com/workload-name: web
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# 3. NixJob — run-to-completion. Re-runs (new Job object) on every new commit.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixJob
+metadata:
+  name: db-migrate
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/web
+      ref: main
+    run: .#migrate
+    storeRef:
+      name: apps-store
+    triggerOnChange: true          # new revision → new Job "db-migrate-<hash>"
+  jobTemplate:                     # = batchv1.JobSpec, verbatim
+    backoffLimit: 2
+    activeDeadlineSeconds: 1800
+---
+# 4. NixJob — pinned to an exact commit (GitOps-immutable: no polling at all).
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixJob
+metadata:
+  name: seed-once
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/web
+      rev: 3f1a9c2b7e4d5061a8f3c0d9e2b1a4c5d6e7f809   # Rev set → polling disabled
+    run: .#seed
+    storeRef:
+      name: apps-store
+    triggerOnChange: false
+---
+# 5. NixCronJob — scheduled, plus immediate run when a new commit lands.
+#    schedule/concurrencyPolicy/historyLimits are NATIVE CronJobSpec fields.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixCronJob
+metadata:
+  name: nightly-report
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/reports
+      ref: main
+    run: .#report
+    args: ["--format", "pdf"]
+    storeRef:
+      name: apps-store
+    triggerOnChange: true          # also fire a one-off Job on a fresh revision
+  cronJobTemplate:                 # = batchv1.CronJobSpec, verbatim
+    schedule: "0 2 * * *"          # 02:00 daily — handled by the native CronJob
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 1
+    jobTemplate:
+      spec:
+        backoffLimit: 1
+---
+# 6. NixStatefulSet — ordered, stateful. serviceName / volumeClaimTemplates /
+#    updateStrategy are NATIVE StatefulSetSpec fields (NOT to be confused with
+#    the nix store — these PVCs are the app's own data).
+apiVersion: v1
+kind: Service
+metadata:
+  name: queue          # governing headless Service required by the StatefulSet
+  namespace: apps
+spec:
+  clusterIP: None
+  selector:
+    nio.homystack.com/workload-kind: NixStatefulSet
+    nio.homystack.com/workload-name: queue
+  ports:
+    - port: 5672
+      name: amqp
+---
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixStatefulSet
+metadata:
+  name: queue
+  namespace: apps
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/queue
+      ref: main
+    run: .#broker
+    storeRef:
+      name: apps-store
+  statefulSetTemplate:             # = appsv1.StatefulSetSpec, verbatim
+    serviceName: queue
+    replicas: 3
+    podManagementPolicy: OrderedReady
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        partition: 0          # set >0 for canary: only ordinals >= partition update
+    volumeClaimTemplates:
+      - metadata:
+          name: data
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+---
+# 7. NixDeployment driven by a Flux GitRepository (operator does no git I/O —
+#    it reads status.artifact.revision from the referenced GitRepository).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: bebra-src
+  namespace: default
+spec:
+  interval: 1m
+  url: https://github.com/homystack/bebra
+  ref:
+    branch: main
+---
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixDeployment
+metadata:
+  name: bebra-flux
+  namespace: default
+spec:
+  nix:
+    source:
+      fluxGitRepositoryRef:
+        name: bebra-src        # gitRepo/ref/pollInterval ignored in this mode
+    run: .#bebra
+    storeRef:
+      name: cluster-store
+  deploymentTemplate:
+    replicas: 2
+---
+# 8. NixJob running an EXTERNAL flake that consumes the source as an argument.
+#    `nix run github:serokell/deploy-rs#deploy-rs -- .#main`
+#    deploy-rs evaluates nix itself at runtime → single-pod Job with a writable
+#    runtime (see §4.2). Re-runs on a new source commit (composite trigger).
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixJob
+metadata:
+  name: deploy-main
+  namespace: infra
+spec:
+  nix:
+    source:
+      gitRepo: https://github.com/acme/infra
+      ref: main
+    run: github:serokell/deploy-rs#deploy-rs
+    args: [".#main"]
+    prebuild: [".#main"]        # materialize what deploy-rs will deploy, in init
+    storeRef:
+      name: cluster-store
+    triggerOnChange: true       # new source commit → new "deploy-main-<hash>" Job
+  jobTemplate:
+    backoffLimit: 1

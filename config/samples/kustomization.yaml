@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- nio_v1alpha1_machine.yaml
+- nio_v1alpha1_nixosconfiguration.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
