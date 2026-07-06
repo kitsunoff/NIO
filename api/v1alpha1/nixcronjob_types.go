@@ -32,6 +32,10 @@ type NixCronJobSpec struct {
 	// CronJobTemplate is the native batch/v1 CronJobSpec, verbatim. Required
 	// (schedule has no default). The operator pins its jobTemplate to the latest
 	// resolved revision and owns the app container, init-containers, and volumes.
+	// Schemaless so a minimal workload can omit the otherwise-required pod
+	// containers, which the reconciler fills (O7/ADR-0005).
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
 	CronJobTemplate batchv1.CronJobSpec `json:"cronJobTemplate"`
 }
 

@@ -30,8 +30,12 @@ type NixDeploymentSpec struct {
 	// DeploymentTemplate is the native apps/v1 DeploymentSpec, verbatim. The
 	// operator owns the app container image/command, the three init-containers,
 	// the nix volumes, the pod-template revision annotation and managed labels,
-	// and (when unset) the selector and surge-only strategy default.
+	// and (when unset) the selector and surge-only strategy default. It is
+	// schemaless so a minimal workload can omit the otherwise-required selector
+	// and pod containers, which the reconciler fills (design §3.3, O7/ADR-0005).
 	// +optional
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
 	DeploymentTemplate *appsv1.DeploymentSpec `json:"deploymentTemplate,omitempty"`
 }
 

@@ -29,7 +29,11 @@ type NixJobSpec struct {
 
 	// JobTemplate is the native batch/v1 JobSpec, verbatim. The operator owns
 	// the app container, the init-containers, the nix volumes, and the labels.
+	// Schemaless so a minimal workload can omit the otherwise-required pod
+	// containers, which the reconciler fills (O7/ADR-0005).
 	// +optional
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
 	JobTemplate *batchv1.JobSpec `json:"jobTemplate,omitempty"`
 }
 
