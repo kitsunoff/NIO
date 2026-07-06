@@ -1,0 +1,12 @@
+apiVersion: nio.homystack.com/v1alpha1
+kind: Machine
+metadata:
+  labels:
+    app.kubernetes.io/name: nixos-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: machine-sample
+spec:
+  host: worker-01.example.com
+  sshUser: root
+  sshKeySecretRef:
+    name: worker-ssh-key
