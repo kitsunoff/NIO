@@ -130,3 +130,40 @@ default `kind` 0.31 node image ships containerd 2.2.0.
 **Consequences.** e2e runs Nix pods reliably. Production clusters must likewise
 run containerd < 2.2 (or a fixed release) until upstream resolves the symlink
 handling; noted for operators in the README.
+
+## ADR-0008 — v1.1: delegated remote build (builder realizes into the store)
+
+**Context.** In 1.0 runner pods build in-pod and substitute from the `NixStore`
+(harmonia HTTP). The design's stronger model (§2.1/§6) is: pods **dispatch** the
+build to the single `NixBuilder`, which **realizes the outputs into the shared
+`NixStore`**, and every other pod then substitutes — deduping N concurrent pods
+to one real build. Plain nix `builders=` copies a remote build's outputs back to
+the *requesting* pod, not into the shared store, so a concrete push mechanism is
+needed.
+
+**Decision.** Implement the documented "builder pushes to the store" path over
+`ssh-ng`:
+
+- The **`NixStore`** owns one ed25519 SSH keypair (Secret `<store>-ssh`,
+  generated once). The store pod additionally runs `sshd` and a nix daemon with
+  `trusted-users = root`, so a holder of the key can `nix copy --to
+  ssh-ng://root@<store>` (unsigned imports allowed for the trusted user). The
+  public key is the sshd `authorized_keys` entry.
+- The **`NixBuilder`** (which references the store) runs `sshd` authorizing the
+  same key so pods can remote-build to it, and configures a nix `post-build-hook`
+  that runs `nix copy --to ssh-ng://root@<store> $OUT_PATHS`, pushing every build
+  result into the shared store. It mounts the private key and uses
+  `StrictHostKeyChecking=no`.
+- **Runner pods** that reference a builder mount the private key and set
+  `builders = ssh-ng://root@<builder> <systems>` + `builders-use-substitutes` +
+  `NIX_SSHOPTS` for key/host handling. Their `instantiate` dispatches the build to
+  the builder; the builder builds once, pushes to the store; other pods
+  substitute from the store's harmonia endpoint.
+
+A single keypair (store-owned, shared to builder and pods, `StrictHostKeyChecking=no`)
+keeps SSH provisioning tractable across pods that come and go.
+
+**Status.** In progress on `feat/remote-build`. Proven when an e2e builds a
+**non-cached** derivation once on the builder, confirms the path lands in the
+`NixStore`, and a second consumer substitutes it without rebuilding. The 1.0
+in-pod-build path remains the default when no builder is referenced.
