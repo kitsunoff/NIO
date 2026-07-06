@@ -40,7 +40,7 @@ None.
 ## D. Controllers & pod rendering (§4.5, §7)
 
 - [x] `NixStore` controller: StatefulSet + headless Service + signing-key Secret; publish status.
-- [ ] `NixBuilder` controller: single-worker StatefulSet wired to `storeRef`; publish `builderEndpoint`.
+- [x] `NixBuilder` controller: single-worker StatefulSet wired to `storeRef`; publish `builderEndpoint`.
 - [ ] Generic workload reconciler + per-kind `project()`: resolve revision, infra preflight, SSA native workload with three init-containers, `NIX_CONFIG`, volumes, composite revision annotation, labels, app command.
 - [ ] Deployment `maxUnavailable:0` default; StatefulSet ordered update; NixJob re-run + history GC; NixCronJob scheduling + optional immediate Job.
 - [ ] Flux source watch/enqueue mapper; git-creds secret field-indexed watch; `Owns()` native kinds; finalizer; RBAC markers.

@@ -222,6 +222,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NixStore")
 		os.Exit(1)
 	}
+	if err := (&controller.NixBuilderReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("nixbuilder-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NixBuilder")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

@@ -61,6 +61,7 @@ rules:
   - nio.homystack.com
   resources:
   - machines
+  - nixbuilders
   - nixosconfigurations
   - nixstores
   verbs:
@@ -75,6 +76,7 @@ rules:
   - nio.homystack.com
   resources:
   - machines/finalizers
+  - nixbuilders/finalizers
   - nixosconfigurations/finalizers
   - nixstores/finalizers
   verbs:
@@ -83,6 +85,7 @@ rules:
   - nio.homystack.com
   resources:
   - machines/status
+  - nixbuilders/status
   - nixosconfigurations/status
   - nixstores/status
   verbs:
