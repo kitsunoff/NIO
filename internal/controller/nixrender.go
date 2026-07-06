@@ -113,6 +113,16 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 	return strings.Join(lines, "\n")
 }
 
+// shellJoin single-quotes each argument and joins them for safe use inside an
+// `sh -c` string (embedded single quotes are escaped as '\”).
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
+}
+
 // runCommand builds the app container's `nix run <Run> -- <Args...>` command,
 // with any extra nix flags before the installable.
 func runCommand(run string, args, nixFlags []string) []string {
@@ -237,6 +247,16 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	}
 	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
 
+	// When dispatching to a remote builder, nix invokes `ssh`; the nix image has
+	// no ssh binary, so run the build/run commands inside a shell that brings
+	// openssh onto PATH.
+	wrapSSH := func(cmd []string) []string {
+		if in.sshSecretName == "" {
+			return cmd
+		}
+		return []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command " + shellJoin(cmd)}
+	}
+
 	// Init-containers (prepended, in order). fetch-source runs `nix shell
 	// nixpkgs#gitMinimal`, so it needs NIX_CONFIG too (to enable nix-command and
 	// to substitute git from the store/cache rather than build it).
@@ -268,7 +288,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 			Name:         initInstantiate,
 			Image:        image,
 			WorkingDir:   workspaceMountPath,
-			Command:      buildCommand(nix.Run, nix.Prebuild, nix.NixFlags),
+			Command:      wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags)),
 			Env:          instantiateEnv,
 			VolumeMounts: buildMounts,
 		},
@@ -280,7 +300,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	app := findOrNewContainer(tmpl.Spec.Containers, appName)
 	app.Image = image
 	app.WorkingDir = workspaceMountPath
-	app.Command = runCommand(nix.Run, nix.Args, nix.NixFlags)
+	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags))
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
 	for _, e := range sshOpts {
