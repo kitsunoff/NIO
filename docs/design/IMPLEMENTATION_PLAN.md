@@ -12,8 +12,9 @@ condition/phase helpers, pod-init observation) + NixDeployment controller done
 default, managed selector; observes rollout + new-revision pod init failures →
 Ready/Progressing/Building/Degraded+Stalled; envtest green). O7 resolved by
 marking the native <kind>Template fields schemaless + PreserveUnknownFields so a
-minimal workload validates. Next: NixStatefulSet (reuses skeleton), then
-NixJob + NixCronJob, then watches (Flux/git-creds) + Machine/Nixos parity.
+minimal workload validates. Next: NixJob + NixCronJob, then watches (Flux/git-creds).
+NixStatefulSet controller done (ordered update, no maxUnavailable default,
+init-fail stall; envtest green).
 
 ## Blockers
 
