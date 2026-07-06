@@ -16,10 +16,34 @@ rules:
   resources:
   - pods
   - pods/log
-  - secrets
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - batch
@@ -38,6 +62,7 @@ rules:
   resources:
   - machines
   - nixosconfigurations
+  - nixstores
   verbs:
   - create
   - delete
@@ -51,6 +76,7 @@ rules:
   resources:
   - machines/finalizers
   - nixosconfigurations/finalizers
+  - nixstores/finalizers
   verbs:
   - update
 - apiGroups:
@@ -58,6 +84,7 @@ rules:
   resources:
   - machines/status
   - nixosconfigurations/status
+  - nixstores/status
   verbs:
   - get
   - patch
