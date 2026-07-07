@@ -130,3 +130,57 @@ default `kind` 0.31 node image ships containerd 2.2.0.
 **Consequences.** e2e runs Nix pods reliably. Production clusters must likewise
 run containerd < 2.2 (or a fixed release) until upstream resolves the symlink
 handling; noted for operators in the README.
+
+## ADR-0008 — v1.1: delegated remote build (builder realizes into the store)
+
+**Context.** In 1.0 runner pods build in-pod and substitute from the `NixStore`
+(harmonia HTTP). The design's stronger model (§2.1/§6) is: pods **dispatch** the
+build to the single `NixBuilder`, which **realizes the outputs into the shared
+`NixStore`**, and every other pod then substitutes — deduping N concurrent pods
+to one real build. Plain nix `builders=` copies a remote build's outputs back to
+the *requesting* pod, not into the shared store, so a concrete push mechanism is
+needed.
+
+**Decision.** Implement the documented "builder pushes to the store" path over
+`ssh-ng`:
+
+- The **`NixStore`** owns one ed25519 SSH keypair (Secret `<store>-ssh`,
+  generated once). The store pod additionally runs `sshd` and a nix daemon with
+  `trusted-users = root`, so a holder of the key can `nix copy --to
+  ssh-ng://root@<store>` (unsigned imports allowed for the trusted user). The
+  public key is the sshd `authorized_keys` entry.
+- The **`NixBuilder`** (which references the store) runs `sshd` authorizing the
+  same key so pods can remote-build to it, and configures a nix `post-build-hook`
+  that runs `nix copy --to ssh-ng://root@<store> $OUT_PATHS`, pushing every build
+  result into the shared store. It mounts the private key and uses
+  `StrictHostKeyChecking=no`.
+- **Runner pods** that reference a builder mount the private key and set
+  `builders = ssh-ng://root@<builder> <systems>` + `builders-use-substitutes` +
+  `NIX_SSHOPTS` for key/host handling. Their `instantiate` dispatches the build to
+  the builder; the builder builds once, pushes to the store; other pods
+  substitute from the store's harmonia endpoint.
+
+A single keypair (store-owned, shared to builder and pods, `StrictHostKeyChecking=no`)
+keeps SSH provisioning tractable across pods that come and go.
+
+**Shipped (v1.1), as proven end-to-end on Kind.** The mechanism differs from the
+initial sketch in three ways discovered during validation:
+
+- **The pod pushes, not the builder.** A remote build served over ssh-ng runs
+  through Nix's serve path, which does **not** fire `post-build-hook`. So the
+  runner pod's `instantiate` does `nix build … && nix copy --to
+  ssh-ng://root@<store> …`: it dispatches the build to the builder and then
+  pushes the resulting closure into the store itself (it already holds the key).
+- **Builds are forced remote with `max-jobs = 0`** in the pod's `NIX_CONFIG`;
+  otherwise Nix builds locally and never contacts the builder. The builder is
+  advertised for both common Linux arches so it matches the pod's system.
+- **The SSH server is dropbear**, not OpenSSH `sshd`: OpenSSH needs a dedicated
+  privilege-separation user, but the nix image's `/etc/passwd` is a read-only
+  symlink into the store so that user cannot be added. dropbear needs none; the
+  store publishes root's shell via `/etc/shells` so dropbear accepts the login.
+  The store sets `require-sigs = false` (internal trusted network) to accept the
+  unsigned closure; harmonia re-signs paths with the store key when serving.
+
+Verified on Kind: a builder-backed workload builds a non-cached derivation on the
+builder and the resulting path is realized into the shared `NixStore`. The 1.0
+in-pod-build path remains the default when no builder is referenced.

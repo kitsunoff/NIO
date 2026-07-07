@@ -180,6 +180,7 @@ func (r *NixJobReconciler) desiredJob(nj *niov1alpha1.NixJob, res resolvedSource
 		artifactURL:      res.artifactURL,
 		store:            deps.store,
 		builder:          deps.builder,
+		sshSecretName:    deps.sshSecretName,
 		kind:             kindNixJob,
 		name:             nj.Name,
 	}

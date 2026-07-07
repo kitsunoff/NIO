@@ -169,6 +169,7 @@ func (r *NixDeploymentReconciler) desiredDeployment(nd *niov1alpha1.NixDeploymen
 		artifactURL:      res.artifactURL,
 		store:            deps.store,
 		builder:          deps.builder,
+		sshSecretName:    deps.sshSecretName,
 		kind:             kindNixDeployment,
 		name:             nd.Name,
 	}

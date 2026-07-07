@@ -59,12 +59,27 @@ const (
 	nixStoreRequeue = 30 * time.Second
 )
 
-// harmoniaStartScript writes a minimal harmonia config (harmonia rejects
-// workers=0, so it must be set) that serves the PVC-backed /nix on the HTTP
-// port and signs served paths with the mounted key, then execs harmonia from
-// nixpkgs. Runs in the nix image after the bootstrap init seeds /nix.
-const harmoniaStartScript = `set -eu
-mkdir -p /etc/harmonia
+// storeStartScript runs the store server: it writes a nix.conf that trusts root
+// for ssh-ng pushes, brings up sshd (so the builder/pods can push over ssh-ng),
+// and execs harmonia (which serves the PVC-backed /nix and signs served paths
+// with the mounted key; harmonia rejects workers=0, so it is set). Runs in the
+// nix image after the bootstrap init seeds /nix.
+func storeStartScript() string {
+	return `set -eu
+mkdir -p /etc/harmonia /etc/nix /root/.ssh /run/sshd
+# Accept pushes from the builder/pods over ssh-ng as a trusted user (so unsigned
+# store paths built remotely can be imported).
+cat > /etc/nix/nix.conf <<'NIXCFG'
+experimental-features = nix-command flakes
+trusted-users = root
+require-sigs = false
+NIXCFG
+# Authorize the shared remote-build key, then start sshd (ssh-ng runs
+# 'nix daemon --stdio' per connection; no standalone daemon needed).
+cp /etc/nio/ssh/ssh-authorized-key /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+` + sshdBringUp(false) + `
+# Serve the store over HTTP for substituter clients.
 cat > /etc/harmonia/config.toml <<'CFG'
 bind = "[::]:5000"
 workers = 4
@@ -74,6 +89,7 @@ sign_key_paths = ["/etc/nix/signing/nix-signing-key"]
 CFG
 exec nix run nixpkgs#harmonia
 `
+}
 
 // NixStoreReconciler reconciles a NixStore object: it manages a StatefulSet
 // running a Nix binary-cache server, a headless Service, and a signing-key
@@ -107,6 +123,12 @@ func (r *NixStoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	publicKey, err := r.ensureSigningKey(ctx, &store)
 	if err != nil {
 		return r.fail(ctx, &store, "SigningKeyError", err)
+	}
+
+	// 1b. Ensure the remote-build SSH keypair Secret (used by the builder to push
+	// and by runner pods to dispatch builds; also this store's sshd authorized_keys).
+	if _, err := ensureSSHKeySecret(ctx, r.Client, r.Scheme, &store, store.Name); err != nil {
+		return r.fail(ctx, &store, "SSHKeyError", err)
 	}
 
 	// 2. Ensure the headless Service.
@@ -330,7 +352,7 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 	serverContainer := corev1.Container{
 		Name:    "store",
 		Image:   image,
-		Command: []string{"sh", "-c", harmoniaStartScript},
+		Command: []string{"sh", "-c", storeStartScript()},
 		Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: int32(NixStoreHTTPPort)}},
 		Env: []corev1.EnvVar{
 			{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},
@@ -339,6 +361,7 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: nixStoreVolumeName, MountPath: "/nix"},
 			{Name: signingKeyVolumeName, MountPath: "/etc/nix/signing", ReadOnly: true},
+			{Name: sshVolumeName, MountPath: "/etc/nio/ssh", ReadOnly: true},
 		},
 	}
 	podSpec.Containers = upsertContainer(podSpec.Containers, serverContainer)
@@ -346,6 +369,12 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 		Name: signingKeyVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{SecretName: r.signingKeySecretName(store)},
+		},
+	})
+	podSpec.Volumes = upsertVolume(podSpec.Volumes, corev1.Volume{
+		Name: sshVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: sshSecretName(store.Name)},
 		},
 	})
 

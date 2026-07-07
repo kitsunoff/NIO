@@ -223,4 +223,38 @@ spec:
 			"-o", "jsonpath={.status.conditions[?(@.type=='Stalled')].status}")
 		Expect(stalled).To(Equal("True"))
 	})
+
+	It("delegates a non-cached build to the NixBuilder and realizes it into the NixStore", func() {
+		// A tiny public flake whose derivation embeds a unique marker, so its
+		// output is in no public cache and a real build must run on the builder.
+		const flakeRepo = "https://github.com/kitsunoff/nio-e2e-flake"
+		const flakeRev = "882334ddb6f76fa1d7aeb839835a3c06c18c4e76"
+
+		applyYAML(`
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixJob
+metadata: {name: rbjob, namespace: ` + workloadsNamespace + `}
+spec:
+  nix:
+    source: {gitRepo: "` + flakeRepo + `", rev: "` + flakeRev + `"}
+    run: ".#default"
+    storeRef: {name: store}
+    builderRef: {name: builder}`)
+
+		By("the builder-backed NixJob completes (build ran on the builder)")
+		Eventually(func() string {
+			return kget("nixjob", "rbjob", "-o", "jsonpath={.status.phase}")
+		}, 12*time.Minute, 10*time.Second).Should(Equal("Ready"), "builder-backed NixJob did not complete")
+
+		By("the built path was realized into the shared NixStore")
+		Eventually(func() string {
+			out, err := utils.Run(exec.Command("kubectl", "exec", "-n", workloadsNamespace, "store-0",
+				"-c", "store", "--", "sh", "-c", "ls -d /nix/store/*nio-e2e-app 2>/dev/null || true"))
+			if err != nil {
+				return ""
+			}
+			return strings.TrimSpace(out)
+		}, 3*time.Minute, 5*time.Second).Should(ContainSubstring("nio-e2e-app"),
+			"the delegated build was not pushed into the NixStore")
+	})
 })
