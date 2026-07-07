@@ -55,6 +55,9 @@ type infraDeps struct {
 	store    *storeInfo
 	builder  *builderInfo
 	notReady string
+	// sshSecretName is the store-owned SSH keypair Secret the runner pods mount
+	// to dispatch builds to the builder (set only when a builder is in play).
+	sshSecretName string
 }
 
 // resolveInfra resolves the workload's storeRef/builderRef/builderTemplate into
@@ -78,7 +81,11 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 			deps.notReady = fmt.Sprintf("NixStore %q not ready", nix.StoreRef.Name)
 			return deps, nil
 		}
-		deps.store = &storeInfo{substituterURL: store.Status.SubstituterURL, publicKey: store.Status.PublicKey}
+		deps.store = &storeInfo{
+			substituterURL: store.Status.SubstituterURL,
+			publicKey:      store.Status.PublicKey,
+			pushURL:        fmt.Sprintf("ssh-ng://root@%s.%s.svc", store.Name, ns),
+		}
 	}
 
 	// Determine the builder to use: an explicit ref, or a dedicated one built
@@ -109,6 +116,16 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 			return deps, nil
 		}
 		deps.builder = &builderInfo{endpoint: builder.Status.BuilderEndpoint, systems: builder.Spec.Systems}
+
+		// Runner pods dispatch builds to the builder using the SSH key owned by the
+		// store the builder pushes into (its storeRef, else the workload's storeRef).
+		storeForSSH := builder.Spec.StoreRef
+		if storeForSSH == nil {
+			storeForSSH = nix.StoreRef
+		}
+		if storeForSSH != nil {
+			deps.sshSecretName = sshSecretName(storeForSSH.Name)
+		}
 	}
 
 	return deps, nil

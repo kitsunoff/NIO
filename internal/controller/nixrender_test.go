@@ -81,7 +81,7 @@ func TestBuildNixConfig(t *testing.T) {
 
 	// Builder with no systems defaults to x86_64-linux.
 	def := buildNixConfig(store, &builderInfo{endpoint: "ssh-ng://x"})
-	if !strings.Contains(def, "ssh-ng://x "+defaultNixSystem) {
+	if !strings.Contains(def, "ssh-ng://x "+defaultNixSystems) {
 		t.Errorf("expected default system in builders line: %q", def)
 	}
 }
@@ -278,4 +278,60 @@ func envMap(env []corev1.EnvVar) map[string]string {
 		m[e.Name] = e.Value
 	}
 	return m
+}
+
+func TestRenderPodTemplateSSHWiring(t *testing.T) {
+	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"}
+
+	// Without a builder / ssh secret: no ssh volume, no NIX_SSHOPTS.
+	out := renderPodTemplate(renderInput{spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j"}, corev1.PodTemplateSpec{})
+	for _, v := range out.Spec.Volumes {
+		if v.Name == sshVolumeName {
+			t.Fatal("ssh volume present without a builder")
+		}
+	}
+	inst := containerByName(out.Spec.InitContainers, initInstantiate)
+	if inst == nil || envMap(inst.Env)["NIX_SSHOPTS"] != "" {
+		t.Error("NIX_SSHOPTS set on instantiate without a builder")
+	}
+
+	// With a builder + ssh secret: ssh volume mounted, NIX_SSHOPTS on instantiate+app.
+	out = renderPodTemplate(renderInput{
+		spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j",
+		builder:       &builderInfo{endpoint: "ssh-ng://root@b.svc"},
+		sshSecretName: "store-ssh",
+	}, corev1.PodTemplateSpec{})
+
+	hasVol := false
+	for _, v := range out.Spec.Volumes {
+		if v.Name == sshVolumeName && v.Secret != nil && v.Secret.SecretName == "store-ssh" {
+			hasVol = true
+		}
+	}
+	if !hasVol {
+		t.Error("ssh volume missing/misconfigured with a builder")
+	}
+	inst = containerByName(out.Spec.InitContainers, initInstantiate)
+	if inst == nil || envMap(inst.Env)["NIX_SSHOPTS"] == "" {
+		t.Error("NIX_SSHOPTS missing on instantiate with a builder")
+	}
+	mounted := false
+	for _, m := range inst.VolumeMounts {
+		if m.MountPath == sshKeyMountPath {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Error("ssh key not mounted into instantiate")
+	}
+}
+
+// containerByName returns a pointer to the named container, or nil.
+func containerByName(cs []corev1.Container, name string) *corev1.Container {
+	for i := range cs {
+		if cs[i].Name == name {
+			return &cs[i]
+		}
+	}
+	return nil
 }

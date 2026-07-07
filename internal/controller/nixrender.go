@@ -43,7 +43,10 @@ const (
 	initInstantiate = "instantiate"
 
 	defaultAppContainer = "app"
-	defaultNixSystem    = "x86_64-linux"
+	// defaultNixSystems is what an unqualified NixBuilder advertises. It covers
+	// both common Linux arches so the builder matches the runner pods' system
+	// regardless of node architecture (the in-cluster builder is that arch).
+	defaultNixSystems = "x86_64-linux,aarch64-linux"
 
 	// cacheNixosPublicKey is the well-known public key for cache.nixos.org.
 	cacheNixosPublicKey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
@@ -54,6 +57,7 @@ const (
 type storeInfo struct {
 	substituterURL string
 	publicKey      string
+	pushURL        string // ssh-ng:// endpoint for pushing built paths into the store
 }
 
 // builderInfo carries the resolved NixBuilder endpoint for NIX_CONFIG assembly.
@@ -101,16 +105,34 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 		"trusted-public-keys = " + strings.Join(trustedKeys, " "),
 	}
 	if builder != nil && builder.endpoint != "" {
-		systems := builder.systems
-		if len(systems) == 0 {
-			systems = []string{defaultNixSystem}
+		systemList := defaultNixSystems
+		if len(builder.systems) > 0 {
+			systemList = strings.Join(builder.systems, ",")
 		}
 		lines = append(lines,
-			"builders = "+builder.endpoint+" "+strings.Join(systems, ","),
+			"builders = "+builder.endpoint+" "+systemList,
 			"builders-use-substitutes = true",
+			// Force builds onto the remote builder: with a local job slot nix would
+			// otherwise build locally and the builder→store push would never run.
+			"max-jobs = 0",
 		)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// shellJoin single-quotes each argument and joins them for safe use inside an
+// `sh -c` string (embedded single quotes are escaped as '\”).
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// shellQuote single-quotes one argument for safe embedding in an `sh -c` string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // runCommand builds the app container's `nix run <Run> -- <Args...>` command,
@@ -164,6 +186,7 @@ type renderInput struct {
 	artifactURL      string // set in Flux mode
 	store            *storeInfo
 	builder          *builderInfo
+	sshSecretName    string // store-owned SSH key Secret; set only when a builder is used
 	kind             string
 	name             string
 }
@@ -214,6 +237,49 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		{Name: workspaceVolume, MountPath: workspaceMountPath},
 	}
 
+	// When a builder is used, mount the store-owned SSH key so `nix build` can
+	// dispatch to the builder over ssh-ng (builders= is already in NIX_CONFIG).
+	buildMounts := nixAndWorkspace
+	var sshOpts []corev1.EnvVar
+	if in.sshSecretName != "" {
+		mode := int32(0o400)
+		tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, corev1.Volume{
+			Name: sshVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: in.sshSecretName, DefaultMode: &mode},
+			},
+		})
+		buildMounts = make([]corev1.VolumeMount, 0, len(nixAndWorkspace)+1)
+		buildMounts = append(buildMounts, nixAndWorkspace...)
+		buildMounts = append(buildMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
+		sshOpts = []corev1.EnvVar{{
+			Name:  "NIX_SSHOPTS",
+			Value: "-i " + sshPrivateKeyPath + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		}}
+	}
+	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
+
+	// When dispatching to a remote builder, nix invokes `ssh`; the nix image has
+	// no ssh binary, so run the build/run commands inside a shell that brings
+	// openssh onto PATH.
+	wrapSSH := func(cmd []string) []string {
+		if in.sshSecretName == "" {
+			return cmd
+		}
+		return []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command " + shellJoin(cmd)}
+	}
+
+	// instantiate: build (dispatched to the remote builder when one is used), and
+	// with a store+builder also push the built closure into the shared NixStore so
+	// other pods substitute it rather than rebuild (ADR-0008, delegated build).
+	instantiateCmd := wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
+	if in.sshSecretName != "" && in.store != nil && in.store.pushURL != "" {
+		installables := append([]string{nix.Run}, nix.Prebuild...)
+		build := shellJoin(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
+		push := shellJoin(append([]string{"nix", "copy", "--to", in.store.pushURL}, installables...))
+		instantiateCmd = []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command sh -c " + shellQuote(build+" && "+push)}
+	}
+
 	// Init-containers (prepended, in order). fetch-source runs `nix shell
 	// nixpkgs#gitMinimal`, so it needs NIX_CONFIG too (to enable nix-command and
 	// to substitute git from the store/cache rather than build it).
@@ -245,9 +311,9 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 			Name:         initInstantiate,
 			Image:        image,
 			WorkingDir:   workspaceMountPath,
-			Command:      buildCommand(nix.Run, nix.Prebuild, nix.NixFlags),
-			Env:          []corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}},
-			VolumeMounts: nixAndWorkspace,
+			Command:      instantiateCmd,
+			Env:          instantiateEnv,
+			VolumeMounts: buildMounts,
 		},
 	}
 	// Prepend our init-containers, dropping any prior copies (idempotent re-render).
@@ -257,10 +323,13 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	app := findOrNewContainer(tmpl.Spec.Containers, appName)
 	app.Image = image
 	app.WorkingDir = workspaceMountPath
-	app.Command = runCommand(nix.Run, nix.Args, nix.NixFlags)
+	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags))
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
-	app.VolumeMounts = upsertMounts(app.VolumeMounts, nixAndWorkspace...)
+	for _, e := range sshOpts {
+		app.Env = upsertEnv(app.Env, e)
+	}
+	app.VolumeMounts = upsertMounts(app.VolumeMounts, buildMounts...)
 	tmpl.Spec.Containers = setContainer(tmpl.Spec.Containers, app)
 
 	return tmpl

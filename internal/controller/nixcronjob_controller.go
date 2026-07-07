@@ -157,6 +157,7 @@ func (r *NixCronJobReconciler) desiredCronJob(ncj *niov1alpha1.NixCronJob, res r
 		artifactURL:      res.artifactURL,
 		store:            deps.store,
 		builder:          deps.builder,
+		sshSecretName:    deps.sshSecretName,
 		kind:             kindNixCronJob,
 		name:             ncj.Name,
 	}

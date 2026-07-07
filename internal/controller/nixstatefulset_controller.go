@@ -156,6 +156,7 @@ func (r *NixStatefulSetReconciler) desiredStatefulSet(nss *niov1alpha1.NixStatef
 		artifactURL:      res.artifactURL,
 		store:            deps.store,
 		builder:          deps.builder,
+		sshSecretName:    deps.sshSecretName,
 		kind:             kindNixStatefulSet,
 		name:             nss.Name,
 	}
