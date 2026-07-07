@@ -43,7 +43,10 @@ const (
 	initInstantiate = "instantiate"
 
 	defaultAppContainer = "app"
-	defaultNixSystem    = "x86_64-linux"
+	// defaultNixSystems is what an unqualified NixBuilder advertises. It covers
+	// both common Linux arches so the builder matches the runner pods' system
+	// regardless of node architecture (the in-cluster builder is that arch).
+	defaultNixSystems = "x86_64-linux,aarch64-linux"
 
 	// cacheNixosPublicKey is the well-known public key for cache.nixos.org.
 	cacheNixosPublicKey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
@@ -54,6 +57,7 @@ const (
 type storeInfo struct {
 	substituterURL string
 	publicKey      string
+	pushURL        string // ssh-ng:// endpoint for pushing built paths into the store
 }
 
 // builderInfo carries the resolved NixBuilder endpoint for NIX_CONFIG assembly.
@@ -101,13 +105,16 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 		"trusted-public-keys = " + strings.Join(trustedKeys, " "),
 	}
 	if builder != nil && builder.endpoint != "" {
-		systems := builder.systems
-		if len(systems) == 0 {
-			systems = []string{defaultNixSystem}
+		systemList := defaultNixSystems
+		if len(builder.systems) > 0 {
+			systemList = strings.Join(builder.systems, ",")
 		}
 		lines = append(lines,
-			"builders = "+builder.endpoint+" "+strings.Join(systems, ","),
+			"builders = "+builder.endpoint+" "+systemList,
 			"builders-use-substitutes = true",
+			// Force builds onto the remote builder: with a local job slot nix would
+			// otherwise build locally and the builder→store push would never run.
+			"max-jobs = 0",
 		)
 	}
 	return strings.Join(lines, "\n")
@@ -118,9 +125,14 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 func shellJoin(args []string) string {
 	quoted := make([]string, len(args))
 	for i, a := range args {
-		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		quoted[i] = shellQuote(a)
 	}
 	return strings.Join(quoted, " ")
+}
+
+// shellQuote single-quotes one argument for safe embedding in an `sh -c` string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // runCommand builds the app container's `nix run <Run> -- <Args...>` command,
@@ -257,6 +269,17 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		return []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command " + shellJoin(cmd)}
 	}
 
+	// instantiate: build (dispatched to the remote builder when one is used), and
+	// with a store+builder also push the built closure into the shared NixStore so
+	// other pods substitute it rather than rebuild (ADR-0008, delegated build).
+	instantiateCmd := wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
+	if in.sshSecretName != "" && in.store != nil && in.store.pushURL != "" {
+		installables := append([]string{nix.Run}, nix.Prebuild...)
+		build := shellJoin(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
+		push := shellJoin(append([]string{"nix", "copy", "--to", in.store.pushURL}, installables...))
+		instantiateCmd = []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command sh -c " + shellQuote(build+" && "+push)}
+	}
+
 	// Init-containers (prepended, in order). fetch-source runs `nix shell
 	// nixpkgs#gitMinimal`, so it needs NIX_CONFIG too (to enable nix-command and
 	// to substitute git from the store/cache rather than build it).
@@ -288,7 +311,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 			Name:         initInstantiate,
 			Image:        image,
 			WorkingDir:   workspaceMountPath,
-			Command:      wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags)),
+			Command:      instantiateCmd,
 			Env:          instantiateEnv,
 			VolumeMounts: buildMounts,
 		},

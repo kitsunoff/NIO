@@ -59,28 +59,26 @@ const (
 	nixStoreRequeue = 30 * time.Second
 )
 
-// harmoniaStartScript writes a minimal harmonia config (harmonia rejects
-// workers=0, so it must be set) that serves the PVC-backed /nix on the HTTP
-// port and signs served paths with the mounted key, then execs harmonia from
-// nixpkgs. Runs in the nix image after the bootstrap init seeds /nix.
-const harmoniaStartScript = `set -eu
+// storeStartScript runs the store server: it writes a nix.conf that trusts root
+// for ssh-ng pushes, brings up sshd (so the builder/pods can push over ssh-ng),
+// and execs harmonia (which serves the PVC-backed /nix and signs served paths
+// with the mounted key; harmonia rejects workers=0, so it is set). Runs in the
+// nix image after the bootstrap init seeds /nix.
+func storeStartScript() string {
+	return `set -eu
 mkdir -p /etc/harmonia /etc/nix /root/.ssh /run/sshd
 # Accept pushes from the builder/pods over ssh-ng as a trusted user (so unsigned
 # store paths built remotely can be imported).
 cat > /etc/nix/nix.conf <<'NIXCFG'
 experimental-features = nix-command flakes
 trusted-users = root
+require-sigs = false
 NIXCFG
-# Authorize the shared remote-build key and start sshd (ssh-ng runs
+# Authorize the shared remote-build key, then start sshd (ssh-ng runs
 # 'nix daemon --stdio' per connection; no standalone daemon needed).
 cp /etc/nio/ssh/ssh-authorized-key /root/.ssh/authorized_keys
-chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
-nix shell nixpkgs#openssh --command sh -c '
-  ssh-keygen -A
-  $(command -v sshd) -D -e \
-    -o PermitRootLogin=prohibit-password \
-    -o PasswordAuthentication=no \
-    -o UsePAM=no' &
+chmod 600 /root/.ssh/authorized_keys
+` + sshdBringUp(false) + `
 # Serve the store over HTTP for substituter clients.
 cat > /etc/harmonia/config.toml <<'CFG'
 bind = "[::]:5000"
@@ -91,6 +89,7 @@ sign_key_paths = ["/etc/nix/signing/nix-signing-key"]
 CFG
 exec nix run nixpkgs#harmonia
 `
+}
 
 // NixStoreReconciler reconciles a NixStore object: it manages a StatefulSet
 // running a Nix binary-cache server, a headless Service, and a signing-key
@@ -353,7 +352,7 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 	serverContainer := corev1.Container{
 		Name:    "store",
 		Image:   image,
-		Command: []string{"sh", "-c", harmoniaStartScript},
+		Command: []string{"sh", "-c", storeStartScript()},
 		Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: int32(NixStoreHTTPPort)}},
 		Env: []corev1.EnvVar{
 			{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},

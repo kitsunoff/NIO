@@ -81,7 +81,7 @@ func TestBuildNixConfig(t *testing.T) {
 
 	// Builder with no systems defaults to x86_64-linux.
 	def := buildNixConfig(store, &builderInfo{endpoint: "ssh-ng://x"})
-	if !strings.Contains(def, "ssh-ng://x "+defaultNixSystem) {
+	if !strings.Contains(def, "ssh-ng://x "+defaultNixSystems) {
 		t.Errorf("expected default system in builders line: %q", def)
 	}
 }

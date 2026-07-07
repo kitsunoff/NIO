@@ -81,7 +81,11 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 			deps.notReady = fmt.Sprintf("NixStore %q not ready", nix.StoreRef.Name)
 			return deps, nil
 		}
-		deps.store = &storeInfo{substituterURL: store.Status.SubstituterURL, publicKey: store.Status.PublicKey}
+		deps.store = &storeInfo{
+			substituterURL: store.Status.SubstituterURL,
+			publicKey:      store.Status.PublicKey,
+			pushURL:        fmt.Sprintf("ssh-ng://root@%s.%s.svc", store.Name, ns),
+		}
 	}
 
 	// Determine the builder to use: an explicit ref, or a dedicated one built

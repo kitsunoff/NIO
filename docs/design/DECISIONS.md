@@ -163,7 +163,24 @@ needed.
 A single keypair (store-owned, shared to builder and pods, `StrictHostKeyChecking=no`)
 keeps SSH provisioning tractable across pods that come and go.
 
-**Status.** In progress on `feat/remote-build`. Proven when an e2e builds a
-**non-cached** derivation once on the builder, confirms the path lands in the
-`NixStore`, and a second consumer substitutes it without rebuilding. The 1.0
+**Shipped (v1.1), as proven end-to-end on Kind.** The mechanism differs from the
+initial sketch in three ways discovered during validation:
+
+- **The pod pushes, not the builder.** A remote build served over ssh-ng runs
+  through Nix's serve path, which does **not** fire `post-build-hook`. So the
+  runner pod's `instantiate` does `nix build … && nix copy --to
+  ssh-ng://root@<store> …`: it dispatches the build to the builder and then
+  pushes the resulting closure into the store itself (it already holds the key).
+- **Builds are forced remote with `max-jobs = 0`** in the pod's `NIX_CONFIG`;
+  otherwise Nix builds locally and never contacts the builder. The builder is
+  advertised for both common Linux arches so it matches the pod's system.
+- **The SSH server is dropbear**, not OpenSSH `sshd`: OpenSSH needs a dedicated
+  privilege-separation user, but the nix image's `/etc/passwd` is a read-only
+  symlink into the store so that user cannot be added. dropbear needs none; the
+  store publishes root's shell via `/etc/shells` so dropbear accepts the login.
+  The store sets `require-sigs = false` (internal trusted network) to accept the
+  unsigned closure; harmonia re-signs paths with the store key when serving.
+
+Verified on Kind: a builder-backed workload builds a non-cached derivation on the
+builder and the resulting path is realized into the shared `NixStore`. The 1.0
 in-pod-build path remains the default when no builder is referenced.

@@ -45,45 +45,27 @@ const (
 	nixBuilderRequeue = 30 * time.Second
 )
 
-// builderStartScript builds the shell for the builder container: an sshd that
-// accepts remote builds, and — when a store is referenced — a nix post-build-hook
-// that pushes every build result into the shared NixStore over ssh-ng, so other
-// pods substitute it (ADR-0008). The build itself runs via `nix daemon --stdio`
-// started by sshd per remote-build connection.
-func builderStartScript(storeHost string) string {
-	nixConfExtra := ""
-	pushSetup := ""
-	if storeHost != "" {
-		nixConfExtra = "\npost-build-hook = /etc/nio/upload.sh"
-		pushSetup = fmt.Sprintf(`
-cat > /etc/nio/upload.sh <<'HOOK'
-#!/bin/sh
-set -eu
-[ -n "${OUT_PATHS:-}" ] || exit 0
-exec nix copy --to "ssh-ng://root@%s" $OUT_PATHS
-HOOK
-chmod +x /etc/nio/upload.sh
+// builderStartScript builds the shell for the builder container: it configures
+// nix to trust root and runs an sshd that accepts remote builds. Runner pods
+// dispatch builds here (via `builders = ssh-ng://root@<builder>`) and, holding
+// the shared key, push the results into the NixStore themselves (ADR-0008 —
+// the remote-build serve path does not fire post-build-hooks, so the pod, not
+// the builder, does the push). authKeys is set up when the ssh key is mounted.
+func builderStartScript(hasStore bool) string {
+	authSetup := ""
+	if hasStore {
+		authSetup = fmt.Sprintf(`mkdir -p /root/.ssh && chmod 700 /root/.ssh
 cp %s/%s /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
-cat > /root/.ssh/config <<'SSHCFG'
-Host *
-  StrictHostKeyChecking no
-  UserKnownHostsFile /dev/null
-  IdentityFile %s
-SSHCFG
-chmod 600 /root/.ssh/config
-`, storeHost, sshKeyMountPath, sshSecretPublicKey, sshPrivateKeyPath)
+`, sshKeyMountPath, sshSecretPublicKey)
 	}
 	return fmt.Sprintf(`set -eu
-mkdir -p /etc/nix /etc/nio /root/.ssh /run/sshd
-chmod 700 /root/.ssh
+mkdir -p /etc/nix
 cat > /etc/nix/nix.conf <<'NIXCFG'
 experimental-features = nix-command flakes
-trusted-users = root%s
+trusted-users = root
 NIXCFG
-%s
-exec nix shell nixpkgs#openssh --command sh -c 'ssh-keygen -A; $(command -v sshd) -D -e -o PermitRootLogin=prohibit-password -o PasswordAuthentication=no -o UsePAM=no'
-`, nixConfExtra, pushSetup)
+%s%s`, authSetup, sshdBringUp(true))
 }
 
 // NixBuilderReconciler reconciles a NixBuilder object: it manages a single
@@ -229,9 +211,10 @@ func (r *NixBuilderReconciler) desiredStatefulSet(builder *niov1alpha1.NixBuilde
 	}
 
 	workerMounts := []corev1.VolumeMount{{Name: builderStoreVolumeName, MountPath: "/nix"}}
-	storeHost := ""
+	hasStore := builder.Spec.StoreRef != nil
 	if sr := builder.Spec.StoreRef; sr != nil {
-		storeHost = fmt.Sprintf("%s.%s.svc", sr.Name, builder.Namespace)
+		// Mount the store's shared SSH key so its public half authorizes the pods
+		// that dispatch remote builds here.
 		workerMounts = append(workerMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
 		podSpec.Volumes = upsertVolume(podSpec.Volumes, corev1.Volume{
 			Name: sshVolumeName,
@@ -244,10 +227,9 @@ func (r *NixBuilderReconciler) desiredStatefulSet(builder *niov1alpha1.NixBuilde
 	worker := corev1.Container{
 		Name:  "builder",
 		Image: image,
-		// Accept remote builds over sshd; when a store is referenced, a
-		// post-build-hook pushes every build result into the shared NixStore over
-		// ssh-ng so other pods substitute it (ADR-0008).
-		Command:      []string{"sh", "-c", builderStartScript(storeHost)},
+		// Accept remote builds over sshd; runner pods holding the shared key push
+		// results into the NixStore themselves (ADR-0008).
+		Command:      []string{"sh", "-c", builderStartScript(hasStore)},
 		Ports:        []corev1.ContainerPort{{Name: "ssh", ContainerPort: int32(NixBuilderSSHPort)}},
 		Env:          env,
 		VolumeMounts: workerMounts,

@@ -55,6 +55,34 @@ func sshSecretName(storeName string) string {
 	return storeName + "-ssh"
 }
 
+// sshdBringUp returns shell that starts an SSH server accepting the shared
+// remote-build key (authorized_keys must already be at /root/.ssh). It uses
+// dropbear rather than OpenSSH's sshd: OpenSSH needs a dedicated 'sshd'
+// privilege-separation user, but the nix image's /etc/passwd is a read-only
+// symlink into the store, so that user cannot be added. dropbear needs no such
+// user. The nix remote-build client still uses the OpenSSH `ssh` binary; the
+// protocols are compatible. Starts foreground when fg, else backgrounded.
+func sshdBringUp(fg bool) string {
+	launch := "dropbear -F -E -s -p 22 -r /etc/dropbear/hostkey"
+	if fg {
+		launch = "exec " + launch
+	}
+	amp := " &"
+	if fg {
+		amp = ""
+	}
+	return `mkdir -p /etc/dropbear /root/.ssh
+chmod 700 /root/.ssh
+# dropbear rejects a login whose shell is not an accepted user shell; publish
+# root's shell (from the image passwd) via /etc/shells so getusershell accepts
+# it. Use shell builtins only — the bare nix image has no grep/awk on PATH.
+: > /etc/shells 2>/dev/null || true
+while IFS=: read -r u _ _ _ _ _ sh; do [ "$u" = root ] && [ -n "$sh" ] && echo "$sh" >> /etc/shells; done < /etc/passwd 2>/dev/null || true
+echo /bin/sh >> /etc/shells 2>/dev/null || true
+nix shell nixpkgs#dropbear --command sh -c 'dropbearkey -t ed25519 -f /etc/dropbear/hostkey >/dev/null 2>&1 || true; ` + launch + `'` + amp + `
+`
+}
+
 // generateOpenSSHKeyPair creates an ed25519 keypair and returns the OpenSSH
 // private key (PEM) and the authorized_keys public-key line.
 func generateOpenSSHKeyPair(comment string) (privatePEM, authorizedKey string, err error) {
