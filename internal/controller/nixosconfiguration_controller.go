@@ -621,11 +621,14 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 	_ = ctx // ctx reserved for future use
 	jobName := fmt.Sprintf("%s-apply-%d", config.Name, time.Now().Unix())
 
-	// Determine timeout
-	timeout := int64(DefaultJobTimeout.Seconds())
+	// Determine operation and timeout.
+	operation := "NixosRebuild"
+	jobTimeout := DefaultJobTimeout
 	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		timeout = int64(FullInstallJobTimeout.Seconds())
+		operation = "FullInstall"
+		jobTimeout = FullInstallJobTimeout
 	}
+	timeout := int64(jobTimeout.Seconds())
 
 	// Get image from jobTemplate or use default
 	image := DefaultApplyImage
@@ -633,26 +636,19 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		image = config.Spec.JobTemplate.Image
 	}
 
-	// Build command arguments
-	args := []string{
-		"--mode=apply-job",
-		"--machine=" + machine.Spec.Host,
-		"--ssh-user=" + machine.Spec.SSHUser,
-	}
-	if config.Spec.GitRepo != "" {
-		args = append(args, "--git-repo="+config.Spec.GitRepo)
-	}
-	if config.Spec.Ref != "" {
-		args = append(args, "--ref="+config.Spec.Ref)
-	}
-	if config.Spec.Flake != "" {
-		args = append(args, "--flake="+config.Spec.Flake)
-	}
-	if config.Spec.ConfigurationSubdir != "" {
-		args = append(args, "--subdir="+config.Spec.ConfigurationSubdir)
-	}
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		args = append(args, "--full-install")
+	// The apply binary reads its configuration from NIO_* environment variables
+	// (see cmd/apply.LoadConfigFromEnv), not CLI flags.
+	env := []corev1.EnvVar{
+		{Name: "NIO_CONFIG_NAME", Value: config.Name},
+		{Name: "NIO_CONFIG_NAMESPACE", Value: config.Namespace},
+		{Name: "NIO_OPERATION", Value: operation},
+		{Name: "NIO_GIT_REPO", Value: config.Spec.GitRepo},
+		{Name: "NIO_GIT_REF", Value: config.Spec.Ref},
+		{Name: "NIO_FLAKE", Value: config.Spec.Flake},
+		{Name: "NIO_CONFIG_SUBDIR", Value: config.Spec.ConfigurationSubdir},
+		{Name: "NIO_TARGET_HOST", Value: machine.Spec.Host},
+		{Name: "NIO_SSH_USER", Value: machine.Spec.SSHUser},
+		{Name: "NIO_TIMEOUT", Value: jobTimeout.String()},
 	}
 
 	// Build volumes for secrets
@@ -675,7 +671,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 			MountPath: "/secrets/ssh",
 			ReadOnly:  true,
 		})
-		args = append(args, "--ssh-key=/secrets/ssh/ssh-privatekey")
+		env = append(env, corev1.EnvVar{Name: "NIO_SSH_KEY_PATH", Value: "/secrets/ssh/ssh-privatekey"})
 	}
 
 	// Mount git credentials if specified
@@ -715,7 +711,8 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 			{
 				Name:         "apply",
 				Image:        image,
-				Args:         args,
+				Command:      []string{"/manager", "apply"},
+				Env:          env,
 				VolumeMounts: volumeMounts,
 				SecurityContext: &corev1.SecurityContext{
 					RunAsNonRoot:             ptr(true),
