@@ -19,7 +19,6 @@ package apply
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -50,8 +49,8 @@ type Config struct {
 	TargetHost string
 	// SSHUser is the SSH username.
 	SSHUser string
-	// SSHKeyBase64 is the base64-encoded SSH private key.
-	SSHKeyBase64 string
+	// SSHKeyPath is the path to the mounted SSH private key file.
+	SSHKeyPath string
 	// AdditionalFilesJSON is JSON-encoded additional files.
 	AdditionalFilesJSON string
 	// Timeout is the operation timeout.
@@ -72,7 +71,7 @@ func LoadConfigFromEnv() (*Config, error) {
 		Flake:               os.Getenv("NIO_FLAKE"),
 		TargetHost:          os.Getenv("NIO_TARGET_HOST"),
 		SSHUser:             os.Getenv("NIO_SSH_USER"),
-		SSHKeyBase64:        os.Getenv("NIO_SSH_KEY"),
+		SSHKeyPath:          os.Getenv("NIO_SSH_KEY_PATH"),
 		AdditionalFilesJSON: os.Getenv("NIO_ADDITIONAL_FILES"),
 		WorkDir:             os.Getenv("NIO_WORK_DIR"),
 	}
@@ -110,8 +109,8 @@ func LoadConfigFromEnv() (*Config, error) {
 	if config.TargetHost == "" {
 		return nil, fmt.Errorf("NIO_TARGET_HOST is required")
 	}
-	if config.SSHKeyBase64 == "" {
-		return nil, fmt.Errorf("NIO_SSH_KEY is required")
+	if config.SSHKeyPath == "" {
+		return nil, fmt.Errorf("NIO_SSH_KEY_PATH is required")
 	}
 
 	return config, nil
@@ -133,10 +132,10 @@ func Run() error {
 	fmt.Printf("Target: host=%s user=%s timeout=%s\n",
 		config.TargetHost, config.SSHUser, config.Timeout)
 
-	// Decode SSH key
-	sshKey, err := base64.StdEncoding.DecodeString(config.SSHKeyBase64)
+	// Read SSH key from the mounted secret volume
+	sshKey, err := os.ReadFile(config.SSHKeyPath)
 	if err != nil {
-		return fmt.Errorf("decode ssh key: %w", err)
+		return fmt.Errorf("read ssh key: %w", err)
 	}
 
 	// Parse additional files
