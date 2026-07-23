@@ -96,6 +96,47 @@ func TestGitClone_Success(t *testing.T) {
 	}
 }
 
+// TestCloneRepository_FetchesResolvedSHA guards that when a resolved SHA is
+// given, the Job fetches that exact commit and checks out FETCH_HEAD instead of
+// plain-cloning the branch tip (which could have moved — the TOCTOU window).
+func TestCloneRepository_FetchesResolvedSHA(t *testing.T) {
+	tempDir := t.TempDir()
+	executor := &MockCommandExecutor{}
+	runner := &Runner{Executor: executor, WorkDir: tempDir}
+	config := &JobConfig{
+		GitRepo: "https://github.com/example/r.git",
+		GitRef:  "main",
+		GitRev:  "abc123sha",
+	}
+
+	if _, err := runner.CloneRepository(context.Background(), config, nil); err != nil {
+		t.Fatalf("CloneRepository: %v", err)
+	}
+
+	var gotFetchSHA, gotCheckout, gotClone bool
+	for _, c := range executor.Calls {
+		joined := strings.Join(c.Args, " ")
+		if strings.HasPrefix(joined, "clone") {
+			gotClone = true
+		}
+		if strings.Contains(joined, "fetch --depth 1 origin abc123sha") {
+			gotFetchSHA = true
+		}
+		if strings.Contains(joined, "checkout -q FETCH_HEAD") {
+			gotCheckout = true
+		}
+	}
+	if gotClone {
+		t.Error("used plain clone; want fetch-by-SHA to avoid the moving-tip TOCTOU")
+	}
+	if !gotFetchSHA {
+		t.Error("did not fetch the resolved SHA")
+	}
+	if !gotCheckout {
+		t.Error("did not checkout FETCH_HEAD")
+	}
+}
+
 func TestCloneRepository_WiresHTTPSCredentials(t *testing.T) {
 	tempDir := t.TempDir()
 	var sawAskpass, sawUser, sawPass string

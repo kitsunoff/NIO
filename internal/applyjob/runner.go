@@ -41,8 +41,12 @@ const (
 type JobConfig struct {
 	// Git repository URL
 	GitRepo string
-	// Git ref (branch, tag, or commit)
+	// Git ref (branch, tag, or commit) — used only when GitRev is empty.
 	GitRef string
+	// GitRev is the immutable commit SHA the controller resolved. When set, the
+	// clone fetches this exact commit (no TOCTOU with a moving branch tip);
+	// when empty (degraded resolution), the clone falls back to GitRef.
+	GitRev string
 	// Configuration subdirectory within repo
 	ConfigSubdir string
 	// Flake reference (e.g., "#worker")
@@ -124,9 +128,10 @@ func NewRunner(workDir string) *Runner {
 	}
 }
 
-// CloneRepository clones the git repository and checks out the specified ref.
-// When creds is non-nil it wires authentication (SSH key or HTTPS token) for
-// the clone so private repositories can be fetched.
+// CloneRepository fetches the git repository into the workspace. When creds is
+// non-nil it wires authentication (SSH key or HTTPS token). When config.GitRev
+// is set it fetches that exact commit so the Job applies precisely what the
+// controller resolved; otherwise it shallow-clones config.GitRef's tip.
 func (r *Runner) CloneRepository(ctx context.Context, config *JobConfig, creds *gitauth.Creds) (string, error) {
 	repoPath := filepath.Join(r.WorkDir, "repo")
 
@@ -140,17 +145,37 @@ func (r *Runner) CloneRepository(ctx context.Context, config *JobConfig, creds *
 		defer restore()
 	}
 
-	// Clone the repository
-	args := []string{"clone", "--depth", "1", "--branch", config.GitRef, config.GitRepo, repoPath}
-	output, err := r.Executor.Run(ctx, "git", args...)
-	if err != nil {
-		return "", &GitError{
-			Operation: "clone",
-			Output:    output,
-			Err:       err,
-		}
+	if config.GitRev != "" {
+		return r.fetchRevision(ctx, config, repoPath)
 	}
 
+	// No resolved SHA (degraded resolution): shallow-clone the ref's tip.
+	output, err := r.Executor.Run(ctx, "git",
+		"clone", "--depth", "1", "--branch", config.GitRef, config.GitRepo, repoPath)
+	if err != nil {
+		return "", &GitError{Operation: "clone", Output: output, Err: err}
+	}
+	return repoPath, nil
+}
+
+// fetchRevision shallow-fetches an exact commit SHA and checks it out. This
+// requires the remote to allow fetching a commit by SHA (uploadpack.
+// allowReachableSHA1InWant — enabled by default on GitHub/GitLab/Gitea).
+func (r *Runner) fetchRevision(ctx context.Context, config *JobConfig, repoPath string) (string, error) {
+	steps := []struct {
+		op   string
+		args []string
+	}{
+		{"init", []string{"init", "-q", repoPath}},
+		{"remote", []string{"-C", repoPath, "remote", "add", "origin", config.GitRepo}},
+		{"fetch", []string{"-C", repoPath, "fetch", "--depth", "1", "origin", config.GitRev}},
+		{"checkout", []string{"-C", repoPath, "checkout", "-q", "FETCH_HEAD"}},
+	}
+	for _, s := range steps {
+		if output, err := r.Executor.Run(ctx, "git", s.args...); err != nil {
+			return "", &GitError{Operation: s.op, Output: output, Err: err}
+		}
+	}
 	return repoPath, nil
 }
 
