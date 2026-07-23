@@ -49,7 +49,10 @@ type NixSource struct {
 	// +optional
 	Rev string `json:"rev,omitempty"`
 
-	// Dir is an optional subdirectory holding the flake (flake-in-subdir).
+	// Dir is an optional subdirectory holding the flake (flake-in-subdir). When
+	// set, the build/run commands execute with the working directory at this
+	// subdir of the checkout, so a relative installable (e.g. ".#attr") resolves
+	// against it. Must be a relative path inside the checkout.
 	// +optional
 	Dir string `json:"dir,omitempty"`
 

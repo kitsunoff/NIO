@@ -68,8 +68,14 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 	var deps infraDeps
 	ns := owner.GetNamespace()
 
-	// Reject unsafe additionalFile destinations before they reach a pod; surfaced
-	// as a stall rather than a hard error.
+	// Reject unsafe source subdir / additionalFile destinations before they reach
+	// a pod; surfaced as a stall rather than a hard error.
+	if nix.Source.Dir != "" {
+		if err := validateFilePath(nix.Source.Dir); err != nil {
+			deps.notReady = fmt.Sprintf("source.dir: %v", err)
+			return deps, nil
+		}
+	}
 	if err := validateAdditionalFiles(nix.AdditionalFiles); err != nil {
 		deps.notReady = err.Error()
 		return deps, nil

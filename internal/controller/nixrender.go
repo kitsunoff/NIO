@@ -180,19 +180,19 @@ func buildCommand(run string, prebuild, nixFlags []string) []string {
 // pod filesystem is defense-in-depth worth enforcing.
 func validateFilePath(p string) error {
 	if p == "" {
-		return fmt.Errorf("additionalFile path is empty")
+		return fmt.Errorf("path is empty")
 	}
 	if path.IsAbs(p) {
-		return fmt.Errorf("additionalFile path %q must be relative", p)
+		return fmt.Errorf("path %q must be relative", p)
 	}
 	for _, r := range p {
 		if !isSafePathChar(r) {
-			return fmt.Errorf("additionalFile path %q contains an unsupported character %q (allowed: letters, digits, . _ - /)", p, r)
+			return fmt.Errorf("path %q contains an unsupported character %q (allowed: letters, digits, . _ - /)", p, r)
 		}
 	}
 	clean := path.Clean(p)
 	if clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("additionalFile path %q escapes the source tree", p)
+		return fmt.Errorf("path %q escapes the source tree", p)
 	}
 	return nil
 }
@@ -383,6 +383,14 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	nixConfig := buildNixConfig(in.store, in.builder)
 	flux := nix.Source.FluxSourceRef != nil
 
+	// Build/run work in the flake subdir when Source.Dir is set, so a relative
+	// installable resolves against it. Dir is validated (relative, no traversal)
+	// in the reconcile path before render.
+	workDir := workspaceMountPath
+	if nix.Source.Dir != "" {
+		workDir = path.Join(workspaceMountPath, nix.Source.Dir)
+	}
+
 	// Labels + revision annotation.
 	labels := managedLabels(in.kind, in.name)
 	labels[niov1alpha1.LabelRevision] = rev
@@ -516,7 +524,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	inits = append(inits, corev1.Container{
 		Name:         initInstantiate,
 		Image:        image,
-		WorkingDir:   workspaceMountPath,
+		WorkingDir:   workDir,
 		Command:      instantiateCmd,
 		Env:          instantiateEnv,
 		VolumeMounts: buildMounts,
@@ -527,7 +535,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	// App container: owned image/command/NIX_CONFIG/mounts, user fields preserved.
 	app := findOrNewContainer(tmpl.Spec.Containers, appName)
 	app.Image = image
-	app.WorkingDir = workspaceMountPath
+	app.WorkingDir = workDir
 	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags))
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})

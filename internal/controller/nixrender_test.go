@@ -570,6 +570,40 @@ func TestRenderNoInjectWithoutAdditionalFiles(t *testing.T) {
 	}
 }
 
+func TestRenderPodTemplateFlakeSubdir(t *testing.T) {
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/mono", Ref: "main", Dir: "hosts/web"},
+			Run:    ".#server",
+			Image:  "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+
+	inst := containerByName(out.Spec.InitContainers, initInstantiate)
+	if inst == nil {
+		t.Fatal("instantiate init-container missing")
+	}
+	if inst.WorkingDir != "/workspace/hosts/web" {
+		t.Errorf("instantiate WorkingDir = %q, want /workspace/hosts/web", inst.WorkingDir)
+	}
+	app := containerByName(out.Spec.Containers, "app")
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	if app.WorkingDir != "/workspace/hosts/web" {
+		t.Errorf("app WorkingDir = %q, want /workspace/hosts/web", app.WorkingDir)
+	}
+	// fetch-source still clones the repo root, not the subdir.
+	fs := fetchSourceOf(t, out)
+	if strings.Contains(strings.Join(fs.Command, " "), "/workspace/hosts/web") {
+		t.Error("fetch-source must clone the repo root, not the subdir")
+	}
+}
+
 func TestValidateFilePath(t *testing.T) {
 	ok := []string{
 		"hardware-configuration.nix",
