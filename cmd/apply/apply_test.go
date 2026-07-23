@@ -79,6 +79,22 @@ func setRequiredApplyEnv(t *testing.T) {
 	t.Setenv("NIO_TARGET_HOST", "10.0.0.5")
 }
 
+// TestLoadConfigFromEnv_GitRev guards that the resolved commit SHA is read from
+// NIO_GIT_REV so the Job can fetch that exact commit.
+func TestLoadConfigFromEnv_GitRev(t *testing.T) {
+	setRequiredApplyEnv(t)
+	t.Setenv("NIO_SSH_KEY_PATH", "/secrets/ssh/ssh-privatekey")
+	t.Setenv("NIO_GIT_REV", "abc123sha")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LoadConfigFromEnv: %v", err)
+	}
+	if cfg.GitRev != "abc123sha" {
+		t.Errorf("GitRev = %q, want abc123sha", cfg.GitRev)
+	}
+}
+
 // TestLoadConfigFromEnv_SSHKeyPathContract guards that apply consumes the SSH
 // key as a mounted file path (NIO_SSH_KEY_PATH), matching how the controller
 // mounts the key Secret as a volume.

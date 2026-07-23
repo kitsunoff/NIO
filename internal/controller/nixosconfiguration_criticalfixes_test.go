@@ -431,9 +431,33 @@ func TestCreateApplyJob_AnnotatesResolvedRevision(t *testing.T) {
 	if got := job.Annotations[AnnotationResolvedRevision]; got != testResolvedSHA {
 		t.Errorf("annotation %s = %q, want %q", AnnotationResolvedRevision, got, testResolvedSHA)
 	}
-	// The ref name (not the SHA) still drives the shallow clone.
-	if got := envToMap(job.Spec.Template.Spec.Containers[0].Env)["NIO_GIT_REF"]; got != defaultGitRef {
+	env := envToMap(job.Spec.Template.Spec.Containers[0].Env)
+	// The ref name is still passed for the degraded fallback.
+	if got := env["NIO_GIT_REF"]; got != defaultGitRef {
 		t.Errorf("NIO_GIT_REF = %q, want the ref name %q", got, defaultGitRef)
+	}
+	// The resolved SHA drives an exact fetch, avoiding the moving-tip TOCTOU.
+	if got := env["NIO_GIT_REV"]; got != testResolvedSHA {
+		t.Errorf("NIO_GIT_REV = %q, want the resolved SHA %q", got, testResolvedSHA)
+	}
+}
+
+// TestCreateApplyJob_NoRevWhenUnresolved guards that degraded mode (empty
+// resolved SHA) omits NIO_GIT_REV so the Job falls back to cloning the ref tip.
+func TestCreateApplyJob_NoRevWhenUnresolved(t *testing.T) {
+	r := newApplyJobReconciler(t)
+	config := revTestConfig()
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+	}
+
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
+	if err != nil {
+		t.Fatalf("createApplyJob: %v", err)
+	}
+	if got, ok := envToMap(job.Spec.Template.Spec.Containers[0].Env)["NIO_GIT_REV"]; ok {
+		t.Errorf("NIO_GIT_REV = %q set in degraded mode, want absent", got)
 	}
 }
 
