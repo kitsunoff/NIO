@@ -135,6 +135,7 @@ spec:
                           must be set
                         rule: '[has(self.inline), has(self.configMapRef), has(self.secretRef)].filter(x,
                           x).size() == 1'
+                    maxItems: 64
                     type: array
                   args:
                     description: |-

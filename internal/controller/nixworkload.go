@@ -68,6 +68,18 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 	var deps infraDeps
 	ns := owner.GetNamespace()
 
+	// Reject unsafe additionalFile destinations before they reach a pod; surfaced
+	// as a stall rather than a hard error.
+	if err := validateAdditionalFiles(nix.AdditionalFiles); err != nil {
+		deps.notReady = err.Error()
+		return deps, nil
+	}
+	// Materialize inline additionalFiles into an owned ConfigMap so their content
+	// lives once, not baked into every pod spec.
+	if err := ensureAdditionalFilesConfigMap(ctx, c, scheme, owner, nix); err != nil {
+		return deps, err
+	}
+
 	if nix.StoreRef != nil {
 		var store niov1alpha1.NixStore
 		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: nix.StoreRef.Name}, &store); err != nil {
@@ -129,6 +141,50 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 	}
 
 	return deps, nil
+}
+
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+
+// additionalFilesConfigMapName is the operator-owned ConfigMap holding inline
+// AdditionalFiles content for a workload (keyed file-<index>).
+func additionalFilesConfigMapName(owner string) string {
+	return owner + "-nixfiles"
+}
+
+// ensureAdditionalFilesConfigMap reconciles the owned ConfigMap that carries the
+// inline AdditionalFiles content (one data key per inline file, file-<index>).
+// It is created/updated when inline files exist and deleted otherwise, keeping
+// large inline content out of the pod spec. Keyed by the file's index in
+// nix.AdditionalFiles so the render's cp source matches.
+func ensureAdditionalFilesConfigMap(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, nix niov1alpha1.NixSpec) error {
+	name := additionalFilesConfigMapName(owner.GetName())
+	key := client.ObjectKey{Namespace: owner.GetNamespace(), Name: name}
+
+	data := map[string]string{}
+	for i, f := range nix.AdditionalFiles {
+		if f.Inline != nil {
+			data[fmt.Sprintf("file-%d", i)] = *f.Inline
+		}
+	}
+
+	if len(data) == 0 {
+		// No inline content: remove a stale ConfigMap from a prior generation.
+		var existing corev1.ConfigMap
+		if err := c.Get(ctx, key, &existing); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		return client.IgnoreNotFound(c.Delete(ctx, &existing))
+	}
+
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: owner.GetNamespace()}}
+	_, err := controllerutil.CreateOrUpdate(ctx, c, cm, func() error {
+		cm.Data = data
+		return controllerutil.SetControllerReference(owner, cm, scheme)
+	})
+	return err
 }
 
 // ensureOwnedBuilder creates (once) a dedicated NixBuilder owned by the workload

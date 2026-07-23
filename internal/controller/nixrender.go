@@ -47,7 +47,12 @@ const (
 
 	initBootstrap   = "bootstrap"
 	initFetchSource = "fetch-source"
+	initInjectFiles = "inject-files"
 	initInstantiate = "instantiate"
+
+	// filesMountBase is where referenced ConfigMap/Secret file sources are mounted
+	// in the inject-files init-container (one indexed subdir per referenced object).
+	filesMountBase = "/etc/nio/files"
 
 	defaultAppContainer = "app"
 	// defaultNixSystems is what an unqualified NixBuilder advertises. It covers
@@ -167,9 +172,11 @@ func buildCommand(run string, prebuild, nixFlags []string) []string {
 // fetchSourceScript returns the shell for the fetch-source init. Direct-git mode
 // shallow-fetches the resolved commit; Flux mode downloads the artifact tarball
 // and synthesizes a git tree so `.` is a hermetic flake input (design §4.5).
-// validateFilePath rejects an AdditionalFile destination that is absolute or
-// escapes the source checkout root. Injected paths are attacker-influenced only
-// by the CR author (who already controls the flake), but traversal into the
+// validateFilePath rejects an AdditionalFile destination that is absolute,
+// escapes the source checkout root, or contains characters outside a safe set.
+// The charset restriction also keeps the generated inject script's double-quoted
+// paths free of shell metacharacters. Injected paths are attacker-influenced
+// only by the CR author (who already controls the flake), but traversal into the
 // pod filesystem is defense-in-depth worth enforcing.
 func validateFilePath(p string) error {
 	if p == "" {
@@ -178,11 +185,111 @@ func validateFilePath(p string) error {
 	if path.IsAbs(p) {
 		return fmt.Errorf("additionalFile path %q must be relative", p)
 	}
+	for _, r := range p {
+		if !isSafePathChar(r) {
+			return fmt.Errorf("additionalFile path %q contains an unsupported character %q (allowed: letters, digits, . _ - /)", p, r)
+		}
+	}
 	clean := path.Clean(p)
 	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return fmt.Errorf("additionalFile path %q escapes the source tree", p)
 	}
 	return nil
+}
+
+// isSafePathChar reports whether r is allowed in an AdditionalFile path.
+func isSafePathChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '.', r == '_', r == '-', r == '/':
+		return true
+	default:
+		return false
+	}
+}
+
+// validateAdditionalFiles checks every AdditionalFile destination path. It runs
+// in the reconcile path so an invalid file stalls the workload instead of
+// baking a bad path into the pod.
+func validateAdditionalFiles(files []niov1alpha1.NixFile) error {
+	for _, f := range files {
+		if err := validateFilePath(f.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// additionalFilesInjection builds the inject-files init-container (and the
+// ConfigMap/Secret volumes it needs) that writes AdditionalFiles into the
+// checkout and force-stages them, so a git-tree flake source includes them even
+// under .gitignore. Every source is mounted and copied — explicit
+// configMapRef/secretRef, and inline content via the operator-owned nixfiles
+// ConfigMap (inlineCMName, key file-<index>) so inline never bloats the pod
+// spec. Returns ok=false when there are no files.
+func additionalFilesInjection(files []niov1alpha1.NixFile, image, inlineCMName string) (corev1.Container, []corev1.Volume, bool) {
+	if len(files) == 0 {
+		return corev1.Container{}, nil, false
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: nixStorePodVolume, MountPath: nixMountPath},
+		{Name: workspaceVolume, MountPath: workspaceMountPath},
+	}
+	var vols []corev1.Volume
+	volIdx := map[string]int{} // "cm/<name>" | "sec/<name>" -> index (dedup)
+	mode := int32(0o400)
+	refDir := func(kind, name string) string {
+		key := kind + "/" + name
+		if _, ok := volIdx[key]; !ok {
+			idx := len(volIdx)
+			volIdx[key] = idx
+			var src corev1.VolumeSource
+			if kind == "cm" {
+				src = corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: name}, DefaultMode: &mode}}
+			} else {
+				src = corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: name, DefaultMode: &mode}}
+			}
+			volName := fmt.Sprintf("nio-file-%d", idx)
+			mountPath := fmt.Sprintf("%s/%d", filesMountBase, idx)
+			vols = append(vols, corev1.Volume{Name: volName, VolumeSource: src})
+			mounts = append(mounts, corev1.VolumeMount{Name: volName, MountPath: mountPath, ReadOnly: true})
+		}
+		return fmt.Sprintf("%s/%d", filesMountBase, volIdx[key])
+	}
+
+	var b strings.Builder
+	b.WriteString("set -eu\ncd " + workspaceMountPath + "\n")
+	paths := make([]string, 0, len(files))
+	for i, f := range files {
+		paths = append(paths, f.Path)
+		// Paths are charset-validated, so double-quoting is metacharacter-safe.
+		b.WriteString(`mkdir -p "$(dirname "` + f.Path + `")"` + "\n")
+		switch {
+		case f.ConfigMapRef != nil:
+			b.WriteString(`cp "` + refDir("cm", f.ConfigMapRef.Name) + "/" + f.ConfigMapRef.Key + `" "` + f.Path + `"` + "\n")
+		case f.SecretRef != nil:
+			b.WriteString(`cp "` + refDir("sec", f.SecretRef.Name) + "/" + f.SecretRef.Key + `" "` + f.Path + `"` + "\n")
+		default: // inline → copied from the owned nixfiles ConfigMap (out of the pod spec)
+			src := refDir("cm", inlineCMName) + "/" + fmt.Sprintf("file-%d", i)
+			b.WriteString(`cp "` + src + `" "` + f.Path + `"` + "\n")
+		}
+	}
+	// Force-stage the exact paths (never `git add --all`, which honors .gitignore
+	// and would silently drop matching files Nix then can't see).
+	b.WriteString("git add --force --")
+	for _, p := range paths {
+		b.WriteString(` "` + p + `"`)
+	}
+	b.WriteByte('\n')
+
+	return corev1.Container{
+		Name:         initInjectFiles,
+		Image:        image,
+		Command:      []string{"nix", "shell", "nixpkgs#gitMinimal", "--command", "sh", "-c", b.String()},
+		VolumeMounts: mounts,
+	}, vols, true
 }
 
 // fetchSourceScript builds the fetch-source init-container script. In Flux mode
@@ -395,17 +502,27 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 			Env:          fetchEnv,
 			VolumeMounts: fetchMounts,
 		},
-		{
-			Name:         initInstantiate,
-			Image:        image,
-			WorkingDir:   workspaceMountPath,
-			Command:      instantiateCmd,
-			Env:          instantiateEnv,
-			VolumeMounts: buildMounts,
-		},
 	}
+
+	// inject-files (optional): write AdditionalFiles into the checkout and
+	// force-stage them, after fetch-source's clone and before the build.
+	if inject, injVols, ok := additionalFilesInjection(nix.AdditionalFiles, image, additionalFilesConfigMapName(in.name)); ok {
+		for _, v := range injVols {
+			tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, v)
+		}
+		inits = append(inits, inject)
+	}
+
+	inits = append(inits, corev1.Container{
+		Name:         initInstantiate,
+		Image:        image,
+		WorkingDir:   workspaceMountPath,
+		Command:      instantiateCmd,
+		Env:          instantiateEnv,
+		VolumeMounts: buildMounts,
+	})
 	// Prepend our init-containers, dropping any prior copies (idempotent re-render).
-	tmpl.Spec.InitContainers = append(inits, filterOutContainers(tmpl.Spec.InitContainers, initBootstrap, initFetchSource, initInstantiate)...)
+	tmpl.Spec.InitContainers = append(inits, filterOutContainers(tmpl.Spec.InitContainers, initBootstrap, initFetchSource, initInjectFiles, initInstantiate)...)
 
 	// App container: owned image/command/NIX_CONFIG/mounts, user fields preserved.
 	app := findOrNewContainer(tmpl.Spec.Containers, appName)

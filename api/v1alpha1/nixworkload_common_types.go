@@ -184,6 +184,7 @@ type NixSpec struct {
 	// workload template directly). Its purpose is per-target files a shared flake
 	// cannot carry (e.g. hardware-configuration.nix, or a secret a module imports).
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	AdditionalFiles []NixFile `json:"additionalFiles,omitempty"`
 }
 

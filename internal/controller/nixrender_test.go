@@ -466,6 +466,110 @@ func TestRenderFetchSourceNoCredentials(t *testing.T) {
 	assertShellParses(t, script)
 }
 
+func TestRenderInjectFilesConfigMapAndSecret(t *testing.T) {
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
+			Run:    ".#server",
+			Image:  "nixos/nix",
+			AdditionalFiles: []niov1alpha1.NixFile{
+				{Path: "hosts/hw.nix", ConfigMapRef: &niov1alpha1.ConfigMapKeyReference{Name: "hwcm", Key: "config"}},
+				{Path: "secret.nix", SecretRef: &niov1alpha1.SecretKeyReference{Name: "sec", Key: "token"}},
+			},
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+
+	inject := containerByName(out.Spec.InitContainers, initInjectFiles)
+	if inject == nil {
+		t.Fatal("inject-files init-container missing")
+	}
+	// It must run after fetch-source and before instantiate.
+	order := map[string]int{}
+	for i, c := range out.Spec.InitContainers {
+		order[c.Name] = i
+	}
+	if order[initFetchSource] >= order[initInjectFiles] || order[initInjectFiles] >= order[initInstantiate] {
+		t.Errorf("inject-files must sit between fetch-source and instantiate: %v", order)
+	}
+	// ConfigMap + Secret volumes are wired.
+	if !volumePresent(out.Spec.Volumes, "nio-file-0") || !volumePresent(out.Spec.Volumes, "nio-file-1") {
+		t.Errorf("expected per-ref volumes, got %v", out.Spec.Volumes)
+	}
+	script := inject.Command[len(inject.Command)-1]
+	for _, want := range []string{"git add --force --", `"hosts/hw.nix"`, `"secret.nix"`, "cp "} {
+		if !strings.Contains(script, want) {
+			t.Errorf("inject script missing %q:\n%s", want, script)
+		}
+	}
+	assertShellParses(t, script)
+}
+
+func TestRenderInjectFilesInline(t *testing.T) {
+	content := "{ imports = [ ]; }\n"
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
+			Run:    ".#server",
+			Image:  "nixos/nix",
+			AdditionalFiles: []niov1alpha1.NixFile{
+				{Path: "extra.nix", Inline: &content},
+			},
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+	inject := containerByName(out.Spec.InitContainers, initInjectFiles)
+	if inject == nil {
+		t.Fatal("inject-files init-container missing for inline")
+	}
+	script := inject.Command[len(inject.Command)-1]
+	// Inline content must NOT be baked into the pod spec; it is copied from the
+	// owned nixfiles ConfigMap (name "<workload>-nixfiles", key file-<index>).
+	if strings.Contains(script, content) {
+		t.Errorf("inline content leaked into the pod spec:\n%s", script)
+	}
+	if !strings.Contains(script, "/file-0") || !strings.Contains(script, `"extra.nix"`) {
+		t.Errorf("inline file not copied from the nixfiles ConfigMap:\n%s", script)
+	}
+	// The inline ConfigMap volume (j-nixfiles) is wired.
+	var hasInlineCM bool
+	for _, v := range out.Spec.Volumes {
+		if v.ConfigMap != nil && v.ConfigMap.Name == "j-nixfiles" {
+			hasInlineCM = true
+		}
+	}
+	if !hasInlineCM {
+		t.Errorf("inline nixfiles ConfigMap volume not wired: %v", out.Spec.Volumes)
+	}
+	assertShellParses(t, script)
+}
+
+func TestRenderNoInjectWithoutAdditionalFiles(t *testing.T) {
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
+			Run:    ".#server",
+			Image:  "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+	if containerByName(out.Spec.InitContainers, initInjectFiles) != nil {
+		t.Error("inject-files must not be present without additionalFiles")
+	}
+	if len(out.Spec.InitContainers) != 3 {
+		t.Errorf("expected 3 init-containers, got %d", len(out.Spec.InitContainers))
+	}
+}
+
 func TestValidateFilePath(t *testing.T) {
 	ok := []string{
 		"hardware-configuration.nix",
