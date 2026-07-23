@@ -27,7 +27,7 @@ import (
 // TestInjectedFilesReachNixBuild proves end-to-end, against a real Nix, that an
 // injected additionalFile only reaches the flake build once it is staged: an
 // untracked file is dropped from the store copy (build fails), and after the
-// runner's `git add --all` step the same file is visible. Skipped when nix or
+// runner's `git add --force` step the same file is visible. Skipped when nix or
 // git is unavailable (e.g. CI without Nix).
 func TestInjectedFilesReachNixBuild(t *testing.T) {
 	if _, err := exec.LookPath("nix"); err != nil {

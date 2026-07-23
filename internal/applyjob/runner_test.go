@@ -145,8 +145,8 @@ func TestCloneRepository_FetchesResolvedSHA(t *testing.T) {
 }
 
 // TestRun_StagesInjectedFiles guards that after injecting additionalFiles the
-// runner runs `git add --all` (so Nix includes them in the flake build) and
-// that it happens before the nix apply.
+// runner force-stages them (`git add --force -- <path>`, so Nix includes them
+// in the flake build) and that it happens before the nix apply.
 func TestRun_StagesInjectedFiles(t *testing.T) {
 	tempDir := t.TempDir()
 	var calls []string
@@ -186,7 +186,7 @@ func TestRun_StagesInjectedFiles(t *testing.T) {
 		t.Fatalf("git add --force <path> was not run after injecting files; calls=%v", calls)
 	}
 	if nixIdx < 0 || addIdx > nixIdx {
-		t.Errorf("git add --all must run before the nix apply (add=%d nix=%d)", addIdx, nixIdx)
+		t.Errorf("git add --force must run before the nix apply (add=%d nix=%d)", addIdx, nixIdx)
 	}
 	if _, err := os.Stat(filepath.Join(tempDir, "repo", "hardware.nix")); err != nil {
 		t.Errorf("injected file missing on disk: %v", err)
