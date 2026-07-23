@@ -233,17 +233,23 @@ func loadGitCreds(dir string) (*gitauth.Creds, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(password) == 0 {
-		if token, terr := read("token"); terr != nil {
+	// Trim before deciding the token fallback so this matches
+	// controller.readGitCredentials exactly (both gate the fallback on the
+	// trimmed password); otherwise a whitespace-only password would diverge —
+	// the controller resolves with the token while the clone would not.
+	user := strings.TrimSpace(string(username))
+	pass := strings.TrimSpace(string(password))
+	if pass == "" {
+		token, terr := read("token")
+		if terr != nil {
 			return nil, terr
-		} else if len(token) > 0 {
-			password = token
 		}
+		pass = strings.TrimSpace(string(token))
 	}
 
 	creds := &gitauth.Creds{
-		Username:   strings.TrimSpace(string(username)),
-		Password:   strings.TrimSpace(string(password)),
+		Username:   user,
+		Password:   pass,
 		SSHKey:     sshKey,
 		KnownHosts: knownHosts,
 	}

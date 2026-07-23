@@ -119,6 +119,18 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 			},
 		},
 		{
+			// Whitespace-only password + token must fall back to the token,
+			// identically to cmd/apply.loadGitCreds (both gate on the trimmed
+			// value). Otherwise controller and Job clone would diverge.
+			name: "whitespace password falls back to token",
+			data: map[string][]byte{"password": []byte("  \n"), "token": []byte("ghp_fallback")},
+			verify: func(t *testing.T, c *gitauth.Creds) {
+				if c.Password != "ghp_fallback" {
+					t.Errorf("whitespace password did not fall back to token: %+v", c)
+				}
+			},
+		},
+		{
 			name: "ssh key",
 			data: map[string][]byte{"ssh-privatekey": []byte("PRIVKEY"), "known_hosts": []byte("host ssh-ed25519 AAA")},
 			verify: func(t *testing.T, c *gitauth.Creds) {
@@ -154,6 +166,54 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 			}
 			tt.verify(t, cg.got)
 		})
+	}
+}
+
+// TestReconcile_ConvergedUsesGitPollInterval guards that a steady-state config
+// requeues on the slower git-poll cadence, so it does not run `git ls-remote`
+// every RequeueInterval.
+func TestReconcile_ConvergedUsesGitPollInterval(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := niov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
+
+	const sha = "cafef00d"
+	config := revTestConfig()
+	config.Status.AppliedCommit = sha
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+		Status:     niov1alpha1.MachineStatus{Discoverable: true, AppliedConfiguration: config.Name},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(config, machine).
+		WithStatusSubresource(config, machine).
+		Build()
+	r := &NixosConfigurationReconciler{
+		Client:   c,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+		Git:      fakeGit{sha: sha},
+	}
+	// Make the config hash match so needsApply reports up to date.
+	config.Status.ConfigurationHash = r.calculateConfigHash(config)
+	if err := c.Status().Update(context.Background(), config); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	res, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: config.Name, Namespace: config.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.RequeueAfter != GitPollInterval {
+		t.Errorf("RequeueAfter = %v, want GitPollInterval %v for a converged config", res.RequeueAfter, GitPollInterval)
 	}
 }
 
@@ -215,9 +275,9 @@ func TestHandleJobSuccess_FallsBackToRefWithoutAnnotation(t *testing.T) {
 }
 
 // TestReconcile_GitResolveFailureDoesNotBlockApply guards the graceful
-// degradation contract: when the controller cannot resolve the ref (e.g. a
-// private repo whose credentials are only mounted into the apply Job), the
-// first apply must still proceed rather than looping forever without a Job.
+// degradation contract: when the controller cannot resolve the ref (bad
+// credentials or a transient network failure), the first apply must still
+// proceed rather than looping forever without a Job.
 func TestReconcile_GitResolveFailureDoesNotBlockApply(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := niov1alpha1.AddToScheme(scheme); err != nil {

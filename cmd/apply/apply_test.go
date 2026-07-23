@@ -50,6 +50,27 @@ func TestLoadGitCreds(t *testing.T) {
 	}
 }
 
+// TestLoadGitCreds_WhitespacePasswordFallsBackToToken guards that a
+// whitespace-only password triggers the token fallback, matching
+// controller.readGitCredentials so both readers agree.
+func TestLoadGitCreds_WhitespacePasswordFallsBackToToken(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "password"), []byte("  \n"), 0o600); err != nil {
+		t.Fatalf("write password: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("ghp_fallback"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	creds, err := loadGitCreds(dir)
+	if err != nil {
+		t.Fatalf("loadGitCreds: %v", err)
+	}
+	if creds == nil || creds.Password != "ghp_fallback" {
+		t.Errorf("creds = %+v, want password falling back to token ghp_fallback", creds)
+	}
+}
+
 // setRequiredApplyEnv sets the minimal env the controller always provides.
 func setRequiredApplyEnv(t *testing.T) {
 	t.Helper()

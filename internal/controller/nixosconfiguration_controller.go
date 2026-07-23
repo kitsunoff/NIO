@@ -50,6 +50,12 @@ const (
 	// RequeueInterval is the default requeue interval for pending operations.
 	RequeueInterval = 30 * time.Second
 
+	// GitPollInterval is how often a converged config re-resolves its git ref
+	// (via `git ls-remote`) to detect a new commit on the same branch. It is
+	// deliberately slower than RequeueInterval to bound remote polling; spec
+	// changes still reconcile immediately via watch events.
+	GitPollInterval = 5 * time.Minute
+
 	// MaxConcurrentJobs is the maximum number of concurrent apply jobs.
 	MaxConcurrentJobs = 5
 
@@ -369,7 +375,11 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 			Message:            "Configuration is applied and up to date",
 		})
 		meta.RemoveStatusCondition(&config.Status.Conditions, niov1alpha1.ConditionStalled)
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+		// Converged: requeue on the slower git-poll cadence rather than every
+		// RequeueInterval, so a steady-state config does not run `git ls-remote`
+		// (and re-read its credentials Secret) every 30s. Spec changes still
+		// reconcile immediately via watch events.
+		return ctrl.Result{RequeueAfter: GitPollInterval}, nil
 	}
 
 	log.Info("configuration needs apply", "reason", reason)
@@ -819,7 +829,13 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		env = append(env, corev1.EnvVar{Name: "NIO_ADDITIONAL_FILES", Value: string(encoded)})
 	}
 
-	// Build volumes for secrets
+	// Build volumes for secrets.
+	//
+	// NOTE: mounts use DefaultMode 0o400 while the container runs as non-root
+	// (UID 1000) with a read-only root filesystem. The apply binary can still
+	// read them only because the pod sets FSGroup 1000 and the volumes are
+	// ReadOnly — kubelet ORs group-read onto the mode for fsGroup'd read-only
+	// secret volumes. Do not change FSGroup/mode without re-checking this.
 	volumes := []corev1.Volume{}
 	volumeMounts := []corev1.VolumeMount{}
 
