@@ -117,6 +117,11 @@ func TestFetchSourceScript(t *testing.T) {
 	if !strings.Contains(flux, "$NIO_ARTIFACT_URL") || !strings.Contains(flux, "tar --extract") {
 		t.Errorf("flux script missing artifact download: %q", flux)
 	}
+	// Force-add so a .gitignore in the artifact cannot drop files from the
+	// synthesized hermetic tree Nix builds from.
+	if !strings.Contains(flux, "git add --all --force") {
+		t.Errorf("flux script must force-stage the artifact tree: %q", flux)
+	}
 }
 
 func baseTemplateWithProbe() corev1.PodTemplateSpec {

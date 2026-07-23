@@ -85,12 +85,73 @@ func TestInjectedFilesReachNixBuild(t *testing.T) {
 	}
 
 	// The runner stages injected files; after that Nix includes them.
-	mustRun("git", "add", "--all")
+	mustRun("git", "add", "--force", "--", "injected.nix")
 	out, err := evalInjected()
 	if err != nil {
 		t.Fatalf("nix eval after staging failed: %v\n%s", err, out)
 	}
 	if out != "HELLO_FROM_INJECTED" {
 		t.Errorf("built value = %q, want the injected content", out)
+	}
+}
+
+// TestInjectedGitignoredFileReachesNixBuild proves that force-staging makes an
+// injected file reach the build even when the repo's .gitignore would skip it
+// (a plain `git add` / `git add --all` silently drops ignored paths).
+func TestInjectedGitignoredFileReachesNixBuild(t *testing.T) {
+	if _, err := exec.LookPath("nix"); err != nil {
+		t.Skip("nix not installed")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+
+	dir := t.TempDir()
+	mustRun := func(name string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+	}
+
+	flake := `{
+  outputs = { self }: { injected = builtins.readFile ./secret.nix; };
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "flake.nix"), []byte(flake), 0o644); err != nil {
+		t.Fatalf("write flake.nix: %v", err)
+	}
+	// The repo gitignores exactly the path the operator injects.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.nix\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	mustRun("git", "init", "-q")
+	mustRun("git", "config", "user.email", "t@example.com")
+	mustRun("git", "config", "user.name", "t")
+	mustRun("git", "add", "flake.nix", ".gitignore")
+	mustRun("git", "commit", "-q", "-m", "init")
+
+	runner := NewRunner(dir)
+	if err := runner.InjectAdditionalFiles(dir, []AdditionalFile{
+		{Path: "secret.nix", Content: "SECRET_VALUE"},
+	}); err != nil {
+		t.Fatalf("InjectAdditionalFiles: %v", err)
+	}
+
+	// A plain `git add --all` would skip the gitignored path; --force stages it.
+	mustRun("git", "add", "--force", "--", "secret.nix")
+
+	cmd := exec.Command("nix", "eval",
+		"--extra-experimental-features", "nix-command flakes",
+		"--no-write-lock-file", "--raw", dir+"#injected")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("nix eval failed for force-staged gitignored file: %v", err)
+	}
+	if string(out) != "SECRET_VALUE" {
+		t.Errorf("built value = %q, want the injected gitignored content", out)
 	}
 }

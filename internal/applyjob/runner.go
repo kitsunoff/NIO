@@ -358,8 +358,14 @@ func (r *Runner) Run(ctx context.Context, config *JobConfig, sshKey []byte, addi
 		// Stage the injected files. The flake is referenced by a path inside a
 		// git working tree, and Nix copies only tracked/staged files to the
 		// store — untracked files are silently dropped, so without this the
-		// injected files never reach the build.
-		if output, err := r.Executor.Run(ctx, "git", "-C", repoPath, "add", "--all"); err != nil {
+		// injected files never reach the build. --force stages exactly these
+		// paths even if the repo's .gitignore would otherwise skip them (the
+		// files are operator-intended, never accidental).
+		addArgs := []string{"-C", repoPath, "add", "--force", "--"}
+		for _, f := range additionalFiles {
+			addArgs = append(addArgs, f.Path)
+		}
+		if output, err := r.Executor.Run(ctx, "git", addArgs...); err != nil {
 			return &GitError{Operation: "add", Output: output, Err: err}
 		}
 	}

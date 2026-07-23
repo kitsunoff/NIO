@@ -166,7 +166,7 @@ func fetchSourceScript(flux bool) string {
 nix shell nixpkgs#gitMinimal nixpkgs#curl --command sh -c '
   curl --location --fail "$NIO_ARTIFACT_URL" | tar --extract --gzip --directory /workspace
   cd /workspace
-  [ -e .git ] || (git init --quiet && git add --all && \
+  [ -e .git ] || (git init --quiet && git add --all --force && \
     git -c user.email=nio@homystack.com -c user.name=nio commit --quiet --message "flux artifact $NIO_REVISION")'
 `
 	}

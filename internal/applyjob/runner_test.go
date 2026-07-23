@@ -175,7 +175,7 @@ func TestRun_StagesInjectedFiles(t *testing.T) {
 
 	addIdx, nixIdx := -1, -1
 	for i, c := range calls {
-		if strings.HasPrefix(c, "git -C ") && strings.Contains(c, "add --all") {
+		if strings.HasPrefix(c, "git -C ") && strings.Contains(c, "add --force") && strings.Contains(c, "hardware.nix") {
 			addIdx = i
 		}
 		if strings.HasPrefix(c, "nix ") {
@@ -183,7 +183,7 @@ func TestRun_StagesInjectedFiles(t *testing.T) {
 		}
 	}
 	if addIdx < 0 {
-		t.Fatalf("git add --all was not run after injecting files; calls=%v", calls)
+		t.Fatalf("git add --force <path> was not run after injecting files; calls=%v", calls)
 	}
 	if nixIdx < 0 || addIdx > nixIdx {
 		t.Errorf("git add --all must run before the nix apply (add=%d nix=%d)", addIdx, nixIdx)
