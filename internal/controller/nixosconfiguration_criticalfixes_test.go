@@ -19,13 +19,16 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
 	"github.com/kitsunoff/nixos-operator/internal/applyjob"
@@ -33,6 +36,73 @@ import (
 
 // testResolvedSHA is a stand-in immutable commit SHA used across these tests.
 const testResolvedSHA = "deadbeefsha"
+
+// TestResolveConfigRevision exercises the GitResolver seam: success propagates
+// the SHA, and an error propagates unchanged.
+func TestResolveConfigRevision(t *testing.T) {
+	r := newApplyJobReconciler(t)
+	config := revTestConfig()
+
+	r.Git = fakeGit{sha: testResolvedSHA}
+	got, err := r.resolveConfigRevision(context.Background(), config)
+	if err != nil {
+		t.Fatalf("resolveConfigRevision: %v", err)
+	}
+	if got != testResolvedSHA {
+		t.Errorf("resolveConfigRevision = %q, want %q", got, testResolvedSHA)
+	}
+
+	r.Git = fakeGit{err: errors.New("auth required")}
+	if _, err := r.resolveConfigRevision(context.Background(), config); err == nil {
+		t.Error("resolveConfigRevision returned nil error, want the resolver error propagated")
+	}
+}
+
+// TestReconcile_GitResolveFailureDoesNotBlockApply guards the graceful
+// degradation contract: when the controller cannot resolve the ref (e.g. a
+// private repo whose credentials are only mounted into the apply Job), the
+// first apply must still proceed rather than looping forever without a Job.
+func TestReconcile_GitResolveFailureDoesNotBlockApply(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := niov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
+
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+		Status:     niov1alpha1.MachineStatus{Discoverable: true},
+	}
+	config := revTestConfig() // AppliedCommit == "" -> first apply
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(config, machine).
+		WithStatusSubresource(config, machine).
+		Build()
+	r := &NixosConfigurationReconciler{
+		Client:   c,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+		Git:      fakeGit{err: errors.New("authentication required")},
+	}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: config.Name, Namespace: config.Namespace},
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var jobs batchv1.JobList
+	if err := c.List(context.Background(), &jobs); err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 apply Job despite resolve failure, got %d", len(jobs.Items))
+	}
+}
 
 func revTestConfig() *niov1alpha1.NixosConfiguration {
 	return &niov1alpha1.NixosConfiguration{

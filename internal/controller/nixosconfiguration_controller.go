@@ -275,26 +275,32 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 	}
 
 	// Resolve the mutable ref to an immutable commit SHA so a new commit on the
-	// same branch is detected (the bare ref name never changes).
+	// same branch is detected (the bare ref name never changes). The controller
+	// has no git credentials mounted (only the credentialed apply Job does), so
+	// resolution can fail for private repos. That must NOT block apply: on
+	// failure we degrade to the pre-SHA behavior (empty resolvedRev disables the
+	// revision check in needsApply) and let the credentialed Job proceed.
 	resolvedRev, err := r.resolveConfigRevision(ctx, config)
 	if err != nil {
+		effectiveRef := config.Spec.Ref
+		if effectiveRef == "" {
+			effectiveRef = defaultGitRef
+		}
+		log.Info("git ref resolution failed; continuing with degraded drift detection",
+			"ref", effectiveRef, "error", err.Error())
+		r.Recorder.Event(config, corev1.EventTypeWarning, "GitResolveDegraded",
+			fmt.Sprintf("could not resolve ref %q to a SHA (private repo without controller credentials?); "+
+				"drift detection falls back to spec-hash comparison", effectiveRef))
+		resolvedRev = ""
+	} else {
 		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
 			Type:               niov1alpha1.ConditionGitSynced,
-			Status:             metav1.ConditionFalse,
+			Status:             metav1.ConditionTrue,
 			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonGitCloneFailed,
-			Message:            fmt.Sprintf("resolve revision for ref %q: %v", config.Spec.Ref, err),
+			Reason:             niov1alpha1.ReasonGitCloneSucceeded,
+			Message:            fmt.Sprintf("resolved ref %q to %s", config.Spec.Ref, resolvedRev),
 		})
-		r.Recorder.Event(config, corev1.EventTypeWarning, "GitResolveFailed", err.Error())
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 	}
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionGitSynced,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonGitCloneSucceeded,
-		Message:            fmt.Sprintf("resolved ref %q to %s", config.Spec.Ref, resolvedRev),
-	})
 
 	// Check if we need to apply configuration
 	needsApply, reason := r.needsApply(ctx, config, &machine, resolvedRev)
