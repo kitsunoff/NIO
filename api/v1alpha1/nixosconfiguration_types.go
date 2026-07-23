@@ -54,6 +54,14 @@ type NixosConfigurationSpec struct {
 	// +optional
 	ConfigurationSubdir string `json:"configurationSubdir,omitempty"`
 
+	// DayTwoSchedule is the cron schedule for the periodic day-2 convergence
+	// (`nixos-rebuild switch`) that self-heals node drift. Defaults to every 30
+	// minutes. On-revision-change applies fire promptly regardless (the day-2
+	// NixCronJob uses triggerOnChange with concurrencyPolicy=Forbid).
+	// +kubebuilder:default="*/30 * * * *"
+	// +optional
+	DayTwoSchedule string `json:"dayTwoSchedule,omitempty"`
+
 	// FullInstall enables nixos-anywhere for full disk installation.
 	// +optional
 	FullInstall bool `json:"fullInstall,omitempty"`

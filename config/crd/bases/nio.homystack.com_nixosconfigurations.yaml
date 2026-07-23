@@ -124,6 +124,14 @@ spec:
                 required:
                 - name
                 type: object
+              dayTwoSchedule:
+                default: '*/30 * * * *'
+                description: |-
+                  DayTwoSchedule is the cron schedule for the periodic day-2 convergence
+                  (`nixos-rebuild switch`) that self-heals node drift. Defaults to every 30
+                  minutes. On-revision-change applies fire promptly regardless (the day-2
+                  NixCronJob uses triggerOnChange with concurrencyPolicy=Forbid).
+                type: string
               flake:
                 description: Flake is the flake reference (e.g., "#worker").
                 type: string
