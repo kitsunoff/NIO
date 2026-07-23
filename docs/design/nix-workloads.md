@@ -746,7 +746,9 @@ Default `emptyDir`; switch to `PodPVC` for large closures (`nix.localStore`).
      ```sh
      curl --location --fail "$NIO_ARTIFACT_URL" | tar --extract --gzip --directory /workspace
      cd /workspace
-     [ -e .git ] || (git init && git add --all && git -c user.email=nio@homystack.com \
+     # --force: a .gitignore inside the artifact must not drop files from the
+     # hermetic tree Nix builds from.
+     [ -e .git ] || (git init && git add --all --force && git -c user.email=nio@homystack.com \
        -c user.name=nio commit --quiet --message "flux artifact $NIO_REVISION")
      ```
 
