@@ -815,6 +815,13 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		{Name: "TMPDIR", Value: "/workspace"},
 	}
 
+	// Pass the resolved commit SHA so the Job fetches exactly what the controller
+	// resolved (no TOCTOU with a moving branch tip). Empty in degraded mode, in
+	// which case the Job falls back to cloning the ref's tip.
+	if resolvedRev != "" {
+		env = append(env, corev1.EnvVar{Name: "NIO_GIT_REV", Value: resolvedRev})
+	}
+
 	// Resolve and pass additional files. Without this the apply binary reads an
 	// empty NIO_ADDITIONAL_FILES and the declared files are silently dropped.
 	additionalFiles, err := resolveAdditionalFiles(config)

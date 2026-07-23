@@ -42,8 +42,11 @@ type Config struct {
 	Operation string
 	// GitRepo is the git repository URL.
 	GitRepo string
-	// GitRef is the git ref to checkout.
+	// GitRef is the git ref to checkout (used only when GitRev is empty).
 	GitRef string
+	// GitRev is the immutable commit SHA resolved by the controller. When set,
+	// the exact commit is fetched instead of the ref's current tip.
+	GitRev string
 	// ConfigSubdir is the subdirectory containing the nix configuration.
 	ConfigSubdir string
 	// Flake is the flake reference (e.g., "#worker").
@@ -73,6 +76,7 @@ func LoadConfigFromEnv() (*Config, error) {
 		Operation:           os.Getenv("NIO_OPERATION"),
 		GitRepo:             os.Getenv("NIO_GIT_REPO"),
 		GitRef:              os.Getenv("NIO_GIT_REF"),
+		GitRev:              os.Getenv("NIO_GIT_REV"),
 		ConfigSubdir:        os.Getenv("NIO_CONFIG_SUBDIR"),
 		Flake:               os.Getenv("NIO_FLAKE"),
 		TargetHost:          os.Getenv("NIO_TARGET_HOST"),
@@ -183,6 +187,7 @@ func Run() error {
 	jobConfig := &applyjob.JobConfig{
 		GitRepo:      config.GitRepo,
 		GitRef:       config.GitRef,
+		GitRev:       config.GitRev,
 		ConfigSubdir: config.ConfigSubdir,
 		Flake:        config.Flake,
 		TargetHost:   config.TargetHost,
