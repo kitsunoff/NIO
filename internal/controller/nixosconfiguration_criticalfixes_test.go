@@ -24,6 +24,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -156,6 +157,63 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 	}
 }
 
+// TestCreateApplyJob_DefaultsEmptyRef guards that an empty spec.ref is defaulted
+// to the same value resolution uses, so NIO_GIT_REF is never empty (which the
+// apply binary rejects).
+func TestCreateApplyJob_DefaultsEmptyRef(t *testing.T) {
+	r := newApplyJobReconciler(t)
+	config := revTestConfig()
+	config.Spec.Ref = ""
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+	}
+
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
+	if err != nil {
+		t.Fatalf("createApplyJob: %v", err)
+	}
+	if got := envToMap(job.Spec.Template.Spec.Containers[0].Env)["NIO_GIT_REF"]; got != defaultGitRef {
+		t.Errorf("NIO_GIT_REF = %q, want defaulted %q", got, defaultGitRef)
+	}
+}
+
+// TestHandleJobSuccess_FallsBackToRefWithoutAnnotation guards the degraded /
+// legacy path: a Job created without the resolved-revision annotation records
+// the ref name as the applied commit rather than an empty string.
+func TestHandleJobSuccess_FallsBackToRefWithoutAnnotation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := niov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	config := revTestConfig() // Spec.Ref == defaultGitRef
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(machine).
+		WithStatusSubresource(machine).
+		Build()
+	r := &NixosConfigurationReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-apply-1", Namespace: "default"}, // no annotation
+		Status:     batchv1.JobStatus{Succeeded: 1},
+	}
+
+	if _, err := r.handleJobSuccess(context.Background(), config, job, machine); err != nil {
+		t.Fatalf("handleJobSuccess: %v", err)
+	}
+	if config.Status.AppliedCommit != defaultGitRef {
+		t.Errorf("config AppliedCommit = %q, want fallback to ref %q", config.Status.AppliedCommit, defaultGitRef)
+	}
+	if machine.Status.AppliedCommit != defaultGitRef {
+		t.Errorf("machine AppliedCommit = %q, want fallback to ref %q", machine.Status.AppliedCommit, defaultGitRef)
+	}
+}
+
 // TestReconcile_GitResolveFailureDoesNotBlockApply guards the graceful
 // degradation contract: when the controller cannot resolve the ref (e.g. a
 // private repo whose credentials are only mounted into the apply Job), the
@@ -200,6 +258,17 @@ func TestReconcile_GitResolveFailureDoesNotBlockApply(t *testing.T) {
 	if len(jobs.Items) != 1 {
 		t.Fatalf("expected 1 apply Job despite resolve failure, got %d", len(jobs.Items))
 	}
+
+	// The degraded state must be surfaced as GitSynced=False, not left stale.
+	var updated niov1alpha1.NixosConfiguration
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, &updated); err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, niov1alpha1.ConditionGitSynced)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Errorf("GitSynced condition = %v, want present and False on degraded resolve", cond)
+	}
 }
 
 func revTestConfig() *niov1alpha1.NixosConfiguration {
@@ -208,7 +277,7 @@ func revTestConfig() *niov1alpha1.NixosConfiguration {
 		Spec: niov1alpha1.NixosConfigurationSpec{
 			MachineRef: niov1alpha1.MachineReference{Name: "node-01"},
 			GitRepo:    "https://github.com/example/nixos.git",
-			Ref:        "main",
+			Ref:        defaultGitRef,
 			Flake:      "#web",
 		},
 	}
@@ -303,8 +372,8 @@ func TestCreateApplyJob_AnnotatesResolvedRevision(t *testing.T) {
 		t.Errorf("annotation %s = %q, want %q", AnnotationResolvedRevision, got, testResolvedSHA)
 	}
 	// The ref name (not the SHA) still drives the shallow clone.
-	if got := envToMap(job.Spec.Template.Spec.Containers[0].Env)["NIO_GIT_REF"]; got != "main" {
-		t.Errorf("NIO_GIT_REF = %q, want the ref name %q", got, "main")
+	if got := envToMap(job.Spec.Template.Spec.Containers[0].Env)["NIO_GIT_REF"]; got != defaultGitRef {
+		t.Errorf("NIO_GIT_REF = %q, want the ref name %q", got, defaultGitRef)
 	}
 }
 

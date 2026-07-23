@@ -329,6 +329,13 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 	if err != nil {
 		log.Info("git ref resolution failed; continuing with degraded drift detection",
 			"ref", effectiveRef, "error", err.Error())
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:               niov1alpha1.ConditionGitSynced,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: config.Generation,
+			Reason:             niov1alpha1.ReasonGitCloneFailed,
+			Message:            fmt.Sprintf("could not resolve ref %q to a SHA; drift detection degraded to spec-hash", effectiveRef),
+		})
 		r.Recorder.Event(config, corev1.EventTypeWarning, "GitResolveDegraded",
 			fmt.Sprintf("could not resolve ref %q to a SHA (bad credentials or transient network?); "+
 				"drift detection falls back to spec-hash comparison", effectiveRef))
@@ -770,6 +777,13 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		image = config.Spec.JobTemplate.Image
 	}
 
+	// Default an empty ref the same way resolution does, so the Job's clone and
+	// controller-side resolution agree even if the CRD default were absent.
+	gitRef := config.Spec.Ref
+	if gitRef == "" {
+		gitRef = defaultGitRef
+	}
+
 	// The apply binary reads its configuration from NIO_* environment variables
 	// (see cmd/apply.LoadConfigFromEnv), not CLI flags.
 	env := []corev1.EnvVar{
@@ -777,7 +791,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		{Name: "NIO_CONFIG_NAMESPACE", Value: config.Namespace},
 		{Name: "NIO_OPERATION", Value: operation},
 		{Name: "NIO_GIT_REPO", Value: config.Spec.GitRepo},
-		{Name: "NIO_GIT_REF", Value: config.Spec.Ref},
+		{Name: "NIO_GIT_REF", Value: gitRef},
 		{Name: "NIO_FLAKE", Value: config.Spec.Flake},
 		{Name: "NIO_CONFIG_SUBDIR", Value: config.Spec.ConfigurationSubdir},
 		{Name: "NIO_TARGET_HOST", Value: machine.Spec.Host},
