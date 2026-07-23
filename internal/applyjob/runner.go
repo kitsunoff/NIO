@@ -22,6 +22,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 // OperationType defines the type of apply operation.
@@ -122,8 +125,20 @@ func NewRunner(workDir string) *Runner {
 }
 
 // CloneRepository clones the git repository and checks out the specified ref.
-func (r *Runner) CloneRepository(ctx context.Context, config *JobConfig) (string, error) {
+// When creds is non-nil it wires authentication (SSH key or HTTPS token) for
+// the clone so private repositories can be fetched.
+func (r *Runner) CloneRepository(ctx context.Context, config *JobConfig, creds *gitauth.Creds) (string, error) {
 	repoPath := filepath.Join(r.WorkDir, "repo")
+
+	if creds != nil {
+		env, cleanup, err := creds.Env(config.GitRepo)
+		if err != nil {
+			return "", fmt.Errorf("prepare git credentials: %w", err)
+		}
+		defer cleanup()
+		restore := setEnv(append(env, "GIT_TERMINAL_PROMPT=0"))
+		defer restore()
+	}
 
 	// Clone the repository
 	args := []string{"clone", "--depth", "1", "--branch", config.GitRef, config.GitRepo, repoPath}
@@ -137,6 +152,36 @@ func (r *Runner) CloneRepository(ctx context.Context, config *JobConfig) (string
 	}
 
 	return repoPath, nil
+}
+
+// setEnv sets the given "KEY=VALUE" pairs in the process environment and returns
+// a function that restores the previous values. The apply binary runs a single
+// apply per process, so process-wide env is safe here and lets the default
+// executor inherit it (git reads GIT_SSH_COMMAND/GIT_ASKPASS from the env).
+func setEnv(pairs []string) func() {
+	saved := make(map[string]*string, len(pairs))
+	for _, kv := range pairs {
+		key, value, found := strings.Cut(kv, "=")
+		if !found {
+			continue
+		}
+		if old, ok := os.LookupEnv(key); ok {
+			v := old
+			saved[key] = &v
+		} else {
+			saved[key] = nil
+		}
+		_ = os.Setenv(key, value)
+	}
+	return func() {
+		for key, old := range saved {
+			if old == nil {
+				_ = os.Unsetenv(key)
+			} else {
+				_ = os.Setenv(key, *old)
+			}
+		}
+	}
 }
 
 // InjectAdditionalFiles writes additional files into the repository.
@@ -265,7 +310,7 @@ func (r *Runner) SetupSSHKey(privateKey []byte) (string, func(), error) {
 }
 
 // Run executes the full apply job workflow.
-func (r *Runner) Run(ctx context.Context, config *JobConfig, sshKey []byte, additionalFiles []AdditionalFile) error {
+func (r *Runner) Run(ctx context.Context, config *JobConfig, sshKey []byte, additionalFiles []AdditionalFile, gitCreds *gitauth.Creds) error {
 	// Setup SSH key
 	keyPath, cleanup, err := r.SetupSSHKey(sshKey)
 	if err != nil {
@@ -275,7 +320,7 @@ func (r *Runner) Run(ctx context.Context, config *JobConfig, sshKey []byte, addi
 	config.SSHKeyPath = keyPath
 
 	// Clone repository
-	repoPath, err := r.CloneRepository(ctx, config)
+	repoPath, err := r.CloneRepository(ctx, config, gitCreds)
 	if err != nil {
 		return fmt.Errorf("clone repository: %w", err)
 	}

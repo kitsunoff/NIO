@@ -20,7 +20,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -39,12 +41,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
+	"github.com/kitsunoff/nixos-operator/internal/applyjob"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 	"github.com/kitsunoff/nixos-operator/internal/metrics"
 )
 
 const (
 	// RequeueInterval is the default requeue interval for pending operations.
 	RequeueInterval = 30 * time.Second
+
+	// GitPollInterval is how often a converged config re-resolves its git ref
+	// (via `git ls-remote`) to detect a new commit on the same branch. It is
+	// deliberately slower than RequeueInterval to bound remote polling; spec
+	// changes still reconcile immediately via watch events.
+	GitPollInterval = 5 * time.Minute
 
 	// MaxConcurrentJobs is the maximum number of concurrent apply jobs.
 	MaxConcurrentJobs = 5
@@ -73,6 +83,11 @@ const (
 	// AnnotationOnRemoveRetries tracks deletion retries.
 	AnnotationOnRemoveRetries = "nio.homystack.com/on-remove-retries"
 
+	// AnnotationResolvedRevision records the immutable commit SHA an apply Job
+	// was created for, so success handling can persist the SHA (not the ref
+	// name) as the applied commit.
+	AnnotationResolvedRevision = "nio.homystack.com/resolved-revision"
+
 	// DefaultApplyImage is the default container image for apply jobs.
 	DefaultApplyImage = "ghcr.io/homystack/nixos-operator:latest"
 )
@@ -82,6 +97,89 @@ type NixosConfigurationReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// Git resolves a mutable ref to an immutable commit SHA. Defaults to
+	// ExecGitResolver when nil; tests substitute a fake.
+	Git GitResolver
+}
+
+// git returns the configured GitResolver, defaulting to the production
+// ExecGitResolver.
+func (r *NixosConfigurationReconciler) git() GitResolver {
+	if r.Git != nil {
+		return r.Git
+	}
+	return ExecGitResolver{}
+}
+
+// resolveConfigRevision resolves the configuration's git ref to an immutable
+// commit SHA. A bare ref name (e.g. "main") never changes, so without this a
+// new commit pushed to the same branch is never detected.
+func (r *NixosConfigurationReconciler) resolveConfigRevision(ctx context.Context, config *niov1alpha1.NixosConfiguration) (string, error) {
+	ref := config.Spec.Ref
+	if ref == "" {
+		ref = defaultGitRef
+	}
+
+	// Private repos: use the same credentials the apply Job is given so
+	// controller-side resolution and the Job's clone agree on auth.
+	var creds *gitauth.Creds
+	if config.Spec.CredentialsRef != nil {
+		c, err := r.readGitCredentials(ctx, config.Namespace, config.Spec.CredentialsRef.Name)
+		if err != nil {
+			return "", err
+		}
+		creds = c
+	}
+
+	return r.git().LsRemote(ctx, config.Spec.GitRepo, ref, creds)
+}
+
+// readGitCredentials loads git authentication material from a Secret in the
+// config's namespace, following the same key conventions the rest of the
+// operator uses (ssh-privatekey, known_hosts, username, password/token).
+func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, namespace, name string) (*gitauth.Creds, error) {
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
+		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
+	}
+	// Trim username/password/token: Secret values sourced from files commonly
+	// carry a trailing newline, and this must match the apply Job's reader
+	// (cmd/apply.loadGitCreds) so controller-side ls-remote and the Job clone
+	// authenticate identically. SSH key and known_hosts are left byte-exact.
+	creds := &gitauth.Creds{
+		SSHKey:     secret.Data["ssh-privatekey"],
+		KnownHosts: secret.Data["known_hosts"],
+		Username:   strings.TrimSpace(string(secret.Data["username"])),
+		Password:   strings.TrimSpace(string(secret.Data["password"])),
+	}
+	// A token-only secret populates the password (username defaults to "git").
+	if creds.Password == "" {
+		if token, ok := secret.Data["token"]; ok {
+			creds.Password = strings.TrimSpace(string(token))
+		}
+	}
+	return creds, nil
+}
+
+// resolveAdditionalFiles turns the spec's AdditionalFiles into concrete
+// path/content pairs the apply Job can inject. Only Inline is delivered today;
+// SecretRef and NixosFacter fail loudly rather than being silently dropped.
+func resolveAdditionalFiles(config *niov1alpha1.NixosConfiguration) ([]applyjob.AdditionalFile, error) {
+	if len(config.Spec.AdditionalFiles) == 0 {
+		return nil, nil
+	}
+	files := make([]applyjob.AdditionalFile, 0, len(config.Spec.AdditionalFiles))
+	for _, f := range config.Spec.AdditionalFiles {
+		switch f.ValueType {
+		case niov1alpha1.AdditionalFileValueTypeInline:
+			files = append(files, applyjob.AdditionalFile{Path: f.Path, Content: f.Inline})
+		default:
+			return nil, fmt.Errorf(
+				"additionalFile %q: valueType %q is not yet delivered to the apply Job (only Inline is supported)",
+				f.Path, f.ValueType)
+		}
+	}
+	return files, nil
 }
 
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixosconfigurations,verbs=get;list;watch;create;update;patch;delete
@@ -223,8 +321,43 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 		return r.monitorJob(ctx, config, existingJob, &machine)
 	}
 
+	// Resolve the mutable ref to an immutable commit SHA so a new commit on the
+	// same branch is detected (the bare ref name never changes). Resolution uses
+	// the config's credentialsRef for private repos, but can still fail (bad
+	// creds, transient network). That must NOT block apply: on failure we degrade
+	// to the pre-SHA behavior (empty resolvedRev disables the revision check in
+	// needsApply) and let the credentialed Job proceed.
+	effectiveRef := config.Spec.Ref
+	if effectiveRef == "" {
+		effectiveRef = defaultGitRef
+	}
+	resolvedRev, err := r.resolveConfigRevision(ctx, config)
+	if err != nil {
+		log.Info("git ref resolution failed; continuing with degraded drift detection",
+			"ref", effectiveRef, "error", err.Error())
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:               niov1alpha1.ConditionGitSynced,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: config.Generation,
+			Reason:             niov1alpha1.ReasonGitCloneFailed,
+			Message:            fmt.Sprintf("could not resolve ref %q to a SHA; drift detection degraded to spec-hash", effectiveRef),
+		})
+		r.Recorder.Event(config, corev1.EventTypeWarning, "GitResolveDegraded",
+			fmt.Sprintf("could not resolve ref %q to a SHA (bad credentials or transient network?); "+
+				"drift detection falls back to spec-hash comparison", effectiveRef))
+		resolvedRev = ""
+	} else {
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:               niov1alpha1.ConditionGitSynced,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: config.Generation,
+			Reason:             niov1alpha1.ReasonGitCloneSucceeded,
+			Message:            fmt.Sprintf("resolved ref %q to %s", effectiveRef, resolvedRev),
+		})
+	}
+
 	// Check if we need to apply configuration
-	needsApply, reason := r.needsApply(ctx, config, &machine)
+	needsApply, reason := r.needsApply(ctx, config, &machine, resolvedRev)
 	if !needsApply {
 		log.Info("configuration is up to date", "reason", reason)
 		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
@@ -242,7 +375,11 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 			Message:            "Configuration is applied and up to date",
 		})
 		meta.RemoveStatusCondition(&config.Status.Conditions, niov1alpha1.ConditionStalled)
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+		// Converged: requeue on the slower git-poll cadence rather than every
+		// RequeueInterval, so a steady-state config does not run `git ls-remote`
+		// (and re-read its credentials Secret) every 30s. Spec changes still
+		// reconcile immediately via watch events.
+		return ctrl.Result{RequeueAfter: GitPollInterval}, nil
 	}
 
 	log.Info("configuration needs apply", "reason", reason)
@@ -282,7 +419,7 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 	}
 
 	// Create apply job
-	job, err := r.createAndSubmitApplyJob(ctx, config, &machine)
+	job, err := r.createAndSubmitApplyJob(ctx, config, &machine, resolvedRev)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -373,8 +510,16 @@ func (r *NixosConfigurationReconciler) handleJobSuccess(ctx context.Context, con
 	// Calculate configuration hash for change detection
 	configHash := r.calculateConfigHash(config)
 
+	// Persist the immutable SHA the Job was created for (recorded as an
+	// annotation), not the mutable ref name. Fall back to the ref for Jobs
+	// created before this annotation existed.
+	appliedRev := job.Annotations[AnnotationResolvedRevision]
+	if appliedRev == "" {
+		appliedRev = config.Spec.Ref
+	}
+
 	// Update config status
-	config.Status.AppliedCommit = config.Spec.Ref
+	config.Status.AppliedCommit = appliedRev
 	config.Status.LastAppliedTime = &metav1.Time{Time: time.Now()}
 	config.Status.ConfigurationHash = configHash
 	config.Status.OperationState = nil
@@ -409,7 +554,7 @@ func (r *NixosConfigurationReconciler) handleJobSuccess(ctx context.Context, con
 	// Update Machine status
 	machine.Status.HasConfiguration = true
 	machine.Status.AppliedConfiguration = config.Name
-	machine.Status.AppliedCommit = config.Spec.Ref
+	machine.Status.AppliedCommit = appliedRev
 	machine.Status.LastAppliedTime = config.Status.LastAppliedTime
 
 	if err := r.Status().Update(ctx, machine); err != nil {
@@ -549,7 +694,7 @@ func (r *NixosConfigurationReconciler) findExistingJob(ctx context.Context, conf
 }
 
 // needsApply determines if configuration needs to be applied.
-func (r *NixosConfigurationReconciler) needsApply(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (bool, string) {
+func (r *NixosConfigurationReconciler) needsApply(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, resolvedRev string) (bool, string) {
 	_ = ctx // ctx reserved for future use (e.g., checking external state)
 
 	// First time application
@@ -560,6 +705,12 @@ func (r *NixosConfigurationReconciler) needsApply(ctx context.Context, config *n
 	// Full install not yet done
 	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
 		return true, "full install not completed"
+	}
+
+	// A new commit on the same ref changes the resolved SHA even though the ref
+	// name (and thus the config hash) is unchanged.
+	if resolvedRev != "" && config.Status.AppliedCommit != resolvedRev {
+		return true, "revision changed"
 	}
 
 	// Configuration hash changed
@@ -617,15 +768,18 @@ func (r *NixosConfigurationReconciler) countActiveJobs(ctx context.Context) (int
 // createApplyJob creates a Kubernetes Job to apply the configuration.
 //
 //nolint:unparam // ctx reserved for future use (e.g., fetching secrets for job spec)
-func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*batchv1.Job, error) {
+func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, resolvedRev string) (*batchv1.Job, error) {
 	_ = ctx // ctx reserved for future use
 	jobName := fmt.Sprintf("%s-apply-%d", config.Name, time.Now().Unix())
 
-	// Determine timeout
-	timeout := int64(DefaultJobTimeout.Seconds())
+	// Determine operation and timeout.
+	operation := "NixosRebuild"
+	jobTimeout := DefaultJobTimeout
 	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		timeout = int64(FullInstallJobTimeout.Seconds())
+		operation = "FullInstall"
+		jobTimeout = FullInstallJobTimeout
 	}
+	timeout := int64(jobTimeout.Seconds())
 
 	// Get image from jobTemplate or use default
 	image := DefaultApplyImage
@@ -633,29 +787,55 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		image = config.Spec.JobTemplate.Image
 	}
 
-	// Build command arguments
-	args := []string{
-		"--mode=apply-job",
-		"--machine=" + machine.Spec.Host,
-		"--ssh-user=" + machine.Spec.SSHUser,
-	}
-	if config.Spec.GitRepo != "" {
-		args = append(args, "--git-repo="+config.Spec.GitRepo)
-	}
-	if config.Spec.Ref != "" {
-		args = append(args, "--ref="+config.Spec.Ref)
-	}
-	if config.Spec.Flake != "" {
-		args = append(args, "--flake="+config.Spec.Flake)
-	}
-	if config.Spec.ConfigurationSubdir != "" {
-		args = append(args, "--subdir="+config.Spec.ConfigurationSubdir)
-	}
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		args = append(args, "--full-install")
+	// Default an empty ref the same way resolution does, so the Job's clone and
+	// controller-side resolution agree even if the CRD default were absent.
+	gitRef := config.Spec.Ref
+	if gitRef == "" {
+		gitRef = defaultGitRef
 	}
 
-	// Build volumes for secrets
+	// The apply binary reads its configuration from NIO_* environment variables
+	// (see cmd/apply.LoadConfigFromEnv), not CLI flags.
+	env := []corev1.EnvVar{
+		{Name: "NIO_CONFIG_NAME", Value: config.Name},
+		{Name: "NIO_CONFIG_NAMESPACE", Value: config.Namespace},
+		{Name: "NIO_OPERATION", Value: operation},
+		{Name: "NIO_GIT_REPO", Value: config.Spec.GitRepo},
+		{Name: "NIO_GIT_REF", Value: gitRef},
+		{Name: "NIO_FLAKE", Value: config.Spec.Flake},
+		{Name: "NIO_CONFIG_SUBDIR", Value: config.Spec.ConfigurationSubdir},
+		{Name: "NIO_TARGET_HOST", Value: machine.Spec.Host},
+		{Name: "NIO_SSH_USER", Value: machine.Spec.SSHUser},
+		{Name: "NIO_TIMEOUT", Value: jobTimeout.String()},
+		// The container runs with ReadOnlyRootFilesystem; the only writable mount
+		// is the /workspace emptyDir. Point both the apply work dir and Go's
+		// temp dir (used by gitauth for credential material) at it so the clone
+		// and credential setup do not fail writing to a read-only /tmp.
+		{Name: "NIO_WORK_DIR", Value: "/workspace"},
+		{Name: "TMPDIR", Value: "/workspace"},
+	}
+
+	// Resolve and pass additional files. Without this the apply binary reads an
+	// empty NIO_ADDITIONAL_FILES and the declared files are silently dropped.
+	additionalFiles, err := resolveAdditionalFiles(config)
+	if err != nil {
+		return nil, err
+	}
+	if len(additionalFiles) > 0 {
+		encoded, err := json.Marshal(additionalFiles)
+		if err != nil {
+			return nil, fmt.Errorf("marshal additional files: %w", err)
+		}
+		env = append(env, corev1.EnvVar{Name: "NIO_ADDITIONAL_FILES", Value: string(encoded)})
+	}
+
+	// Build volumes for secrets.
+	//
+	// NOTE: mounts use DefaultMode 0o400 while the container runs as non-root
+	// (UID 1000) with a read-only root filesystem. The apply binary can still
+	// read them only because the pod sets FSGroup 1000 and the volumes are
+	// ReadOnly — kubelet ORs group-read onto the mode for fsGroup'd read-only
+	// secret volumes. Do not change FSGroup/mode without re-checking this.
 	volumes := []corev1.Volume{}
 	volumeMounts := []corev1.VolumeMount{}
 
@@ -675,7 +855,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 			MountPath: "/secrets/ssh",
 			ReadOnly:  true,
 		})
-		args = append(args, "--ssh-key=/secrets/ssh/ssh-privatekey")
+		env = append(env, corev1.EnvVar{Name: "NIO_SSH_KEY_PATH", Value: "/secrets/ssh/ssh-privatekey"})
 	}
 
 	// Mount git credentials if specified
@@ -694,6 +874,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 			MountPath: "/secrets/git",
 			ReadOnly:  true,
 		})
+		env = append(env, corev1.EnvVar{Name: "NIO_GIT_CREDENTIALS_PATH", Value: "/secrets/git"})
 	}
 
 	// Add workspace volume for git clone
@@ -715,7 +896,8 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 			{
 				Name:         "apply",
 				Image:        image,
-				Args:         args,
+				Command:      []string{"/manager", "apply"},
+				Env:          env,
 				VolumeMounts: volumeMounts,
 				SecurityContext: &corev1.SecurityContext{
 					RunAsNonRoot:             ptr(true),
@@ -755,6 +937,11 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		}
 	}
 
+	annotations := map[string]string{}
+	if resolvedRev != "" {
+		annotations[AnnotationResolvedRevision] = resolvedRev
+	}
+
 	backoffLimit := int32(0)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -764,6 +951,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 				LabelConfigName:  config.Name,
 				LabelMachineName: machine.Name,
 			},
+			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds: &timeout,
@@ -789,8 +977,8 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 }
 
 // createAndSubmitApplyJob creates and submits an apply job to Kubernetes.
-func (r *NixosConfigurationReconciler) createAndSubmitApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*batchv1.Job, error) {
-	job, err := r.createApplyJob(ctx, config, machine)
+func (r *NixosConfigurationReconciler) createAndSubmitApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, resolvedRev string) (*batchv1.Job, error) {
+	job, err := r.createApplyJob(ctx, config, machine, resolvedRev)
 	if err != nil {
 		return nil, err
 	}
@@ -909,7 +1097,9 @@ func (r *NixosConfigurationReconciler) applyOnRemoveFlake(ctx context.Context, c
 	onRemoveConfig := config.DeepCopy()
 	onRemoveConfig.Spec.Flake = config.Spec.OnRemoveFlake
 
-	job, err := r.createApplyJob(ctx, onRemoveConfig, &machine)
+	// The decommission Job is a one-shot; it does not record an applied commit,
+	// so no resolved revision annotation is needed.
+	job, err := r.createApplyJob(ctx, onRemoveConfig, &machine, "")
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("build onRemove job: %w", err)
 	}

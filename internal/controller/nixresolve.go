@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -26,25 +27,43 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
+
+// defaultGitRef is the ref resolved when a source specifies none.
+const defaultGitRef = "main"
 
 // GitResolver resolves a mutable git ref to an immutable commit SHA without a
 // full clone. The default implementation shells out to `git ls-remote`; tests
 // substitute a fake.
 type GitResolver interface {
-	LsRemote(ctx context.Context, repo, ref string) (string, error)
+	LsRemote(ctx context.Context, repo, ref string, creds *gitauth.Creds) (string, error)
 }
 
 // ExecGitResolver runs `git ls-remote` on the host (the operator image ships
 // git). It is the production GitResolver.
 type ExecGitResolver struct{}
 
-// LsRemote returns the commit SHA that repo's ref currently points to.
-func (ExecGitResolver) LsRemote(ctx context.Context, repo, ref string) (string, error) {
+// LsRemote returns the commit SHA that repo's ref currently points to. When
+// creds is non-nil, authentication is wired for the ls-remote invocation
+// (SSH key via GIT_SSH_COMMAND, or HTTPS basic/token via a non-interactive
+// GIT_ASKPASS helper so the secret never appears in argv).
+func (ExecGitResolver) LsRemote(ctx context.Context, repo, ref string, creds *gitauth.Creds) (string, error) {
 	if repo == "" {
 		return "", fmt.Errorf("gitRepo is empty")
 	}
 	cmd := exec.CommandContext(ctx, "git", "ls-remote", repo, ref)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	if creds != nil {
+		env, cleanup, err := creds.Env(repo)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+		cmd.Env = append(cmd.Env, env...)
+	}
+
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote %s %s: %w", repo, ref, err)
@@ -110,9 +129,12 @@ func resolveRevision(ctx context.Context, c client.Client, git GitResolver, name
 	}
 	ref := src.Ref
 	if ref == "" {
-		ref = "main"
+		ref = defaultGitRef
 	}
-	sha, err := git.LsRemote(ctx, src.GitRepo, ref)
+	// NOTE: the workload family does not yet feed CredentialsRef to the
+	// resolver; private-repo revision resolution for workloads is tracked
+	// separately. NixosConfiguration wires credentials in its own resolver call.
+	sha, err := git.LsRemote(ctx, src.GitRepo, ref, nil)
 	if err != nil {
 		return resolvedSource{}, err
 	}
