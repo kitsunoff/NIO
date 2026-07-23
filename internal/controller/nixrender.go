@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 // Pod-render constants for the generated NIO workload pods (design §4.5).
@@ -37,6 +38,11 @@ const (
 	nixMountPath       = "/nix"
 	nixBootstrapMount  = "/nix-vol"
 	workspaceMountPath = "/workspace"
+
+	// gitCredsVolumeName / gitCredsMountPath expose a private-repo credentials
+	// Secret to the fetch-source init-container (mirrors internal/gitauth keys).
+	gitCredsVolumeName = "nio-git-creds"
+	gitCredsMountPath  = "/etc/nio/git-creds"
 
 	initBootstrap   = "bootstrap"
 	initFetchSource = "fetch-source"
@@ -160,7 +166,14 @@ func buildCommand(run string, prebuild, nixFlags []string) []string {
 // fetchSourceScript returns the shell for the fetch-source init. Direct-git mode
 // shallow-fetches the resolved commit; Flux mode downloads the artifact tarball
 // and synthesizes a git tree so `.` is a hermetic flake input (design §4.5).
-func fetchSourceScript(flux bool) string {
+// fetchSourceScript builds the fetch-source init-container script. In Flux mode
+// it downloads the pre-authenticated artifact tarball. In direct-git mode it
+// clones the exact resolved revision; when hasCreds is set it first wires
+// private-repo auth from the mounted credentials (NIO_GIT_CREDENTIALS_PATH),
+// mirroring the internal/gitauth posture — SSH via GIT_SSH_COMMAND (honoring a
+// pinned known_hosts), HTTPS via a non-interactive GIT_ASKPASS helper so the
+// secret never lands in argv.
+func fetchSourceScript(flux, hasCreds, sshRepo bool) string {
 	if flux {
 		return `set -eu
 nix shell nixpkgs#gitMinimal nixpkgs#curl --command sh -c '
@@ -170,9 +183,42 @@ nix shell nixpkgs#gitMinimal nixpkgs#curl --command sh -c '
     git -c user.email=nio@homystack.com -c user.name=nio commit --quiet --message "flux artifact $NIO_REVISION")'
 `
 	}
+
+	pkgs := "nixpkgs#gitMinimal"
+	authPrelude := ""
+	switch {
+	case hasCreds && sshRepo:
+		// openssh is needed because git shells out to ssh, which the nix image lacks.
+		pkgs = "nixpkgs#gitMinimal nixpkgs#openssh"
+		// Copy the key to a writable path at 0600 (mounted secret files are
+		// read-only and ssh rejects group/other-readable or ill-owned keys).
+		authPrelude = `  install -m 600 "$NIO_GIT_CREDENTIALS_PATH/ssh-privatekey" /workspace/.nio-ssh-key
+  if [ -s "$NIO_GIT_CREDENTIALS_PATH/known_hosts" ]; then
+    GIT_SSH_COMMAND="ssh -i /workspace/.nio-ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$NIO_GIT_CREDENTIALS_PATH/known_hosts"
+  else
+    GIT_SSH_COMMAND="ssh -i /workspace/.nio-ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  fi
+  export GIT_SSH_COMMAND
+`
+	case hasCreds:
+		// HTTPS: a GIT_ASKPASS helper reads username/password (or a token) from the
+		// mounted secret at request time. Quoted heredoc → the helper body is written
+		// verbatim (expanded when git invokes it, not now).
+		authPrelude = `  cat > /workspace/.nio-askpass <<"NIOASKPASS"
+#!/bin/sh
+case "$1" in
+Username*) head -n1 "$NIO_GIT_CREDENTIALS_PATH/username" 2>/dev/null || printf git ;;
+Password*) head -n1 "$NIO_GIT_CREDENTIALS_PATH/password" 2>/dev/null || head -n1 "$NIO_GIT_CREDENTIALS_PATH/token" 2>/dev/null ;;
+esac
+NIOASKPASS
+  chmod +x /workspace/.nio-askpass
+  export GIT_ASKPASS=/workspace/.nio-askpass GIT_TERMINAL_PROMPT=0
+`
+	}
+
 	return `set -eu
-nix shell nixpkgs#gitMinimal --command sh -c '
-  git init --quiet /workspace && cd /workspace
+nix shell ` + pkgs + ` --command sh -c '
+` + authPrelude + `  git init --quiet /workspace && cd /workspace
   git remote add origin "$NIO_GIT_REPO"
   git fetch --depth 1 origin "$NIO_REVISION"
   git checkout --detach FETCH_HEAD'
@@ -293,6 +339,29 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		fetchEnv = append(fetchEnv, corev1.EnvVar{Name: "NIO_GIT_REPO", Value: nix.Source.GitRepo})
 	}
 
+	// Private-repo credentials: mount the Secret into fetch-source and let the
+	// clone authenticate. Credentials apply only to the direct-git clone (Flux
+	// pulls a pre-authenticated artifact URL from the source-controller).
+	fetchMounts := nixAndWorkspace
+	credsSecretName := ""
+	if !flux && nix.Source.CredentialsRef != nil {
+		credsSecretName = nix.Source.CredentialsRef.Name
+	}
+	hasCreds := credsSecretName != ""
+	sshRepo := hasCreds && gitauth.IsSSHRepo(nix.Source.GitRepo)
+	if hasCreds {
+		mode := int32(0o400)
+		tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, corev1.Volume{
+			Name: gitCredsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: credsSecretName, DefaultMode: &mode},
+			},
+		})
+		fetchMounts = append(append([]corev1.VolumeMount{}, nixAndWorkspace...),
+			corev1.VolumeMount{Name: gitCredsVolumeName, MountPath: gitCredsMountPath, ReadOnly: true})
+		fetchEnv = append(fetchEnv, corev1.EnvVar{Name: "NIO_GIT_CREDENTIALS_PATH", Value: gitCredsMountPath})
+	}
+
 	inits := []corev1.Container{
 		{
 			Name:         initBootstrap,
@@ -303,9 +372,9 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		{
 			Name:         initFetchSource,
 			Image:        image,
-			Command:      []string{"sh", "-c", fetchSourceScript(flux)},
+			Command:      []string{"sh", "-c", fetchSourceScript(flux, hasCreds, sshRepo)},
 			Env:          fetchEnv,
-			VolumeMounts: nixAndWorkspace,
+			VolumeMounts: fetchMounts,
 		},
 		{
 			Name:         initInstantiate,

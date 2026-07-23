@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -109,11 +110,11 @@ func TestRunAndBuildCommand(t *testing.T) {
 }
 
 func TestFetchSourceScript(t *testing.T) {
-	direct := fetchSourceScript(false)
+	direct := fetchSourceScript(false, false, false)
 	if !strings.Contains(direct, "git fetch --depth 1 origin") || !strings.Contains(direct, "$NIO_GIT_REPO") {
 		t.Errorf("direct script missing git fetch: %q", direct)
 	}
-	flux := fetchSourceScript(true)
+	flux := fetchSourceScript(true, false, false)
 	if !strings.Contains(flux, "$NIO_ARTIFACT_URL") || !strings.Contains(flux, "tar --extract") {
 		t.Errorf("flux script missing artifact download: %q", flux)
 	}
@@ -339,4 +340,142 @@ func containerByName(cs []corev1.Container, name string) *corev1.Container {
 		}
 	}
 	return nil
+}
+
+func volumePresent(vols []corev1.Volume, name string) bool {
+	for _, v := range vols {
+		if v.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func mountPresent(mounts []corev1.VolumeMount, path string) bool {
+	for _, m := range mounts {
+		if m.MountPath == path {
+			return true
+		}
+	}
+	return false
+}
+
+// fetchSourceOf returns the rendered fetch-source init-container.
+func fetchSourceOf(t *testing.T, out corev1.PodTemplateSpec) corev1.Container {
+	t.Helper()
+	for _, c := range out.Spec.InitContainers {
+		if c.Name == initFetchSource {
+			return c
+		}
+	}
+	t.Fatal("fetch-source init-container not found")
+	return corev1.Container{}
+}
+
+func TestRenderFetchSourceHTTPSCredentials(t *testing.T) {
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{
+				GitRepo:        "https://github.com/acme/private",
+				Ref:            "main",
+				CredentialsRef: &niov1alpha1.SecretReference{Name: "gc"},
+			},
+			Run:   ".#x",
+			Image: "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+
+	if !volumePresent(out.Spec.Volumes, gitCredsVolumeName) {
+		t.Fatal("git-creds volume missing")
+	}
+	fetch := fetchSourceOf(t, out)
+	if !mountPresent(fetch.VolumeMounts, gitCredsMountPath) {
+		t.Error("fetch-source does not mount git credentials")
+	}
+	if envMap(fetch.Env)["NIO_GIT_CREDENTIALS_PATH"] != gitCredsMountPath {
+		t.Error("NIO_GIT_CREDENTIALS_PATH not set on fetch-source")
+	}
+	script := fetch.Command[len(fetch.Command)-1]
+	if !strings.Contains(script, "GIT_ASKPASS") {
+		t.Error("HTTPS credentials should wire GIT_ASKPASS")
+	}
+	if strings.Contains(script, "GIT_SSH_COMMAND") {
+		t.Error("HTTPS repo must not use GIT_SSH_COMMAND")
+	}
+	assertShellParses(t, script)
+}
+
+func TestRenderFetchSourceSSHCredentials(t *testing.T) {
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{
+				GitRepo:        "git@github.com:acme/private.git",
+				Ref:            "main",
+				CredentialsRef: &niov1alpha1.SecretReference{Name: "gc"},
+			},
+			Run:   ".#x",
+			Image: "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+	fetch := fetchSourceOf(t, out)
+	if !mountPresent(fetch.VolumeMounts, gitCredsMountPath) {
+		t.Error("fetch-source does not mount git credentials")
+	}
+	script := fetch.Command[len(fetch.Command)-1]
+	if !strings.Contains(script, "GIT_SSH_COMMAND") {
+		t.Error("SSH credentials should wire GIT_SSH_COMMAND")
+	}
+	if !strings.Contains(script, "nixpkgs#openssh") {
+		t.Error("SSH clone needs openssh on PATH in the fetch-source nix shell")
+	}
+	if strings.Contains(script, "GIT_ASKPASS") {
+		t.Error("SSH repo must not use GIT_ASKPASS")
+	}
+	assertShellParses(t, script)
+}
+
+func TestRenderFetchSourceNoCredentials(t *testing.T) {
+	// Back-compat: public repo (no CredentialsRef) → no creds volume, no auth
+	// wiring in the fetch-source script.
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/pub", Ref: "main"},
+			Run:    ".#x",
+			Image:  "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+	if volumePresent(out.Spec.Volumes, gitCredsVolumeName) {
+		t.Error("public repo should not mount a git-creds volume")
+	}
+	script := fetchSourceOf(t, out).Command[2]
+	if strings.Contains(script, "GIT_ASKPASS") || strings.Contains(script, "GIT_SSH_COMMAND") {
+		t.Error("public repo fetch-source must not wire auth")
+	}
+	assertShellParses(t, script)
+}
+
+// assertShellParses runs `sh -n` over a generated script to catch quoting /
+// syntax errors in the outer shell layer without executing it.
+func assertShellParses(t *testing.T, script string) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("generated script has a shell syntax error: %v\n%s\n--- script ---\n%s", err, out, script)
+	}
 }
