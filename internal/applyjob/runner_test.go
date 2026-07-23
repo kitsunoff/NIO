@@ -21,8 +21,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 // MockCommandExecutor implements CommandExecutor for testing.
@@ -70,7 +73,7 @@ func TestGitClone_Success(t *testing.T) {
 		GitRef:  "main",
 	}
 
-	repoPath, err := runner.CloneRepository(context.Background(), config)
+	repoPath, err := runner.CloneRepository(context.Background(), config, nil)
 	if err != nil {
 		t.Fatalf("CloneRepository failed: %v", err)
 	}
@@ -93,6 +96,64 @@ func TestGitClone_Success(t *testing.T) {
 	}
 }
 
+func TestCloneRepository_WiresHTTPSCredentials(t *testing.T) {
+	tempDir := t.TempDir()
+	var sawAskpass, sawUser, sawPass string
+	executor := &MockCommandExecutor{
+		RunFunc: func(_ context.Context, _ string, args ...string) (string, error) {
+			sawAskpass = os.Getenv("GIT_ASKPASS")
+			sawUser = os.Getenv("GIT_ASKPASS_USER")
+			sawPass = os.Getenv("GIT_ASKPASS_PASS")
+			return "", os.MkdirAll(args[len(args)-1], 0o755)
+		},
+	}
+	runner := &Runner{Executor: executor, WorkDir: tempDir}
+	config := &JobConfig{GitRepo: "https://github.com/example/private.git", GitRef: "main"}
+	const wantUser = "git"
+	creds := &gitauth.Creds{Username: wantUser, Password: "ghp_tok"}
+
+	if _, err := runner.CloneRepository(context.Background(), config, creds); err != nil {
+		t.Fatalf("CloneRepository: %v", err)
+	}
+	if sawAskpass == "" {
+		t.Error("GIT_ASKPASS was not set during the clone")
+	}
+	if sawUser != wantUser || sawPass != "ghp_tok" {
+		t.Errorf("askpass creds during clone = %q/%q, want %s/ghp_tok", sawUser, sawPass, wantUser)
+	}
+	// The credential env must not leak past the clone.
+	if _, ok := os.LookupEnv("GIT_ASKPASS"); ok {
+		t.Error("GIT_ASKPASS leaked into the process env after the clone")
+	}
+}
+
+func TestCloneRepository_WiresSSHCredentials(t *testing.T) {
+	tempDir := t.TempDir()
+	var sawSSHCmd string
+	executor := &MockCommandExecutor{
+		RunFunc: func(_ context.Context, _ string, args ...string) (string, error) {
+			sawSSHCmd = os.Getenv("GIT_SSH_COMMAND")
+			return "", os.MkdirAll(args[len(args)-1], 0o755)
+		},
+	}
+	runner := &Runner{Executor: executor, WorkDir: tempDir}
+	config := &JobConfig{GitRepo: "git@github.com:example/private.git", GitRef: "main"}
+	creds := &gitauth.Creds{SSHKey: []byte("PRIVKEY"), KnownHosts: []byte("gh ssh-ed25519 AAA")}
+
+	if _, err := runner.CloneRepository(context.Background(), config, creds); err != nil {
+		t.Fatalf("CloneRepository: %v", err)
+	}
+	if !strings.Contains(sawSSHCmd, "ssh -i ") {
+		t.Errorf("GIT_SSH_COMMAND = %q, want an ssh -i invocation", sawSSHCmd)
+	}
+	if !strings.Contains(sawSSHCmd, "StrictHostKeyChecking=yes") {
+		t.Errorf("GIT_SSH_COMMAND = %q, want strict host checking with known_hosts", sawSSHCmd)
+	}
+	if _, ok := os.LookupEnv("GIT_SSH_COMMAND"); ok {
+		t.Error("GIT_SSH_COMMAND leaked into the process env after the clone")
+	}
+}
+
 func TestGitClone_RepoNotFound(t *testing.T) {
 	tempDir := t.TempDir()
 	executor := &MockCommandExecutor{
@@ -111,7 +172,7 @@ func TestGitClone_RepoNotFound(t *testing.T) {
 		GitRef:  "main",
 	}
 
-	_, err := runner.CloneRepository(context.Background(), config)
+	_, err := runner.CloneRepository(context.Background(), config, nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent repo")
 	}
@@ -140,7 +201,7 @@ func TestGitClone_AuthFailed(t *testing.T) {
 		GitRef:  "main",
 	}
 
-	_, err := runner.CloneRepository(context.Background(), config)
+	_, err := runner.CloneRepository(context.Background(), config, nil)
 	if err == nil {
 		t.Fatal("expected error for auth failure")
 	}

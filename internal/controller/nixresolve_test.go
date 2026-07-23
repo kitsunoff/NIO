@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 func TestParseLsRemote(t *testing.T) {
@@ -75,7 +76,7 @@ type fakeGit struct {
 	err error
 }
 
-func (f fakeGit) LsRemote(_ context.Context, _, _ string) (string, error) {
+func (f fakeGit) LsRemote(_ context.Context, _, _ string, _ *gitauth.Creds) (string, error) {
 	return f.sha, f.err
 }
 
