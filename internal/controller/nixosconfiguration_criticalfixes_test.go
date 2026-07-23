@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -55,6 +56,91 @@ func TestResolveConfigRevision(t *testing.T) {
 	r.Git = fakeGit{err: errors.New("auth required")}
 	if _, err := r.resolveConfigRevision(context.Background(), config); err == nil {
 		t.Error("resolveConfigRevision returned nil error, want the resolver error propagated")
+	}
+}
+
+// credCapturingGit records the credentials handed to the resolver.
+type credCapturingGit struct {
+	sha string
+	got *GitCreds
+}
+
+func (g *credCapturingGit) LsRemote(_ context.Context, _, _ string, creds *GitCreds) (string, error) {
+	g.got = creds
+	return g.sha, nil
+}
+
+// TestResolveConfigRevision_PassesCredentialsFromSecret guards that a private
+// repo's credentialsRef is read from the Secret and forwarded to the resolver
+// so controller-side resolution can authenticate (variant B).
+func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := niov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1 scheme: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		data   map[string][]byte
+		verify func(t *testing.T, c *GitCreds)
+	}{
+		{
+			name: "https token",
+			data: map[string][]byte{"username": []byte("git"), "password": []byte("ghp_token")},
+			verify: func(t *testing.T, c *GitCreds) {
+				if c.Username != "git" || c.Password != "ghp_token" {
+					t.Errorf("creds = %+v, want username=git password=ghp_token", c)
+				}
+			},
+		},
+		{
+			name: "token only",
+			data: map[string][]byte{"token": []byte("ghp_only")},
+			verify: func(t *testing.T, c *GitCreds) {
+				if c.Password != "ghp_only" {
+					t.Errorf("token not mapped to password: %+v", c)
+				}
+			},
+		},
+		{
+			name: "ssh key",
+			data: map[string][]byte{"ssh-privatekey": []byte("PRIVKEY"), "known_hosts": []byte("host ssh-ed25519 AAA")},
+			verify: func(t *testing.T, c *GitCreds) {
+				if string(c.SSHKey) != "PRIVKEY" || string(c.KnownHosts) != "host ssh-ed25519 AAA" {
+					t.Errorf("ssh creds = %+v", c)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "git-creds", Namespace: "default"},
+				Data:       tt.data,
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+			cg := &credCapturingGit{sha: testResolvedSHA}
+			r := &NixosConfigurationReconciler{Client: c, Scheme: scheme, Git: cg}
+
+			config := revTestConfig()
+			config.Spec.CredentialsRef = &niov1alpha1.SecretReference{Name: "git-creds"}
+
+			got, err := r.resolveConfigRevision(context.Background(), config)
+			if err != nil {
+				t.Fatalf("resolveConfigRevision: %v", err)
+			}
+			if got != testResolvedSHA {
+				t.Errorf("resolved = %q, want %q", got, testResolvedSHA)
+			}
+			if cg.got == nil {
+				t.Fatal("resolver received nil credentials, want credentials from the secret")
+			}
+			tt.verify(t, cg.got)
+		})
 	}
 }
 

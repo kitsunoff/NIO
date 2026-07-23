@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -28,6 +30,16 @@ import (
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
 )
 
+// GitCreds carries optional authentication for git operations against a private
+// repository. Either SSH (SSHKey, optional KnownHosts) or HTTPS basic/token
+// (Username, Password) is used, selected from the repo URL scheme.
+type GitCreds struct {
+	Username   string
+	Password   string
+	SSHKey     []byte
+	KnownHosts []byte
+}
+
 // defaultGitRef is the ref resolved when a source specifies none.
 const defaultGitRef = "main"
 
@@ -35,24 +47,100 @@ const defaultGitRef = "main"
 // full clone. The default implementation shells out to `git ls-remote`; tests
 // substitute a fake.
 type GitResolver interface {
-	LsRemote(ctx context.Context, repo, ref string) (string, error)
+	LsRemote(ctx context.Context, repo, ref string, creds *GitCreds) (string, error)
 }
 
 // ExecGitResolver runs `git ls-remote` on the host (the operator image ships
 // git). It is the production GitResolver.
 type ExecGitResolver struct{}
 
-// LsRemote returns the commit SHA that repo's ref currently points to.
-func (ExecGitResolver) LsRemote(ctx context.Context, repo, ref string) (string, error) {
+// LsRemote returns the commit SHA that repo's ref currently points to. When
+// creds is non-nil, authentication is wired for the ls-remote invocation
+// (SSH key via GIT_SSH_COMMAND, or HTTPS basic/token via a non-interactive
+// GIT_ASKPASS helper so the secret never appears in argv).
+func (ExecGitResolver) LsRemote(ctx context.Context, repo, ref string, creds *GitCreds) (string, error) {
 	if repo == "" {
 		return "", fmt.Errorf("gitRepo is empty")
 	}
 	cmd := exec.CommandContext(ctx, "git", "ls-remote", repo, ref)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	if creds != nil {
+		cleanup, env, err := creds.gitEnv(repo)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+		cmd.Env = append(cmd.Env, env...)
+	}
+
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote %s %s: %w", repo, ref, err)
 	}
 	return parseLsRemote(string(out), ref)
+}
+
+// isSSHRepo reports whether repo is an SSH-style git URL.
+func isSSHRepo(repo string) bool {
+	if strings.HasPrefix(repo, "ssh://") || strings.HasPrefix(repo, "git@") {
+		return true
+	}
+	// scp-like syntax "host:path" with no http(s) scheme.
+	return strings.Contains(repo, "@") && !strings.HasPrefix(repo, "http")
+}
+
+// gitEnv materializes the credentials into temp files and returns the env vars
+// git needs to authenticate, plus a cleanup func. On error it cleans up itself
+// and returns a no-op cleanup.
+func (c *GitCreds) gitEnv(repo string) (func(), []string, error) {
+	dir, err := os.MkdirTemp("", "nio-gitcreds-")
+	if err != nil {
+		return func() {}, nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+
+	if isSSHRepo(repo) {
+		if len(c.SSHKey) == 0 {
+			cleanup()
+			return func() {}, nil, fmt.Errorf("ssh repo %q requires an 'ssh-privatekey' in the credentials secret", repo)
+		}
+		keyPath := filepath.Join(dir, "id")
+		if err := os.WriteFile(keyPath, c.SSHKey, 0o600); err != nil {
+			cleanup()
+			return func() {}, nil, fmt.Errorf("write ssh key: %w", err)
+		}
+		sshCmd := "ssh -i " + keyPath + " -o IdentitiesOnly=yes"
+		if len(c.KnownHosts) > 0 {
+			khPath := filepath.Join(dir, "known_hosts")
+			if err := os.WriteFile(khPath, c.KnownHosts, 0o600); err != nil {
+				cleanup()
+				return func() {}, nil, fmt.Errorf("write known_hosts: %w", err)
+			}
+			sshCmd += " -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + khPath
+		} else {
+			sshCmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+		}
+		return cleanup, []string{"GIT_SSH_COMMAND=" + sshCmd}, nil
+	}
+
+	// HTTPS: a tiny askpass script feeds username/password from env, keeping the
+	// token out of the process argument list.
+	askPath := filepath.Join(dir, "askpass.sh")
+	script := "#!/bin/sh\ncase \"$1\" in\n*Username*) printf '%s' \"$GIT_ASKPASS_USER\" ;;\n*) printf '%s' \"$GIT_ASKPASS_PASS\" ;;\nesac\n"
+	if err := os.WriteFile(askPath, []byte(script), 0o700); err != nil {
+		cleanup()
+		return func() {}, nil, fmt.Errorf("write askpass helper: %w", err)
+	}
+	user := c.Username
+	if user == "" {
+		user = "git"
+	}
+	return cleanup, []string{
+		"GIT_ASKPASS=" + askPath,
+		"GIT_ASKPASS_USER=" + user,
+		"GIT_ASKPASS_PASS=" + c.Password,
+	}, nil
 }
 
 // parseLsRemote extracts the SHA for ref from `git ls-remote` output. It prefers
@@ -115,7 +203,10 @@ func resolveRevision(ctx context.Context, c client.Client, git GitResolver, name
 	if ref == "" {
 		ref = defaultGitRef
 	}
-	sha, err := git.LsRemote(ctx, src.GitRepo, ref)
+	// NOTE: the workload family does not yet feed CredentialsRef to the
+	// resolver; private-repo revision resolution for workloads is tracked
+	// separately. NixosConfiguration wires credentials in its own resolver call.
+	sha, err := git.LsRemote(ctx, src.GitRepo, ref, nil)
 	if err != nil {
 		return resolvedSource{}, err
 	}

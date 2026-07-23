@@ -111,7 +111,42 @@ func (r *NixosConfigurationReconciler) resolveConfigRevision(ctx context.Context
 	if ref == "" {
 		ref = defaultGitRef
 	}
-	return r.git().LsRemote(ctx, config.Spec.GitRepo, ref)
+
+	// Private repos: use the same credentials the apply Job is given so
+	// controller-side resolution and the Job's clone agree on auth.
+	var creds *GitCreds
+	if config.Spec.CredentialsRef != nil {
+		c, err := r.readGitCredentials(ctx, config.Namespace, config.Spec.CredentialsRef.Name)
+		if err != nil {
+			return "", err
+		}
+		creds = c
+	}
+
+	return r.git().LsRemote(ctx, config.Spec.GitRepo, ref, creds)
+}
+
+// readGitCredentials loads git authentication material from a Secret in the
+// config's namespace, following the same key conventions the rest of the
+// operator uses (ssh-privatekey, known_hosts, username, password/token).
+func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, namespace, name string) (*GitCreds, error) {
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
+		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
+	}
+	creds := &GitCreds{
+		SSHKey:     secret.Data["ssh-privatekey"],
+		KnownHosts: secret.Data["known_hosts"],
+		Username:   string(secret.Data["username"]),
+		Password:   string(secret.Data["password"]),
+	}
+	// A token-only secret populates the password (username defaults to "git").
+	if creds.Password == "" {
+		if token, ok := secret.Data["token"]; ok {
+			creds.Password = string(token)
+		}
+	}
+	return creds, nil
 }
 
 // resolveAdditionalFiles turns the spec's AdditionalFiles into concrete

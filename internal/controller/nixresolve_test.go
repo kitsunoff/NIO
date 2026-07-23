@@ -75,7 +75,7 @@ type fakeGit struct {
 	err error
 }
 
-func (f fakeGit) LsRemote(_ context.Context, _, _ string) (string, error) {
+func (f fakeGit) LsRemote(_ context.Context, _, _ string, _ *GitCreds) (string, error) {
 	return f.sha, f.err
 }
 
