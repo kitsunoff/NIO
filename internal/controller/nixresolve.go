@@ -28,6 +28,9 @@ import (
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
 )
 
+// defaultGitRef is the ref resolved when a source specifies none.
+const defaultGitRef = "main"
+
 // GitResolver resolves a mutable git ref to an immutable commit SHA without a
 // full clone. The default implementation shells out to `git ls-remote`; tests
 // substitute a fake.
@@ -110,7 +113,7 @@ func resolveRevision(ctx context.Context, c client.Client, git GitResolver, name
 	}
 	ref := src.Ref
 	if ref == "" {
-		ref = "main"
+		ref = defaultGitRef
 	}
 	sha, err := git.LsRemote(ctx, src.GitRepo, ref)
 	if err != nil {

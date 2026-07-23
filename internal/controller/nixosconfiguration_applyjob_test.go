@@ -71,7 +71,7 @@ func TestCreateApplyJob_DispatchesToApplySubcommand(t *testing.T) {
 		},
 	}
 
-	job, err := r.createApplyJob(context.Background(), config, machine)
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
 	if err != nil {
 		t.Fatalf("createApplyJob: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestCreateApplyJob_PassesConfigViaEnv(t *testing.T) {
 		},
 	}
 
-	job, err := r.createApplyJob(context.Background(), config, machine)
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
 	if err != nil {
 		t.Fatalf("createApplyJob: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestCreateApplyJob_FullInstallOperation(t *testing.T) {
 		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
 	}
 
-	job, err := r.createApplyJob(context.Background(), config, machine)
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
 	if err != nil {
 		t.Fatalf("createApplyJob: %v", err)
 	}
