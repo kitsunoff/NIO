@@ -16,7 +16,39 @@ limitations under the License.
 
 package apply
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestLoadGitCreds reads git credentials from a mounted Secret directory and
+// maps the standard keys; an empty path yields no credentials.
+func TestLoadGitCreds(t *testing.T) {
+	if creds, err := loadGitCreds(""); err != nil || creds != nil {
+		t.Fatalf("loadGitCreds(\"\") = (%v, %v), want (nil, nil)", creds, err)
+	}
+
+	dir := t.TempDir()
+	writeKey := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeKey("username", "git\n")
+	writeKey("token", "ghp_secret\n")
+
+	creds, err := loadGitCreds(dir)
+	if err != nil {
+		t.Fatalf("loadGitCreds: %v", err)
+	}
+	if creds == nil {
+		t.Fatal("loadGitCreds returned nil, want credentials")
+	}
+	if creds.Username != "git" || creds.Password != "ghp_secret" {
+		t.Errorf("creds = %+v, want username=git password=ghp_secret (token mapped, trimmed)", creds)
+	}
+}
 
 // setRequiredApplyEnv sets the minimal env the controller always provides.
 func setRequiredApplyEnv(t *testing.T) {

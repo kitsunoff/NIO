@@ -33,6 +33,7 @@ import (
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
 	"github.com/kitsunoff/nixos-operator/internal/applyjob"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 // testResolvedSHA is a stand-in immutable commit SHA used across these tests.
@@ -62,10 +63,10 @@ func TestResolveConfigRevision(t *testing.T) {
 // credCapturingGit records the credentials handed to the resolver.
 type credCapturingGit struct {
 	sha string
-	got *GitCreds
+	got *gitauth.Creds
 }
 
-func (g *credCapturingGit) LsRemote(_ context.Context, _, _ string, creds *GitCreds) (string, error) {
+func (g *credCapturingGit) LsRemote(_ context.Context, _, _ string, creds *gitauth.Creds) (string, error) {
 	g.got = creds
 	return g.sha, nil
 }
@@ -85,12 +86,12 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 	tests := []struct {
 		name   string
 		data   map[string][]byte
-		verify func(t *testing.T, c *GitCreds)
+		verify func(t *testing.T, c *gitauth.Creds)
 	}{
 		{
 			name: "https token",
 			data: map[string][]byte{"username": []byte("git"), "password": []byte("ghp_token")},
-			verify: func(t *testing.T, c *GitCreds) {
+			verify: func(t *testing.T, c *gitauth.Creds) {
 				if c.Username != "git" || c.Password != "ghp_token" {
 					t.Errorf("creds = %+v, want username=git password=ghp_token", c)
 				}
@@ -99,7 +100,7 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 		{
 			name: "token only",
 			data: map[string][]byte{"token": []byte("ghp_only")},
-			verify: func(t *testing.T, c *GitCreds) {
+			verify: func(t *testing.T, c *gitauth.Creds) {
 				if c.Password != "ghp_only" {
 					t.Errorf("token not mapped to password: %+v", c)
 				}
@@ -108,7 +109,7 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 		{
 			name: "ssh key",
 			data: map[string][]byte{"ssh-privatekey": []byte("PRIVKEY"), "known_hosts": []byte("host ssh-ed25519 AAA")},
-			verify: func(t *testing.T, c *GitCreds) {
+			verify: func(t *testing.T, c *gitauth.Creds) {
 				if string(c.SSHKey) != "PRIVKEY" || string(c.KnownHosts) != "host ssh-ed25519 AAA" {
 					t.Errorf("ssh creds = %+v", c)
 				}
@@ -224,6 +225,27 @@ func TestNeedsApply_DetectsNewCommitOnSameRef(t *testing.T) {
 	// Same SHA -> nothing to do.
 	if apply, reason := r.needsApply(context.Background(), config, machine, "oldsha"); apply {
 		t.Errorf("needsApply = true (reason=%q), want false when SHA is unchanged", reason)
+	}
+}
+
+// TestCreateApplyJob_MountsGitCredentialsPath guards that when a credentialsRef
+// is set, the apply Job is told where the credentials Secret is mounted so its
+// clone can authenticate to a private repo.
+func TestCreateApplyJob_MountsGitCredentialsPath(t *testing.T) {
+	r := newApplyJobReconciler(t)
+	config := revTestConfig()
+	config.Spec.CredentialsRef = &niov1alpha1.SecretReference{Name: "git-creds"}
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+	}
+
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
+	if err != nil {
+		t.Fatalf("createApplyJob: %v", err)
+	}
+	if got := envToMap(job.Spec.Template.Spec.Containers[0].Env)["NIO_GIT_CREDENTIALS_PATH"]; got != "/secrets/git" {
+		t.Errorf("NIO_GIT_CREDENTIALS_PATH = %q, want /secrets/git", got)
 	}
 }
 

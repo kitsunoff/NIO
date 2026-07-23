@@ -41,6 +41,7 @@ import (
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
 	"github.com/kitsunoff/nixos-operator/internal/applyjob"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 	"github.com/kitsunoff/nixos-operator/internal/metrics"
 )
 
@@ -114,7 +115,7 @@ func (r *NixosConfigurationReconciler) resolveConfigRevision(ctx context.Context
 
 	// Private repos: use the same credentials the apply Job is given so
 	// controller-side resolution and the Job's clone agree on auth.
-	var creds *GitCreds
+	var creds *gitauth.Creds
 	if config.Spec.CredentialsRef != nil {
 		c, err := r.readGitCredentials(ctx, config.Namespace, config.Spec.CredentialsRef.Name)
 		if err != nil {
@@ -129,12 +130,12 @@ func (r *NixosConfigurationReconciler) resolveConfigRevision(ctx context.Context
 // readGitCredentials loads git authentication material from a Secret in the
 // config's namespace, following the same key conventions the rest of the
 // operator uses (ssh-privatekey, known_hosts, username, password/token).
-func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, namespace, name string) (*GitCreds, error) {
+func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, namespace, name string) (*gitauth.Creds, error) {
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
 		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
 	}
-	creds := &GitCreds{
+	creds := &gitauth.Creds{
 		SSHKey:     secret.Data["ssh-privatekey"],
 		KnownHosts: secret.Data["known_hosts"],
 		Username:   string(secret.Data["username"]),
@@ -832,6 +833,7 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 			MountPath: "/secrets/git",
 			ReadOnly:  true,
 		})
+		env = append(env, corev1.EnvVar{Name: "NIO_GIT_CREDENTIALS_PATH", Value: "/secrets/git"})
 	}
 
 	// Add workspace volume for git clone

@@ -23,10 +23,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/kitsunoff/nixos-operator/internal/applyjob"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 // Config holds the apply command configuration.
@@ -51,6 +54,9 @@ type Config struct {
 	SSHUser string
 	// SSHKeyPath is the path to the mounted SSH private key file.
 	SSHKeyPath string
+	// GitCredentialsPath is the directory where the git credentials Secret is
+	// mounted (keys: ssh-privatekey, known_hosts, username, password, token).
+	GitCredentialsPath string
 	// AdditionalFilesJSON is JSON-encoded additional files.
 	AdditionalFilesJSON string
 	// Timeout is the operation timeout.
@@ -72,6 +78,7 @@ func LoadConfigFromEnv() (*Config, error) {
 		TargetHost:          os.Getenv("NIO_TARGET_HOST"),
 		SSHUser:             os.Getenv("NIO_SSH_USER"),
 		SSHKeyPath:          os.Getenv("NIO_SSH_KEY_PATH"),
+		GitCredentialsPath:  os.Getenv("NIO_GIT_CREDENTIALS_PATH"),
 		AdditionalFilesJSON: os.Getenv("NIO_ADDITIONAL_FILES"),
 		WorkDir:             os.Getenv("NIO_WORK_DIR"),
 	}
@@ -146,6 +153,12 @@ func Run() error {
 		}
 	}
 
+	// Read git credentials mounted from the credentials Secret, if any.
+	gitCreds, err := loadGitCreds(config.GitCredentialsPath)
+	if err != nil {
+		return fmt.Errorf("load git credentials: %w", err)
+	}
+
 	// Create working directory
 	if err := os.MkdirAll(config.WorkDir, 0755); err != nil {
 		return fmt.Errorf("create work dir: %w", err)
@@ -178,10 +191,64 @@ func Run() error {
 	}
 
 	fmt.Println("Starting apply operation...")
-	if err := runner.Run(ctx, jobConfig, sshKey, additionalFiles); err != nil {
+	if err := runner.Run(ctx, jobConfig, sshKey, additionalFiles, gitCreds); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 
 	fmt.Println("Apply completed successfully!")
 	return nil
+}
+
+// loadGitCreds reads git authentication material from the mounted credentials
+// Secret directory. It returns nil when no path is configured or the directory
+// holds no recognized keys, so unauthenticated (public) repos are unaffected.
+func loadGitCreds(dir string) (*gitauth.Creds, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	read := func(key string) ([]byte, error) {
+		data, err := os.ReadFile(filepath.Join(dir, key))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return data, nil
+	}
+
+	sshKey, err := read("ssh-privatekey")
+	if err != nil {
+		return nil, err
+	}
+	knownHosts, err := read("known_hosts")
+	if err != nil {
+		return nil, err
+	}
+	username, err := read("username")
+	if err != nil {
+		return nil, err
+	}
+	password, err := read("password")
+	if err != nil {
+		return nil, err
+	}
+	if len(password) == 0 {
+		if token, terr := read("token"); terr != nil {
+			return nil, terr
+		} else if len(token) > 0 {
+			password = token
+		}
+	}
+
+	creds := &gitauth.Creds{
+		Username:   strings.TrimSpace(string(username)),
+		Password:   strings.TrimSpace(string(password)),
+		SSHKey:     sshKey,
+		KnownHosts: knownHosts,
+	}
+	if creds.IsZero() {
+		return nil, nil
+	}
+	return creds, nil
 }
