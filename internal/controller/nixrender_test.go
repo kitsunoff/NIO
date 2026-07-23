@@ -466,6 +466,33 @@ func TestRenderFetchSourceNoCredentials(t *testing.T) {
 	assertShellParses(t, script)
 }
 
+func TestValidateFilePath(t *testing.T) {
+	ok := []string{
+		"hardware-configuration.nix",
+		"hosts/web/config.nix",
+		"a/b/c.nix",
+		"./local.nix",
+	}
+	for _, p := range ok {
+		if err := validateFilePath(p); err != nil {
+			t.Errorf("validateFilePath(%q) unexpected error: %v", p, err)
+		}
+	}
+	bad := []string{
+		"",               // empty
+		"/etc/passwd",    // absolute
+		"..",             // parent
+		"../escape.nix",  // traversal
+		"a/../../etc/x",  // traversal after clean
+		"a/../b/../../c", // deep traversal
+	}
+	for _, p := range bad {
+		if err := validateFilePath(p); err == nil {
+			t.Errorf("validateFilePath(%q) = nil, want error", p)
+		}
+	}
+}
+
 // assertShellParses runs `sh -n` over a generated script to catch quoting /
 // syntax errors in the outer shell layer without executing it.
 func assertShellParses(t *testing.T, script string) {

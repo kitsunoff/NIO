@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -166,6 +167,24 @@ func buildCommand(run string, prebuild, nixFlags []string) []string {
 // fetchSourceScript returns the shell for the fetch-source init. Direct-git mode
 // shallow-fetches the resolved commit; Flux mode downloads the artifact tarball
 // and synthesizes a git tree so `.` is a hermetic flake input (design §4.5).
+// validateFilePath rejects an AdditionalFile destination that is absolute or
+// escapes the source checkout root. Injected paths are attacker-influenced only
+// by the CR author (who already controls the flake), but traversal into the
+// pod filesystem is defense-in-depth worth enforcing.
+func validateFilePath(p string) error {
+	if p == "" {
+		return fmt.Errorf("additionalFile path is empty")
+	}
+	if path.IsAbs(p) {
+		return fmt.Errorf("additionalFile path %q must be relative", p)
+	}
+	clean := path.Clean(p)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("additionalFile path %q escapes the source tree", p)
+	}
+	return nil
+}
+
 // fetchSourceScript builds the fetch-source init-container script. In Flux mode
 // it downloads the pre-authenticated artifact tarball. In direct-git mode it
 // clones the exact resolved revision; when hasCreds is set it first wires
