@@ -107,6 +107,17 @@ func TestResolveConfigRevision_PassesCredentialsFromSecret(t *testing.T) {
 			},
 		},
 		{
+			name: "trailing newline trimmed",
+			data: map[string][]byte{"username": []byte("git\n"), "password": []byte("ghp_token\n")},
+			verify: func(t *testing.T, c *gitauth.Creds) {
+				// Must match cmd/apply.loadGitCreds trimming so controller-side
+				// ls-remote and the Job clone authenticate identically.
+				if c.Username != "git" || c.Password != "ghp_token" {
+					t.Errorf("creds not trimmed: %+v", c)
+				}
+			},
+		},
+		{
 			name: "ssh key",
 			data: map[string][]byte{"ssh-privatekey": []byte("PRIVKEY"), "known_hosts": []byte("host ssh-ed25519 AAA")},
 			verify: func(t *testing.T, c *gitauth.Creds) {
@@ -225,6 +236,31 @@ func TestNeedsApply_DetectsNewCommitOnSameRef(t *testing.T) {
 	// Same SHA -> nothing to do.
 	if apply, reason := r.needsApply(context.Background(), config, machine, "oldsha"); apply {
 		t.Errorf("needsApply = true (reason=%q), want false when SHA is unchanged", reason)
+	}
+}
+
+// TestCreateApplyJob_WritableWorkAndTmpDir guards that the apply Job is pointed
+// at the writable /workspace emptyDir for both its work directory and Go's temp
+// dir, since the container runs with a read-only root filesystem and would fail
+// writing the clone / credential material to /tmp otherwise.
+func TestCreateApplyJob_WritableWorkAndTmpDir(t *testing.T) {
+	r := newApplyJobReconciler(t)
+	config := revTestConfig()
+	machine := &niov1alpha1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.5", SSHUser: "root"},
+	}
+
+	job, err := r.createApplyJob(context.Background(), config, machine, "")
+	if err != nil {
+		t.Fatalf("createApplyJob: %v", err)
+	}
+	env := envToMap(job.Spec.Template.Spec.Containers[0].Env)
+	if env["NIO_WORK_DIR"] != "/workspace" {
+		t.Errorf("NIO_WORK_DIR = %q, want /workspace", env["NIO_WORK_DIR"])
+	}
+	if env["TMPDIR"] != "/workspace" {
+		t.Errorf("TMPDIR = %q, want /workspace", env["TMPDIR"])
 	}
 }
 

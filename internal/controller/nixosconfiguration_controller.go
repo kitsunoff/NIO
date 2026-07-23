@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -135,16 +136,20 @@ func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, n
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
 		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
 	}
+	// Trim username/password/token: Secret values sourced from files commonly
+	// carry a trailing newline, and this must match the apply Job's reader
+	// (cmd/apply.loadGitCreds) so controller-side ls-remote and the Job clone
+	// authenticate identically. SSH key and known_hosts are left byte-exact.
 	creds := &gitauth.Creds{
 		SSHKey:     secret.Data["ssh-privatekey"],
 		KnownHosts: secret.Data["known_hosts"],
-		Username:   string(secret.Data["username"]),
-		Password:   string(secret.Data["password"]),
+		Username:   strings.TrimSpace(string(secret.Data["username"])),
+		Password:   strings.TrimSpace(string(secret.Data["password"])),
 	}
 	// A token-only secret populates the password (username defaults to "git").
 	if creds.Password == "" {
 		if token, ok := secret.Data["token"]; ok {
-			creds.Password = string(token)
+			creds.Password = strings.TrimSpace(string(token))
 		}
 	}
 	return creds, nil
@@ -311,21 +316,21 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 	}
 
 	// Resolve the mutable ref to an immutable commit SHA so a new commit on the
-	// same branch is detected (the bare ref name never changes). The controller
-	// has no git credentials mounted (only the credentialed apply Job does), so
-	// resolution can fail for private repos. That must NOT block apply: on
-	// failure we degrade to the pre-SHA behavior (empty resolvedRev disables the
-	// revision check in needsApply) and let the credentialed Job proceed.
+	// same branch is detected (the bare ref name never changes). Resolution uses
+	// the config's credentialsRef for private repos, but can still fail (bad
+	// creds, transient network). That must NOT block apply: on failure we degrade
+	// to the pre-SHA behavior (empty resolvedRev disables the revision check in
+	// needsApply) and let the credentialed Job proceed.
+	effectiveRef := config.Spec.Ref
+	if effectiveRef == "" {
+		effectiveRef = defaultGitRef
+	}
 	resolvedRev, err := r.resolveConfigRevision(ctx, config)
 	if err != nil {
-		effectiveRef := config.Spec.Ref
-		if effectiveRef == "" {
-			effectiveRef = defaultGitRef
-		}
 		log.Info("git ref resolution failed; continuing with degraded drift detection",
 			"ref", effectiveRef, "error", err.Error())
 		r.Recorder.Event(config, corev1.EventTypeWarning, "GitResolveDegraded",
-			fmt.Sprintf("could not resolve ref %q to a SHA (private repo without controller credentials?); "+
+			fmt.Sprintf("could not resolve ref %q to a SHA (bad credentials or transient network?); "+
 				"drift detection falls back to spec-hash comparison", effectiveRef))
 		resolvedRev = ""
 	} else {
@@ -334,7 +339,7 @@ func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *ni
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: config.Generation,
 			Reason:             niov1alpha1.ReasonGitCloneSucceeded,
-			Message:            fmt.Sprintf("resolved ref %q to %s", config.Spec.Ref, resolvedRev),
+			Message:            fmt.Sprintf("resolved ref %q to %s", effectiveRef, resolvedRev),
 		})
 	}
 
@@ -778,6 +783,12 @@ func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, confi
 		{Name: "NIO_TARGET_HOST", Value: machine.Spec.Host},
 		{Name: "NIO_SSH_USER", Value: machine.Spec.SSHUser},
 		{Name: "NIO_TIMEOUT", Value: jobTimeout.String()},
+		// The container runs with ReadOnlyRootFilesystem; the only writable mount
+		// is the /workspace emptyDir. Point both the apply work dir and Go's
+		// temp dir (used by gitauth for credential material) at it so the clone
+		// and credential setup do not fail writing to a read-only /tmp.
+		{Name: "NIO_WORK_DIR", Value: "/workspace"},
+		{Name: "TMPDIR", Value: "/workspace"},
 	}
 
 	// Resolve and pass additional files. Without this the apply binary reads an

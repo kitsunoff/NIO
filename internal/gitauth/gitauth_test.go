@@ -90,6 +90,25 @@ func TestEnv_HTTPS(t *testing.T) {
 	}
 }
 
+// TestEnv_HonorsTMPDIR proves temp material lands under $TMPDIR, so the apply
+// Job (which sets TMPDIR=/workspace, the only writable mount under a read-only
+// root filesystem) does not fail writing credential material to /tmp.
+func TestEnv_HonorsTMPDIR(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+
+	env, cleanup, err := (&Creds{Username: "u", Password: "p"}).Env("https://github.com/o/r.git")
+	if err != nil {
+		t.Fatalf("Env: %v", err)
+	}
+	defer cleanup()
+
+	askpass := envMap(env)["GIT_ASKPASS"]
+	if !strings.HasPrefix(askpass, dir) {
+		t.Errorf("askpass helper %q not under TMPDIR %q; would fail on a read-only /tmp", askpass, dir)
+	}
+}
+
 func TestEnv_SSHRequiresKey(t *testing.T) {
 	if _, _, err := (&Creds{Username: "u"}).Env("git@github.com:o/r.git"); err == nil {
 		t.Error("ssh repo without a key should error")
