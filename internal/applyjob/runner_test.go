@@ -28,6 +28,13 @@ import (
 	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
+const (
+	// gitCmd is the git executable name asserted in command calls.
+	gitCmd = "git"
+	// gitCloneSubcmd is the git subcommand used for the shallow-clone fallback.
+	gitCloneSubcmd = "clone"
+)
+
 // MockCommandExecutor implements CommandExecutor for testing.
 type MockCommandExecutor struct {
 	RunFunc func(ctx context.Context, name string, args ...string) (string, error)
@@ -53,7 +60,7 @@ func TestGitClone_Success(t *testing.T) {
 	executor := &MockCommandExecutor{
 		RunFunc: func(ctx context.Context, name string, args ...string) (string, error) {
 			// Simulate successful clone by creating the directory
-			if name == "git" && len(args) > 0 && args[0] == "clone" {
+			if name == gitCmd && len(args) > 0 && args[0] == gitCloneSubcmd {
 				repoDir := args[len(args)-1]
 				if err := os.MkdirAll(repoDir, 0755); err != nil {
 					return "", err
@@ -88,10 +95,10 @@ func TestGitClone_Success(t *testing.T) {
 	}
 
 	cloneCall := executor.Calls[0]
-	if cloneCall.Name != "git" {
+	if cloneCall.Name != gitCmd {
 		t.Errorf("expected git command, got %s", cloneCall.Name)
 	}
-	if cloneCall.Args[0] != "clone" {
+	if cloneCall.Args[0] != gitCloneSubcmd {
 		t.Errorf("expected clone subcommand, got %s", cloneCall.Args[0])
 	}
 }
@@ -116,7 +123,7 @@ func TestCloneRepository_FetchesResolvedSHA(t *testing.T) {
 	var gotFetchSHA, gotCheckout, gotClone bool
 	for _, c := range executor.Calls {
 		joined := strings.Join(c.Args, " ")
-		if strings.HasPrefix(joined, "clone") {
+		if strings.HasPrefix(joined, gitCloneSubcmd) {
 			gotClone = true
 		}
 		if strings.Contains(joined, "fetch --depth 1 origin abc123sha") {
@@ -134,6 +141,55 @@ func TestCloneRepository_FetchesResolvedSHA(t *testing.T) {
 	}
 	if !gotCheckout {
 		t.Error("did not checkout FETCH_HEAD")
+	}
+}
+
+// TestRun_StagesInjectedFiles guards that after injecting additionalFiles the
+// runner runs `git add --all` (so Nix includes them in the flake build) and
+// that it happens before the nix apply.
+func TestRun_StagesInjectedFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	var calls []string
+	executor := &MockCommandExecutor{
+		RunFunc: func(_ context.Context, name string, args ...string) (string, error) {
+			calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+			if name == gitCmd && len(args) > 0 && args[0] == gitCloneSubcmd {
+				return "", os.MkdirAll(args[len(args)-1], 0o755)
+			}
+			return "", nil
+		},
+	}
+	runner := &Runner{Executor: executor, WorkDir: tempDir}
+	config := &JobConfig{
+		GitRepo:    "https://github.com/example/r.git",
+		GitRef:     "main",
+		Operation:  OperationNixosRebuild,
+		TargetHost: "host",
+		SSHUser:    "root",
+	}
+	files := []AdditionalFile{{Path: "hardware.nix", Content: "{}"}}
+
+	if err := runner.Run(context.Background(), config, []byte("KEY"), files, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	addIdx, nixIdx := -1, -1
+	for i, c := range calls {
+		if strings.HasPrefix(c, "git -C ") && strings.Contains(c, "add --all") {
+			addIdx = i
+		}
+		if strings.HasPrefix(c, "nix ") {
+			nixIdx = i
+		}
+	}
+	if addIdx < 0 {
+		t.Fatalf("git add --all was not run after injecting files; calls=%v", calls)
+	}
+	if nixIdx < 0 || addIdx > nixIdx {
+		t.Errorf("git add --all must run before the nix apply (add=%d nix=%d)", addIdx, nixIdx)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "repo", "hardware.nix")); err != nil {
+		t.Errorf("injected file missing on disk: %v", err)
 	}
 }
 

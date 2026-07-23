@@ -355,6 +355,13 @@ func (r *Runner) Run(ctx context.Context, config *JobConfig, sshKey []byte, addi
 		if err := r.InjectAdditionalFiles(repoPath, additionalFiles); err != nil {
 			return fmt.Errorf("inject additional files: %w", err)
 		}
+		// Stage the injected files. The flake is referenced by a path inside a
+		// git working tree, and Nix copies only tracked/staged files to the
+		// store — untracked files are silently dropped, so without this the
+		// injected files never reach the build.
+		if output, err := r.Executor.Run(ctx, "git", "-C", repoPath, "add", "--all"); err != nil {
+			return &GitError{Operation: "add", Output: output, Err: err}
+		}
 	}
 
 	// Apply configuration
