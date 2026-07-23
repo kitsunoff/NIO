@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -138,27 +137,9 @@ func (r *NixosConfigurationReconciler) resolveConfigRevision(ctx context.Context
 // config's namespace, following the same key conventions the rest of the
 // operator uses (ssh-privatekey, known_hosts, username, password/token).
 func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, namespace, name string) (*gitauth.Creds, error) {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
-		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
-	}
-	// Trim username/password/token: Secret values sourced from files commonly
-	// carry a trailing newline, and this must match the apply Job's reader
-	// (cmd/apply.loadGitCreds) so controller-side ls-remote and the Job clone
-	// authenticate identically. SSH key and known_hosts are left byte-exact.
-	creds := &gitauth.Creds{
-		SSHKey:     secret.Data["ssh-privatekey"],
-		KnownHosts: secret.Data["known_hosts"],
-		Username:   strings.TrimSpace(string(secret.Data["username"])),
-		Password:   strings.TrimSpace(string(secret.Data["password"])),
-	}
-	// A token-only secret populates the password (username defaults to "git").
-	if creds.Password == "" {
-		if token, ok := secret.Data["token"]; ok {
-			creds.Password = strings.TrimSpace(string(token))
-		}
-	}
-	return creds, nil
+	// Shared with the workload resolver (nixresolve.readGitCreds) so both the
+	// apply path and the workload family authenticate private repos identically.
+	return readGitCreds(ctx, r.Client, namespace, name)
 }
 
 // resolveAdditionalFiles turns the spec's AdditionalFiles into concrete
