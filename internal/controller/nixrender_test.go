@@ -570,6 +570,63 @@ func TestRenderNoInjectWithoutAdditionalFiles(t *testing.T) {
 	}
 }
 
+func TestRenderAppWrapsOpensshWhenInjectedNixSSHOpts(t *testing.T) {
+	// Simulates the orchestrator injecting target SSH (key + NIX_SSHOPTS) onto the
+	// app container of a child NixJob. Render must preserve it and add openssh.
+	base := corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Name: "app",
+			Env: []corev1.EnvVar{{
+				Name:  "NIX_SSHOPTS",
+				Value: "-i /etc/nio/target/ssh-privatekey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+			}},
+		}},
+	}}
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: "main"},
+			Run:    "nixpkgs#nixos-rebuild",
+			Args:   []string{"switch", "--flake", ".#web", "--target-host", "root@10.0.0.5"},
+			Image:  "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, base)
+	app := containerByName(out.Spec.Containers, "app")
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	if !strings.Contains(strings.Join(app.Command, " "), "nix shell nixpkgs#openssh") {
+		t.Errorf("app SSHing to a target must be wrapped in openssh: %v", app.Command)
+	}
+	if envMap(app.Env)["NIX_SSHOPTS"] == "" {
+		t.Error("injected NIX_SSHOPTS must be preserved on the app container")
+	}
+}
+
+func TestRenderNoOpensshWithoutSSH(t *testing.T) {
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/app", Ref: "main"},
+			Run:    ".#server",
+			Image:  "nixos/nix",
+		},
+		resolvedRevision: "abc",
+		kind:             "NixJob",
+		name:             "j",
+	}
+	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
+	app := containerByName(out.Spec.Containers, "app")
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	if strings.Contains(strings.Join(app.Command, " "), "openssh") {
+		t.Errorf("a non-SSH workload must not be wrapped in openssh: %v", app.Command)
+	}
+}
+
 func TestRenderPodTemplateFlakeSubdir(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{

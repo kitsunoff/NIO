@@ -439,11 +439,14 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	}
 	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
 
-	// When dispatching to a remote builder, nix invokes `ssh`; the nix image has
-	// no ssh binary, so run the build/run commands inside a shell that brings
-	// openssh onto PATH.
-	wrapSSH := func(cmd []string) []string {
-		if in.sshSecretName == "" {
+	// Any command that SSHes out needs openssh on PATH (the nix image has none):
+	// a remote builder dispatch, or a target host whose NIX_SSHOPTS the caller
+	// (e.g. the NixosConfiguration orchestrator) injected onto the app container.
+	// Broad, convenient rule: NIX_SSHOPTS present ⇒ wrap in openssh.
+	appNeedsSSH := in.sshSecretName != "" ||
+		hasEnvVar(findOrNewContainer(tmpl.Spec.Containers, appName).Env, "NIX_SSHOPTS")
+	wrapSSH := func(cmd []string, needsSSH bool) []string {
+		if !needsSSH {
 			return cmd
 		}
 		return []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command " + shellJoin(cmd)}
@@ -452,7 +455,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	// instantiate: build (dispatched to the remote builder when one is used), and
 	// with a store+builder also push the built closure into the shared NixStore so
 	// other pods substitute it rather than rebuild (ADR-0008, delegated build).
-	instantiateCmd := wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
+	instantiateCmd := wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags), in.sshSecretName != "")
 	if in.sshSecretName != "" && in.store != nil && in.store.pushURL != "" {
 		installables := append([]string{nix.Run}, nix.Prebuild...)
 		build := shellJoin(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
@@ -536,7 +539,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	app := findOrNewContainer(tmpl.Spec.Containers, appName)
 	app.Image = image
 	app.WorkingDir = workDir
-	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags))
+	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags), appNeedsSSH)
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
 	for _, e := range sshOpts {
@@ -625,6 +628,16 @@ func findOrNewContainer(containers []corev1.Container, name string) corev1.Conta
 }
 
 // upsertEnv replaces an env var by name or appends it.
+// hasEnvVar reports whether env contains a variable with the given name.
+func hasEnvVar(env []corev1.EnvVar, name string) bool {
+	for i := range env {
+		if env[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func upsertEnv(env []corev1.EnvVar, e corev1.EnvVar) []corev1.EnvVar {
 	for i := range env {
 		if env[i].Name == e.Name {
