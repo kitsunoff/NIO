@@ -155,8 +155,9 @@ func resolveRevision(ctx context.Context, c client.Client, git GitResolver, name
 // the shared key convention: "ssh-privatekey" / "known_hosts" (byte-exact) and
 // "username" / "password" (trimmed, since file-sourced values often carry a
 // trailing newline). A token-only Secret populates the password from "token".
-// The trimming must match cmd/apply.loadGitCreds so controller-side ls-remote
-// and the pod's fetch-source clone authenticate identically.
+// The trimming must match the pod's fetch-source GIT_ASKPASS helper (the clone
+// script in nixrender.go reads only the first line of each file) so
+// controller-side ls-remote and the pod's clone authenticate identically.
 func readGitCreds(ctx context.Context, c client.Client, namespace, name string) (*gitauth.Creds, error) {
 	var secret corev1.Secret
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &secret); err != nil {
