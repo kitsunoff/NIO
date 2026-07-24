@@ -37,7 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
-	"github.com/kitsunoff/nixos-operator/cmd/apply"
 	"github.com/kitsunoff/nixos-operator/internal/controller"
 	"github.com/kitsunoff/nixos-operator/internal/ssh"
 	// +kubebuilder:scaffold:imports
@@ -60,12 +59,6 @@ func main() {
 	// Check for subcommands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "apply":
-			if err := apply.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			return
 		case "version":
 			fmt.Println("nixos-operator v0.1.0")
 			return
