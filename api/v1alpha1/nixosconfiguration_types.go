@@ -163,13 +163,19 @@ type NixosConfigurationStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// Phase is the coarse orchestrator state machine state
+	// (Pending, Blocked, Installing, Converging, Ready, Degraded, Removing).
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
 	// FullDiskInstallCompleted indicates if nixos-anywhere was run.
 	// +optional
 	FullDiskInstallCompleted bool `json:"fullDiskInstallCompleted,omitempty"`
 
-	// AppliedCommit is the git commit hash that was applied.
+	// ResolvedRevision is the immutable commit SHA currently rolled out, sourced
+	// from the day-2 child's status.rolledOutRevision.
 	// +optional
-	AppliedCommit string `json:"appliedCommit,omitempty"`
+	ResolvedRevision string `json:"resolvedRevision,omitempty"`
 
 	// LastAppliedTime is the timestamp of last successful application.
 	// +optional
@@ -179,17 +185,25 @@ type NixosConfigurationStatus struct {
 	// +optional
 	TargetMachine string `json:"targetMachine,omitempty"`
 
-	// ConfigurationHash is the hash of applied configuration.
+	// InstallJobRef is the name of the child install NixJob (nixos-anywhere).
 	// +optional
-	ConfigurationHash string `json:"configurationHash,omitempty"`
+	InstallJobRef string `json:"installJobRef,omitempty"`
 
-	// AdditionalFilesHash is the hash of injected files.
+	// DayTwoCronJobRef is the name of the child day-2 NixCronJob.
 	// +optional
-	AdditionalFilesHash string `json:"additionalFilesHash,omitempty"`
+	DayTwoCronJobRef string `json:"dayTwoCronJobRef,omitempty"`
 
-	// OperationState tracks long-running operation progress.
+	// DecommissionJobRef is the name of the orphan decommission NixJob.
 	// +optional
-	OperationState *OperationState `json:"operationState,omitempty"`
+	DecommissionJobRef string `json:"decommissionJobRef,omitempty"`
+
+	// InstallRetries bounds Installing retry.
+	// +optional
+	InstallRetries int32 `json:"installRetries,omitempty"`
+
+	// OnRemoveRetries bounds decommission retry.
+	// +optional
+	OnRemoveRetries int32 `json:"onRemoveRetries,omitempty"`
 
 	// Conditions represent the latest available observations.
 	// +optional
@@ -200,45 +214,39 @@ type NixosConfigurationStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
-// OperationState tracks long-running operation progress.
-type OperationState struct {
-	// Type of operation in progress.
-	// +kubebuilder:validation:Enum=NixosRebuild;FullInstall
-	Type OperationType `json:"type"`
-
-	// StartedAt is when the operation began.
-	StartedAt metav1.Time `json:"startedAt"`
-
-	// Phase describes current operation phase.
-	// +optional
-	Phase string `json:"phase,omitempty"`
-
-	// JobName is the name of the Kubernetes Job running this operation.
-	JobName string `json:"jobName"`
-
-	// LastLogLine contains last line of job output for quick status.
-	// +optional
-	LastLogLine string `json:"lastLogLine,omitempty"`
-}
-
-// OperationType is the type of NixOS apply operation.
-// +kubebuilder:validation:Enum=NixosRebuild;FullInstall
-type OperationType string
-
+// NixosConfiguration orchestrator phase values (status.phase). Named with the
+// NixosConfig prefix to avoid clashing with the workload Phase* consts.
 const (
-	// OperationTypeNixosRebuild uses nixos-rebuild switch for updates.
-	OperationTypeNixosRebuild OperationType = "NixosRebuild"
+	// NixosConfigPhasePending is the initial phase (finalizer added, resolving).
+	NixosConfigPhasePending = "Pending"
 
-	// OperationTypeFullInstall uses nixos-anywhere for full disk installation.
-	OperationTypeFullInstall OperationType = "FullInstall"
+	// NixosConfigPhaseBlocked means the target Machine is missing/undiscoverable
+	// or already owned by another config; no children are driven forward.
+	NixosConfigPhaseBlocked = "Blocked"
+
+	// NixosConfigPhaseInstalling means the full-disk install NixJob is running.
+	NixosConfigPhaseInstalling = "Installing"
+
+	// NixosConfigPhaseConverging means the day-2 NixCronJob is created/updated
+	// but not yet confirmed healthy.
+	NixosConfigPhaseConverging = "Converging"
+
+	// NixosConfigPhaseReady means the day-2 cron is healthy and applied.
+	NixosConfigPhaseReady = "Ready"
+
+	// NixosConfigPhaseDegraded means an install or day-2 run failed.
+	NixosConfigPhaseDegraded = "Degraded"
+
+	// NixosConfigPhaseRemoving means deletion is in progress (decommission).
+	NixosConfigPhaseRemoving = "Removing"
 )
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status"
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".spec.machineRef.name"
 // +kubebuilder:printcolumn:name="Flake",type="string",JSONPath=".spec.flake"
-// +kubebuilder:printcolumn:name="Commit",type="string",JSONPath=".status.appliedCommit",priority=1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // NixosConfiguration is the Schema for the nixosconfigurations API.

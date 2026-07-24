@@ -78,6 +78,12 @@ const (
 	ReasonJobPending        = "JobPending"
 	ReasonDeadlineExceeded  = "DeadlineExceeded"
 	ReasonOperationFailed   = "OperationFailed"
+
+	// Orchestrator state-machine reasons (v1alpha2 NixosConfiguration).
+	ReasonBlocked    = "Blocked"
+	ReasonInstalling = "Installing"
+	ReasonConverging = "Converging"
+	ReasonRemoving   = "Removing"
 )
 
 // Finalizer name for cleanup operations.

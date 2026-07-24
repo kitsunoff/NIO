@@ -18,15 +18,14 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .spec.machineRef.name
       name: Target
       type: string
     - jsonPath: .spec.flake
       name: Flake
-      type: string
-    - jsonPath: .status.appliedCommit
-      name: Commit
-      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -287,12 +286,6 @@ spec:
           status:
             description: Status defines the observed state of NixosConfiguration.
             properties:
-              additionalFilesHash:
-                description: AdditionalFilesHash is the hash of injected files.
-                type: string
-              appliedCommit:
-                description: AppliedCommit is the git commit hash that was applied.
-                type: string
               conditions:
                 description: Conditions represent the latest available observations.
                 items:
@@ -353,13 +346,25 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              configurationHash:
-                description: ConfigurationHash is the hash of applied configuration.
+              dayTwoCronJobRef:
+                description: DayTwoCronJobRef is the name of the child day-2 NixCronJob.
+                type: string
+              decommissionJobRef:
+                description: DecommissionJobRef is the name of the orphan decommission
+                  NixJob.
                 type: string
               fullDiskInstallCompleted:
                 description: FullDiskInstallCompleted indicates if nixos-anywhere
                   was run.
                 type: boolean
+              installJobRef:
+                description: InstallJobRef is the name of the child install NixJob
+                  (nixos-anywhere).
+                type: string
+              installRetries:
+                description: InstallRetries bounds Installing retry.
+                format: int32
+                type: integer
               lastAppliedTime:
                 description: LastAppliedTime is the timestamp of last successful application.
                 format: date-time
@@ -369,39 +374,20 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
-              operationState:
-                description: OperationState tracks long-running operation progress.
-                properties:
-                  jobName:
-                    description: JobName is the name of the Kubernetes Job running
-                      this operation.
-                    type: string
-                  lastLogLine:
-                    description: LastLogLine contains last line of job output for
-                      quick status.
-                    type: string
-                  phase:
-                    description: Phase describes current operation phase.
-                    type: string
-                  startedAt:
-                    description: StartedAt is when the operation began.
-                    format: date-time
-                    type: string
-                  type:
-                    allOf:
-                    - enum:
-                      - NixosRebuild
-                      - FullInstall
-                    - enum:
-                      - NixosRebuild
-                      - FullInstall
-                    description: Type of operation in progress.
-                    type: string
-                required:
-                - jobName
-                - startedAt
-                - type
-                type: object
+              onRemoveRetries:
+                description: OnRemoveRetries bounds decommission retry.
+                format: int32
+                type: integer
+              phase:
+                description: |-
+                  Phase is the coarse orchestrator state machine state
+                  (Pending, Blocked, Installing, Converging, Ready, Degraded, Removing).
+                type: string
+              resolvedRevision:
+                description: |-
+                  ResolvedRevision is the immutable commit SHA currently rolled out, sourced
+                  from the day-2 child's status.rolledOutRevision.
+                type: string
               targetMachine:
                 description: TargetMachine is the Machine resource name this config
                   applies to.
