@@ -1,0 +1,384 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: clusters.nio.homystack.com
+spec:
+  group: nio.homystack.com
+  names:
+    kind: Cluster
+    listKind: ClusterList
+    plural: clusters
+    singular: cluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.convergeJobRef
+      name: Converge
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Cluster is an abstract grouping of Machines driven by one idempotent
+          converge.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ClusterSpec defines an abstract cluster: it groups Machines into nodeGroups,
+              maps opaque per-group values onto each member, and drives ONE idempotent
+              converge NixCronJob against the downstream flake-parts repo. NIO never
+              interprets the cluster's meaning (k3s/proxmox/etc) — semantics live in the
+              flake repo + its nixcluster modules.
+            properties:
+              ageKeyRef:
+                description: |-
+                  AgeKeyRef is a sops age key (same namespace) mounted into the converge pod
+                  (as an INPUT for secrets decryption). The Secret must carry a "keys.txt"
+                  key. NIO-side secret generation/rotation is out of scope for the MVP.
+                properties:
+                  name:
+                    description: Name is the Secret name (must be in the same namespace
+                      as the referencing resource).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              dayTwoSchedule:
+                default: '*/30 * * * *'
+                description: DayTwoSchedule is the converge cadence (cron schedule).
+                type: string
+              nodeGroups:
+                description: |-
+                  NodeGroups select Machines (by label) and map values onto them. A Machine
+                  belongs to strictly one nodeGroup — the FIRST matching group in spec order
+                  claims it; later groups exclude it.
+                items:
+                  description: |-
+                    NodeGroup selects a subset of Machines and maps opaque values onto each
+                    selected member. It carries no ordering/lifecycle — converge owns those.
+                  properties:
+                    count:
+                      description: |-
+                        Count optionally caps the group to a stable, sticky subset of the matching
+                        Machines. Unset means all matching Machines are members.
+                      format: int32
+                      type: integer
+                    name:
+                      description: |-
+                        Name identifies the group within the cluster (used in status and node
+                        files). Must be unique within the cluster.
+                      minLength: 1
+                      type: string
+                    selector:
+                      description: Selector matches Machine metadata.labels in the
+                        cluster's namespace.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    values:
+                      description: |-
+                        Values is an OPAQUE, schemaless nested object mapped onto each member as a
+                        nixcluster member attrset (via recursiveUpdate of fromJSON). NIO never
+                        interprets it. It must NOT carry nixosConfiguration (a Nix value): members
+                        inherit the cluster-level default in the flake repo.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - name
+                  - selector
+                  type: object
+                minItems: 1
+                type: array
+              source:
+                description: |-
+                  Source is the downstream flake-parts repo (the cluster). The converge
+                  NixCronJob checks it out and runs its per-cluster app.
+                properties:
+                  credentialsRef:
+                    description: |-
+                      CredentialsRef references a Secret (same namespace) for private repo
+                      access. Recognised keys: "username"+"password", or "ssh-privatekey".
+                    properties:
+                      name:
+                        description: Name is the Secret name (must be in the same
+                          namespace as the referencing resource).
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  dir:
+                    description: |-
+                      Dir is an optional subdirectory holding the flake (flake-in-subdir). When
+                      set, the build/run commands execute with the working directory at this
+                      subdir of the checkout, so a relative installable (e.g. ".#attr") resolves
+                      against it. Must be a relative path inside the checkout.
+                    type: string
+                  fluxSourceRef:
+                    description: |-
+                      FluxSourceRef, when set, makes the operator consume a Flux source object
+                      (source.toolkit.fluxcd.io) in the SAME namespace instead of polling git
+                      itself. Any artifact-producing Flux kind is accepted — GitRepository,
+                      OCIRepository, or Bucket — because they share one status.artifact contract.
+                      The operator reads status.artifact.revision (the rollout key) and
+                      status.artifact.url (the tarball the pod fetches). GitRepo / Ref /
+                      PollInterval / CredentialsRef are then ignored.
+                    properties:
+                      apiVersion:
+                        description: |-
+                          APIVersion of the Flux source group/version. Defaults to the
+                          source.toolkit.fluxcd.io version the operator is built against.
+                        type: string
+                      kind:
+                        description: Kind of the referenced Flux source.
+                        enum:
+                        - GitRepository
+                        - OCIRepository
+                        - Bucket
+                        type: string
+                      name:
+                        description: Name of the Flux source object (same namespace
+                          as this workload).
+                        minLength: 1
+                        type: string
+                    required:
+                    - kind
+                    - name
+                    type: object
+                  gitRepo:
+                    description: |-
+                      GitRepo is the flake repository URL (https or ssh form).
+                      Ignored when FluxSourceRef is set.
+                    maxLength: 2048
+                    type: string
+                  pollInterval:
+                    default: 1m
+                    description: |-
+                      PollInterval controls how often Ref is re-resolved via `git ls-remote`.
+                      Ignored when Rev or FluxSourceRef is set.
+                    type: string
+                  ref:
+                    default: main
+                    description: |-
+                      Ref is the mutable git ref (branch or tag) the operator tracks.
+                      Polling re-resolves this to a commit SHA on PollInterval.
+                    type: string
+                  rev:
+                    description: |-
+                      Rev pins an exact commit SHA. When set, polling is disabled and this
+                      revision is used verbatim (GitOps-pinned / immutable deployments).
+                    pattern: ^[0-9a-f]{7,40}$
+                    type: string
+                type: object
+              sshKeyRef:
+                description: |-
+                  SSHKeyRef is a cluster-wide SSH private key (same namespace) mounted into
+                  the converge pod so it can reach every member host. The Secret must carry
+                  an "ssh-privatekey" key.
+                properties:
+                  name:
+                    description: Name is the Secret name (must be in the same namespace
+                      as the referencing resource).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - nodeGroups
+            - source
+            type: object
+          status:
+            description: ClusterStatus is the observed state of a Cluster.
+            properties:
+              conditions:
+                description: 'Conditions: Ready, Stalled, GitSynced, Underprovisioned.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              convergeJobRef:
+                description: ConvergeJobRef is the name of the owned converge NixCronJob.
+                type: string
+              nodeGroups:
+                description: NodeGroups reflects the stable, sticky selection per
+                  group.
+                items:
+                  description: NodeGroupStatus reflects a group's selection and per-member
+                    status.
+                  properties:
+                    desired:
+                      description: |-
+                        Desired is the requested member count (0 when Count is unset — meaning all
+                        matching Machines).
+                      format: int32
+                      type: integer
+                    members:
+                      description: Members are the selected Machines, STABLE and sorted
+                        by name.
+                      items:
+                        description: MemberStatus is a selected Machine's per-node
+                          convergence status.
+                        properties:
+                          name:
+                            description: Name is the Machine name.
+                            type: string
+                          status:
+                            description: |-
+                              Status is the per-node convergence status (best-effort; reflected from the
+                              last converge run).
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    name:
+                      description: Name is the nodeGroup name.
+                      type: string
+                    selected:
+                      description: Selected is the actual number of members.
+                      format: int32
+                      type: integer
+                  required:
+                  - name
+                  type: object
+                type: array
+              observedGeneration:
+                description: ObservedGeneration is the spec generation last reconciled.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is a coarse, human-facing lifecycle state.
+                enum:
+                - Ready
+                - Converging
+                - Degraded
+                - Blocked
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

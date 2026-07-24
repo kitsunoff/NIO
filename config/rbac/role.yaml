@@ -62,6 +62,7 @@ rules:
 - apiGroups:
   - nio.homystack.com
   resources:
+  - clusters
   - machines
   - nixbuilders
   - nixcronjobs
@@ -81,6 +82,7 @@ rules:
 - apiGroups:
   - nio.homystack.com
   resources:
+  - clusters/finalizers
   - machines/finalizers
   - nixbuilders/finalizers
   - nixcronjobs/finalizers
@@ -94,6 +96,7 @@ rules:
 - apiGroups:
   - nio.homystack.com
   resources:
+  - clusters/status
   - machines/status
   - nixbuilders/status
   - nixcronjobs/status

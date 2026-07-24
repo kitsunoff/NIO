@@ -46,6 +46,23 @@ const (
 	ConditionGitSynced = "GitSynced"
 )
 
+// Cluster-specific condition types.
+const (
+	// ConditionUnderprovisioned indicates a nodeGroup has fewer matching Machines
+	// than its requested count (provisioning is deferred; the gap is surfaced).
+	ConditionUnderprovisioned = "Underprovisioned"
+)
+
+// Cluster-specific reasons.
+const (
+	ReasonUnderprovisioned  = "Underprovisioned"
+	ReasonFullyProvisioned  = "FullyProvisioned"
+	ReasonSelectionComplete = "SelectionComplete"
+	ReasonInvalidNodeFile   = "InvalidNodeFile"
+	// ReasonConverging is shared with the NixosConfiguration orchestrator block
+	// below (both set a "Converging" phase reason); declared once there.
+)
+
 // Generic reasons.
 const (
 	ReasonSucceeded   = "Succeeded"
