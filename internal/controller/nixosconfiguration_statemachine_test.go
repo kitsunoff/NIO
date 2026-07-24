@@ -21,10 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -91,11 +93,20 @@ func smReconciler(t *testing.T, objs ...client.Object) (*NixosConfigurationRecon
 
 func smReconcile(t *testing.T, r *NixosConfigurationReconciler, name string) {
 	t.Helper()
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+	smReconcileResult(t, r, name)
+}
+
+// smReconcileResult reconciles once and returns the ctrl.Result so tests can
+// assert on requeue behaviour.
+func smReconcileResult(t *testing.T, r *NixosConfigurationReconciler, name string) ctrl.Result {
+	t.Helper()
+	res, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
+	return res
 }
 
 func getConfig(t *testing.T, c client.Client, name string) *niov1alpha1.NixosConfiguration {
@@ -245,6 +256,85 @@ func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
 		t.Errorf("phase = %q, want Degraded after exhausting install retries (retries=%d)", got.Status.Phase, got.Status.InstallRetries)
 	}
+	if got.Status.InstallRetries != MaxInstallRetries {
+		t.Errorf("InstallRetries = %d, want capped at %d", got.Status.InstallRetries, MaxInstallRetries)
+	}
+
+	// Once terminal-Degraded, a permanently-failing install must not churn:
+	// reconciling several MORE times must keep phase Degraded, must not grow the
+	// retry counter past the cap, and must NOT request a requeue.
+	for i := 0; i < 5; i++ {
+		// Keep the failing install child present and Failed so the failure branch
+		// is exercised on every extra reconcile.
+		var install niov1alpha1.NixJob
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err == nil {
+			if install.Status.Failed == 0 {
+				install.Status.Failed = 1
+				if err := c.Status().Update(context.Background(), &install); err != nil {
+					t.Fatalf("seed install failure: %v", err)
+				}
+			}
+		}
+		res := smReconcileResult(t, r, "web")
+		if res.RequeueAfter != 0 {
+			t.Errorf("terminal Degraded must not requeue, got %+v", res)
+		}
+	}
+
+	got = getConfig(t, c, "web")
+	if got.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
+		t.Errorf("phase = %q, want Degraded after extra reconciles", got.Status.Phase)
+	}
+	if got.Status.InstallRetries != MaxInstallRetries {
+		t.Errorf("InstallRetries grew past cap: %d, want %d", got.Status.InstallRetries, MaxInstallRetries)
+	}
+	// The failing install child must NOT be deleted/recreated once terminal.
+	var install niov1alpha1.NixJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+		t.Errorf("install child should remain (not churned) once terminal-Degraded: %v", err)
+	}
+}
+
+// TestReconcile_FullInstall_AppliedTrueWhileConverging checks that once the
+// full-disk install has succeeded, the Applied condition is True even while
+// day-2 is still Converging (Applied = install-success OR day-2 success).
+func TestReconcile_FullInstall_AppliedTrueWhileConverging(t *testing.T) {
+	cfg := smConfig()
+	cfg.Spec.FullInstall = true
+	r, c := smReconciler(t, cfg, smMachine())
+
+	// First reconcile: install child created, phase Installing.
+	smReconcile(t, r, "web")
+
+	// Simulate the install completing.
+	var install niov1alpha1.NixJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+		t.Fatalf("install NixJob not created: %v", err)
+	}
+	install.Status.Succeeded = 1
+	if err := c.Status().Update(context.Background(), &install); err != nil {
+		t.Fatalf("seed install status: %v", err)
+	}
+
+	// Second reconcile: install success recorded, day-2 cron created, Converging.
+	smReconcile(t, r, "web")
+
+	got := getConfig(t, c, "web")
+	if !got.Status.FullDiskInstallCompleted {
+		t.Fatal("FullDiskInstallCompleted not set after install success")
+	}
+	if got.Status.Phase != niov1alpha1.NixosConfigPhaseConverging {
+		t.Fatalf("phase = %q, want Converging", got.Status.Phase)
+	}
+	// The day-2 cron has no LastSuccessfulTime yet, but the install succeeded,
+	// so Applied must be True.
+	applied := meta.FindStatusCondition(got.Status.Conditions, niov1alpha1.ConditionApplied)
+	if applied == nil {
+		t.Fatal("Applied condition missing")
+	}
+	if applied.Status != metav1.ConditionTrue {
+		t.Errorf("Applied = %q while Converging after install success, want True", applied.Status)
+	}
 }
 
 // TestReconcile_MachineNotDiscoverable_Blocked checks the machine gate.
@@ -345,6 +435,13 @@ func TestReconcile_Deletion_WithOnRemove_OrphanJob(t *testing.T) {
 	err := c.Get(context.Background(), types.NamespacedName{Name: "web", Namespace: "default"}, &after)
 	if err == nil {
 		t.Errorf("config should be gone after finalizer removal, still present with finalizers %v", after.Finalizers)
+	}
+
+	// The orphan decommission NixJob CR must be deleted before the finalizer is
+	// removed, otherwise it (and its owned onremove ConfigMap) leaks forever.
+	var leaked niov1alpha1.NixJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-onremove", Namespace: "default"}, &leaked); err == nil {
+		t.Error("orphan decommission NixJob should be deleted on success, but it still exists")
 	}
 }
 

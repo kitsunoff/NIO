@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -48,9 +49,10 @@ const (
 	// MaxOnRemoveRetries bounds decommission attempts before giving up.
 	MaxOnRemoveRetries = 3
 
-	// DecommissionTTLSeconds keeps a finished orphan decommission NixJob around
-	// long enough for the orchestrator to observe its terminal state before the
-	// child self-cleans.
+	// DecommissionTTLSeconds is set as ttlSecondsAfterFinished on the decommission
+	// NixJob's inner batch Job so the finished Pod/Job is reaped. It does NOT
+	// delete the orphan NixJob CR itself — reconcileRemoving deletes that CR once
+	// the terminal state is observed, before removing the finalizer.
 	DecommissionTTLSeconds = 600
 
 	// IndexConfigByMachine is the field index for machine references.
@@ -210,13 +212,20 @@ func (r *NixosConfigurationReconciler) reconcileInstall(ctx context.Context, con
 				fmt.Sprintf("Full-disk install %q is being retried", job.Name), false, nil)
 			return false, ctrl.Result{RequeueAfter: RequeueInterval}, nil
 		}
-		config.Status.InstallRetries++
-		if config.Status.InstallRetries > MaxInstallRetries {
+		// Check the cap BEFORE incrementing. Once at/over the cap the install is
+		// terminally Degraded: set it idempotently and return WITHOUT requeue and
+		// WITHOUT deleting/recreating the child, so a permanently-failing install
+		// does not churn its status/counter or storm the reconcile loop.
+		if config.Status.InstallRetries >= MaxInstallRetries {
 			msg := fmt.Sprintf("Full-disk install failed after %d retries", MaxInstallRetries)
+			if config.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
+				r.Recorder.Event(config, corev1.EventTypeWarning, "InstallFailed", msg)
+			}
 			r.setDegraded(config, msg)
-			r.Recorder.Event(config, corev1.EventTypeWarning, "InstallFailed", msg)
-			return false, ctrl.Result{RequeueAfter: RequeueInterval}, nil
+			return false, ctrl.Result{}, nil
 		}
+		// Under the cap: count this failure and delete-and-recreate the child.
+		config.Status.InstallRetries++
 		log.Info("install child failed; recreating", "job", job.Name, "retries", config.Status.InstallRetries)
 		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
 			return false, ctrl.Result{}, err
@@ -261,10 +270,13 @@ func (r *NixosConfigurationReconciler) reconcileDayTwo(ctx context.Context, conf
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 
 	default:
-		applied := cron.Status.LastSuccessfulTime != nil
-		if applied {
+		if cron.Status.LastSuccessfulTime != nil {
 			config.Status.LastAppliedTime = cron.Status.LastSuccessfulTime
 		}
+		// Applied = install-success OR day-2 lastSuccessfulTime: a completed
+		// full-disk install already put a configuration on the machine, so
+		// Applied stays True even while day-2 is still Converging.
+		applied := config.Status.FullDiskInstallCompleted || cron.Status.LastSuccessfulTime != nil
 		r.setPhase(config, niov1alpha1.NixosConfigPhaseConverging, niov1alpha1.ReasonConverging,
 			"Day-2 convergence in progress", applied, gitSynced)
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
@@ -336,13 +348,26 @@ func (r *NixosConfigurationReconciler) reconcileRemoving(ctx context.Context, co
 		if err := r.clearMachineStatus(ctx, config, &machine); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Delete the orphan decommission NixJob CR (best-effort) BEFORE removing
+		// the finalizer: the finalizer keeps this orchestrator reconciling, so we
+		// are alive to clean it up. Deleting the CR cascades its owned onremove
+		// ConfigMap. Its ttlSecondsAfterFinished only reaps the inner batch Job,
+		// not the CR, so without this the orphan leaks on every deletion.
+		if err := r.deleteDecommissionJob(ctx, job); err != nil {
+			return ctrl.Result{}, err
+		}
 		r.Recorder.Event(config, corev1.EventTypeNormal, "OnRemoveFlakeSucceeded",
 			"Decommission flake applied successfully")
 		return r.finalize(ctx, config)
 
 	case job.Status.Failed > 0:
 		if job.DeletionTimestamp.IsZero() {
-			config.Status.OnRemoveRetries++
+			// Persist the incremented retry count robustly BEFORE deleting the
+			// child, so a status-update conflict cannot drop the count and let
+			// decommission exceed MaxOnRemoveRetries.
+			if err := r.bumpOnRemoveRetries(ctx, config); err != nil {
+				return ctrl.Result{}, err
+			}
 			if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
@@ -351,6 +376,10 @@ func (r *NixosConfigurationReconciler) reconcileRemoving(ctx context.Context, co
 			r.Recorder.Event(config, corev1.EventTypeWarning, "OnRemoveFlakeFailed",
 				fmt.Sprintf("Decommission failed after %d attempts; finalizing anyway", MaxOnRemoveRetries))
 			if err := r.clearMachineStatus(ctx, config, &machine); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Terminal give-up: clean up the orphan CR before finalizing.
+			if err := r.deleteDecommissionJob(ctx, job); err != nil {
 				return ctrl.Result{}, err
 			}
 			return r.finalize(ctx, config)
@@ -380,6 +409,37 @@ func (r *NixosConfigurationReconciler) finalize(ctx context.Context, config *nio
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// deleteDecommissionJob deletes the orphan decommission NixJob CR best-effort
+// (a missing object is fine — it may have already been reaped).
+func (r *NixosConfigurationReconciler) deleteDecommissionJob(ctx context.Context, job *niov1alpha1.NixJob) error {
+	if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// bumpOnRemoveRetries increments status.onRemoveRetries and persists it,
+// retrying on conflict by re-reading the latest object so a transient conflict
+// cannot drop the count (which would let decommission exceed MaxOnRemoveRetries).
+// The working copy is synced to the persisted state on success.
+func (r *NixosConfigurationReconciler) bumpOnRemoveRetries(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
+	key := client.ObjectKeyFromObject(config)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest niov1alpha1.NixosConfiguration
+		if err := r.Get(ctx, key, &latest); err != nil {
+			return err
+		}
+		latest.Status.OnRemoveRetries++
+		latest.Status.Phase = niov1alpha1.NixosConfigPhaseRemoving
+		if err := r.Status().Update(ctx, &latest); err != nil {
+			return err
+		}
+		config.Status = latest.Status
+		config.ResourceVersion = latest.ResourceVersion
+		return nil
+	})
 }
 
 // statusUpdate persists status, treating a conflict as a soft (retryable) error.
@@ -514,8 +574,9 @@ func (r *NixosConfigurationReconciler) ensureDecommissionNixJob(ctx context.Cont
 		LabelMachineName: machine.Name,
 		LabelOperation:   operationDecommission,
 	}
-	// buildDecommissionNixJob always sets JobTemplate; self-clean the finished
-	// orphan so it does not accumulate.
+	// buildDecommissionNixJob always sets JobTemplate; reap the finished inner
+	// batch Job. Note this TTL does NOT delete the orphan NixJob CR — the
+	// orchestrator deletes that CR in reconcileRemoving before finalizing.
 	desired.Spec.JobTemplate.TTLSecondsAfterFinished = ptr(int32(DecommissionTTLSeconds))
 	// Deliberately NO SetControllerReference (Key decision #3): an ownerRef would
 	// cascade-delete the job the moment the parent is removed.
