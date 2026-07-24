@@ -116,8 +116,6 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	cluster.Status.ObservedGeneration = cluster.Generation
-
 	// List every Machine in the cluster's namespace (selectors are label-based).
 	var machineList niov1alpha1.MachineList
 	if err := r.List(ctx, &machineList, client.InNamespace(cluster.Namespace)); err != nil {
@@ -204,6 +202,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	cluster.Status.Phase = clusterPhase(&cron, haveCron, totalMembers)
 
 	r.setConditions(&cluster, &cron, haveCron, anyUnder, totalMembers)
+
+	// Advance ObservedGeneration only on a successful reconcile, so a
+	// failing/stalled reconcile (which returns early via fail()) does not
+	// prematurely mark this generation observed.
+	cluster.Status.ObservedGeneration = cluster.Generation
 
 	if err := r.Status().Update(ctx, &cluster); err != nil {
 		if apierrors.IsConflict(err) {
@@ -338,26 +341,30 @@ func renderMemberNodeFile(clusterName, machineName, host string, values *apiexte
 	return niov1alpha1.NixFile{Path: nodePath, Inline: &content}, nil
 }
 
-// renderNodeFileContent formats the flake-parts module for one member.
+// renderNodeFileContent formats the flake-parts module for one member. The
+// values JSON and the Machine host are both interpolated into double-quoted Nix
+// strings via escapeNixString so neither can break out of the string or inject
+// a live antiquotation.
 func renderNodeFileContent(clusterName, machineName, host, valuesJSON string) string {
 	return fmt.Sprintf(`{ lib, ... }:
 {
   nixcluster.%q.members.%q =
-    lib.recursiveUpdate (builtins.fromJSON ''
-%s
-'') {
-      install.ip = %q;
+    lib.recursiveUpdate (builtins.fromJSON "%s") {
+      install.ip = "%s";
     };
 }
-`, clusterName, machineName, escapeNixIndentedString(valuesJSON), host)
+`, clusterName, machineName, escapeNixString(valuesJSON), escapeNixString(host))
 }
 
-// escapeNixIndentedString escapes the two sequences special inside a Nix
-// ”...” indented string so arbitrary JSON round-trips: ” (literal two single
-// quotes) and ${ (antiquotation).
-func escapeNixIndentedString(s string) string {
-	s = strings.ReplaceAll(s, "''", "'''")
-	s = strings.ReplaceAll(s, "${", "''${")
+// escapeNixString escapes a Go string for safe interpolation into a Nix
+// double-quoted string literal. Order matters: backslash MUST be escaped first
+// so the backslashes introduced for " and ${ are not themselves doubled. This
+// neutralises string-breakout (") and live antiquotations (${...}); it is used
+// for BOTH the values JSON and the Machine host.
+func escapeNixString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`) // backslash first
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, `${`, `\${`)
 	return s
 }
 

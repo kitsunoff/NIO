@@ -119,8 +119,8 @@ type NodeGroupStatus struct {
 	// +optional
 	Members []MemberStatus `json:"members,omitempty"`
 
-	// Desired is the requested member count (0 when Count is unset — meaning all
-	// matching Machines).
+	// Desired is the requested member count. When Count is unset (all matching
+	// Machines are members), it reflects the number of matching candidates.
 	// +optional
 	Desired int32 `json:"desired"`
 

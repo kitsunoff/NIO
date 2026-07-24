@@ -143,7 +143,9 @@ func TestRenderMemberNodeFile_Content(t *testing.T) {
 		`nixcluster."prod".members."node-01"`,
 		`recursiveUpdate`,
 		`builtins.fromJSON`,
-		`"k3s"`, `"role"`, `"server"`, // the values JSON round-trips
+		// The values JSON is embedded in a double-quoted Nix string, so its own
+		// quotes are backslash-escaped.
+		`\"k3s\"`, `\"role\"`, `\"server\"`,
 		`install.ip = "10.0.0.5"`,
 	}
 	for _, s := range wantSubstr {
@@ -154,6 +156,80 @@ func TestRenderMemberNodeFile_Content(t *testing.T) {
 	// Members must inherit the cluster-level default: no nixosConfiguration.
 	if strings.Contains(c, "nixosConfiguration") {
 		t.Errorf("content must not set nixosConfiguration\n---\n%s", c)
+	}
+}
+
+// TestRenderMemberNodeFile_Escaping is the P4/P5 regression guard: hostile
+// values and a hostile host must never produce an unescaped antiquotation
+// (${), a string-breakout ("), or the ”-boundary of the old indented-string
+// renderer. Every ${ in the output MUST be preceded by a backslash.
+func TestRenderMemberNodeFile_Escaping(t *testing.T) {
+	cases := []struct {
+		name   string
+		values string
+		host   string
+	}{
+		{
+			name:   "antiquotation in a JSON value",
+			values: `{"script":"echo '${VAR}'"}`,
+			host:   "10.0.0.5",
+		},
+		{
+			name:   "getEnv injection payload in values",
+			values: `{"x":"'${builtins.getEnv \"HOME\"}"}`,
+			host:   "10.0.0.5",
+		},
+		{
+			name:   "backslash, quote and single quotes in values",
+			values: `{"a":"b\\c\"d''e"}`,
+			host:   "10.0.0.5",
+		},
+		{
+			name:   "antiquotation injection via host",
+			values: `{}`,
+			host:   `10.0.0.${builtins.getEnv "HOME"}`,
+		},
+		{
+			name:   "backslash and quote in host",
+			values: `{}`,
+			host:   `10.0.0.5\"x`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			values := &apiextensionsv1.JSON{Raw: []byte(tc.values)}
+			nf, err := renderMemberNodeFile("prod", "node-01", tc.host, values)
+			if err != nil {
+				t.Fatalf("renderMemberNodeFile: %v", err)
+			}
+			c := *nf.Inline
+
+			// Every ${ in the output must be escaped (preceded by a backslash),
+			// so no live antiquotation survives into the generated Nix.
+			assertEveryAntiquotationEscaped(t, c)
+
+			// The old indented-string renderer produced ''...''; the double-quoted
+			// renderer must never emit a triple-single-quote boundary.
+			if strings.Contains(c, "'''") {
+				t.Errorf("content contains ''' (stale indented-string boundary)\n---\n%s", c)
+			}
+		})
+	}
+}
+
+// assertEveryAntiquotationEscaped fails if any "${" in s is not immediately
+// preceded by a backslash. It only inspects the two interpolated string
+// literals (values JSON + host); the surrounding template is static and Nix
+// safe, so a scan of the whole rendered file is sufficient and strict.
+func assertEveryAntiquotationEscaped(t *testing.T, s string) {
+	t.Helper()
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] == '$' && s[i+1] == '{' {
+			if i == 0 || s[i-1] != '\\' {
+				t.Errorf("unescaped antiquotation ${ at offset %d\n---\n%s", i, s)
+			}
+		}
 	}
 }
 
