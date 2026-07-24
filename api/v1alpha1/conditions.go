@@ -46,6 +46,22 @@ const (
 	ConditionGitSynced = "GitSynced"
 )
 
+// Cluster-specific condition types.
+const (
+	// ConditionUnderprovisioned indicates a nodeGroup has fewer matching Machines
+	// than its requested count (provisioning is deferred; the gap is surfaced).
+	ConditionUnderprovisioned = "Underprovisioned"
+)
+
+// Cluster-specific reasons.
+const (
+	ReasonUnderprovisioned  = "Underprovisioned"
+	ReasonFullyProvisioned  = "FullyProvisioned"
+	ReasonConverging        = "Converging"
+	ReasonSelectionComplete = "SelectionComplete"
+	ReasonInvalidNodeFile   = "InvalidNodeFile"
+)
+
 // Generic reasons.
 const (
 	ReasonSucceeded   = "Succeeded"
