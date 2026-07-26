@@ -1,19 +1,27 @@
-# Problem: storeRef/builderRef on a target-applying NixosConfiguration breaks the SSH apply
+# storeRef/builderRef on a target-applying NixosConfiguration — the two-key SSH conflict (RESOLVED)
+
+> Status: **RESOLVED** on `main` (fix squashed into `4d9075d`; originally
+> `b750a34 fix(nixrender): keep builder key in builders= so target apply uses its
+> own ssh key`). Guarded by `TestRenderDayTwoChildKeepsTargetKey`
+> (`internal/controller/nixrender_test.go:450`). This note is a retrospective:
+> what the bug was, why it happened, and the shape of the fix that shipped — so
+> the same two-key reasoning carries over to the cluster converge pod, which
+> reuses the identical machinery.
 
 ## Summary
 
-The new `storeRef`/`builderRef` pass-through (commit `d5166a0`) lets a
+The `storeRef`/`builderRef` pass-through (commit `d5166a0`) lets a
 `NixosConfiguration` point its child workloads at a shared `NixStore`/`NixBuilder`.
-Tested live: the child **builds the system on the builder and caches into the
-store correctly**, but the **final apply to the target host fails** with:
+The child **builds the system on the builder and caches into the store
+correctly**, but — before the fix — the **final apply to the target host failed**:
 
-```
+```text
 Received disconnect from <target> port 22:2: Too many authentication failures
 error: failed to start SSH connection to '<target>'
 Command 'nix-copy-closure --to root@<target> …nixos-system-…' returned non-zero exit status 1.
 ```
 
-## Root cause — single global `NIX_SSHOPTS`, two SSH destinations, two keys
+## Root cause (the original bug) — one global `NIX_SSHOPTS`, two SSH destinations, two keys
 
 A store/builder-backed apply child has **two distinct SSH destinations that need
 different keys**:
@@ -23,93 +31,74 @@ different keys**:
 | builder / store | nix `builders = ssh-ng://…` + store push | `store-ssh` | `/etc/nio/ssh/ssh-privatekey` |
 | target host | `nixos-rebuild switch --target-host` / `nix-copy-closure` | machine key | `/etc/nio/target-ssh/ssh-privatekey` |
 
-Both connections read the **same single `NIX_SSHOPTS` env**. There is no way for
-one env to carry a per-destination `-i`.
+`NIX_SSHOPTS` is a single global env; it cannot carry a per-destination `-i`. The
+orchestrator sets `NIX_SSHOPTS = -i /etc/nio/target-ssh/ssh-privatekey …` for the
+target apply. The original workload-family code then **overrode** that env with
+the store/builder key whenever an ssh secret was present, so the target apply
+authenticated with the wrong key → `Too many authentication failures`.
 
-- The orchestrator sets `NIX_SSHOPTS = -i /etc/nio/target-ssh/ssh-privatekey …`
-  (`internal/controller/nixosconfiguration_children.go`, `targetSSHPodTemplate`
-  / `targetNixSSHOpts`).
-- When a store/builder ssh secret is present, the workload family **overrides**
-  it: `NIX_SSHOPTS = -i <store/builder key> …`
-  (`internal/controller/nixrender.go` ~L421-437, guarded by
-  `if in.sshSecretName != ""`).
-- Env upsert keeps ONE value → the store/builder key wins → the target apply
-  authenticates with the **wrong key** → `Too many authentication failures`.
+This was foreseen by the design (`docs/design/nixosconfiguration-v1alpha2.md`,
+Key decision 1: *"Builder + target on the same child is out of scope … that
+avoids the single NIX_SSHOPTS serving two different keys."*). The pass-through
+enabled exactly the excluded combo, so the code had to actually solve the two-key
+problem rather than exclude it.
 
-### Evidence (live)
-- store-backed pod: `NIX_SSHOPTS = -i /etc/nio/ssh/ssh-privatekey …` (builder/store key)
-- plain day-2 pod (works): `NIX_SSHOPTS = -i /etc/nio/target-ssh/ssh-privatekey …` (target key)
-- log: `building …nixos-system-nio-target… on 'ssh-ng://root@builder'` → OK, then
-  `nix-copy-closure --to root@<target>` → auth failure.
+## Resolution (shipped) — keep the builder key in `builders=`, leave `NIX_SSHOPTS` for the target
 
-### This was foreseen by the design
-`docs/design/nixosconfiguration-v1alpha2.md`, **Key decision 1**: *"Builder +
-target on the same child is out of scope … that avoids the single NIX_SSHOPTS
-serving two different keys."* The pass-through enabled exactly the excluded combo.
-Note: `storeRef`-alone likely also trips the override (store push needs
-`in.sshSecretName`) → verify, it is probably the same conflict.
+The fix separates the two keys by **channel** instead of trying to multiplex one
+`NIX_SSHOPTS`:
 
-## Fix options
+- **Builder/store key travels in the nix `builders=` machine-spec** (its 3rd
+  field is the SSH identity), inside `NIX_CONFIG`. `ssh-ng://` build dispatch and
+  store push pick it up from there — they never need it in `NIX_SSHOPTS`.
+- **The app container's `NIX_SSHOPTS` is left for the target key.** The workload
+  family no longer stamps `-i <infra key>` over it. A guard makes this explicit
+  (`internal/controller/nixrender.go:571-573`):
 
-### A. Per-host SSH config (recommended, robust)
-Stop using a single global `-i` in `NIX_SSHOPTS`. Instead generate an ssh client
-config with one `Host` block per destination, each with its own
-`IdentityFile` + `IdentitiesOnly yes`, and point ssh at it via `NIX_SSHOPTS = -F <file>`:
+  ```go
+  // ...we must NOT stamp -i K_infra here — that would override a caller-injected
+  // target key and break the apply (this is the core regression the fix addresses).
+  if !hasEnvVar(app.Env, "NIX_SSHOPTS") && in.sshSecretName != "" {
+      app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: sshHostKeyOpts})
+  }
+  ```
 
-```
-Host <builder-host> <store-host>
-  IdentityFile /etc/nio/ssh/ssh-privatekey
-  IdentitiesOnly yes
-  StrictHostKeyChecking no
-  UserKnownHostsFile /dev/null
-Host <target-host>
-  IdentityFile /etc/nio/target-ssh/ssh-privatekey
-  IdentitiesOnly yes
-  StrictHostKeyChecking no
-  UserKnownHostsFile /dev/null
-```
+  Behavior by case: caller already set `NIX_SSHOPTS` (target key) → left
+  untouched; builder present but caller set nothing → host-key opts only, no
+  identity, so the app's own build dispatch uses the `builders=` key; neither →
+  nothing.
+- The **instantiate init container** still sets
+  `NIX_SSHOPTS = -i /etc/nio/ssh/ssh-privatekey …` (`nixrender.go:438-457`) —
+  correct, because that container only dispatches the build to the builder/store,
+  never to the target.
 
-Then nix's ssh-ng (builder/store) and `nixos-rebuild --target-host` each pick the
-right key **by hostname** automatically. `IdentitiesOnly yes` also kills the
-"too many authentication failures" (only the matched key is offered).
+### Options that were considered (and why the shipped fix differs)
 
-Coordination (the real work): the **workload family** (`nixrender.go`) knows the
-builder/store hosts; the **orchestrator** knows the target host. Both must
-contribute to ONE config. Cleanest: add a small `NixSpec` field the orchestrator
-fills, e.g.
+- **A. Per-host `ssh_config` with `-F`** (one `Host` block per destination,
+  `IdentitiesOnly yes`) — robust but needs a new API field plus orchestrator ↔
+  workload coordination to assemble one config.
+- **B. Multi-key `NIX_SSHOPTS` (`-i target -i builder`)** — fragile; key-offer
+  order and `MaxAuthTries` can still trip "too many auth failures".
+- **C. Guard/revert** — forbid the combo; drops store/builder acceleration.
 
-```go
-// extra ssh identities keyed by host, merged into the pod's ssh_config
-Nix.SSHHostKeys []SSHHostKey{ Host string; IdentityFileMount string }
-```
-
-`nixrender` writes the config from (builder/store entries it already knows) +
-(these extra entries), sets `NIX_SSHOPTS=-F <file>`, and stops emitting the bare
-`-i`. The orchestrator populates one entry for the target host + machine key and
-drops its own `NIX_SSHOPTS` injection.
-
-Scope: shared workload code (`nixrender`) + orchestrator children + new API
-field + regen + unit tests + re-run the tier-1 apply e2e.
-
-### B. Multi-key `NIX_SSHOPTS` (quick, fragile)
-Merge instead of override: `NIX_SSHOPTS = -i target-key -i builder-key` (no
-`IdentitiesOnly`), let ssh try both per connection. Simpler, but fragile:
-key-offer order + `MaxAuthTries` (default 6) with any extra/default keys can still
-trip "too many auth failures". Not recommended as the durable fix.
-
-### C. Guard / revert (align with design)
-Forbid `storeRef`/`builderRef` on a target-applying `NixosConfiguration`
-(validation), or revert `d5166a0`. Safe, restores the design's exclusion, but
-drops store/builder acceleration for NixosConfiguration entirely.
-
-## Recommendation
-Do **A**. It is the only option that actually delivers the feature (store/builder
-acceleration) together with the SSH apply, and it hardens ssh auth generally
-(`IdentitiesOnly`). Treat it as a workload-family change (per-host ssh config)
-with the orchestrator cooperating via a new `NixSpec` ssh-hostkeys field.
+The shipped fix is a fourth, simpler approach: the builder key never enters
+`NIX_SSHOPTS` at all (it lives in `builders=`), so the two channels do not
+collide and no per-host config file or multi-key offering is needed.
 
 ## Regression guard
-The plain day-2 path (no store/builder) works and must keep working. Any fix must
-preserve: `NixosConfiguration` without store/builder → `NIX_SSHOPTS` uses the
-target key → apply succeeds (verified: config reached `Ready`, day-2
-`lastSuccessfulTime` set).
+
+- `TestRenderDayTwoChildKeepsTargetKey` (`internal/controller/nixrender_test.go:450`):
+  a `storeRef`+`builderRef` day-2 child on a target-applying config asserts the
+  app container keeps the caller-injected **target** key in `NIX_SSHOPTS`, and
+  that the `builders=` line carries the **builder** key so build dispatch still
+  works.
+- The plain day-2 path (no store/builder) keeps `NIX_SSHOPTS` = target key and
+  applies successfully.
+
+## Relevance to the cluster converge pod
+
+The `NixCluster` converge `NixCronJob` inherits this exact machinery: if a
+`NixStore`/`NixBuilder` accelerates the converge build, the builder key must stay
+in `builders=` and the cluster SSH key (`spec.sshKeyRef`) must reach the member
+hosts via the pod's `NIX_SSHOPTS`. The same guard keeps the cluster key from
+being clobbered by an infra key.
