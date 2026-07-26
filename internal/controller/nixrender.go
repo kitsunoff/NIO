@@ -63,6 +63,12 @@ const (
 	// cacheNixosPublicKey is the well-known public key for cache.nixos.org.
 	cacheNixosPublicKey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 	cacheNixosURL       = "https://cache.nixos.org"
+
+	// sshHostKeyOpts are the permissive host-key options every SSH dispatch needs
+	// (no host-key pinning in v1alpha2). They carry no identity: the builder key
+	// lives in the builders= machine-spec and the target key in the caller-injected
+	// NIX_SSHOPTS, so this alone never forces the wrong identity onto a connection.
+	sshHostKeyOpts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 )
 
 // storeInfo carries the resolved NixStore endpoints for NIX_CONFIG assembly.
@@ -76,6 +82,11 @@ type storeInfo struct {
 type builderInfo struct {
 	endpoint string
 	systems  []string
+	// sshKeyPath is the builder SSH private-key path emitted as the machine-spec's
+	// 3rd field in the builders= line. Set when a store-owned SSH secret is mounted,
+	// so ssh-ng authenticates the build dispatch with this key — freeing the app
+	// container's NIX_SSHOPTS to carry a different (target-host) identity.
+	sshKeyPath string
 }
 
 // compositeRevision returns the pod-template revision key
@@ -121,8 +132,14 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 		if len(builder.systems) > 0 {
 			systemList = strings.Join(builder.systems, ",")
 		}
+		buildersLine := "builders = " + builder.endpoint + " " + systemList
+		// Machine-spec 3rd field = builder SSH key, so ssh-ng authenticates the build
+		// dispatch itself and the app's NIX_SSHOPTS can hold the target-host key.
+		if builder.sshKeyPath != "" {
+			buildersLine += " " + builder.sshKeyPath
+		}
 		lines = append(lines,
-			"builders = "+builder.endpoint+" "+systemList,
+			buildersLine,
 			"builders-use-substitutes = true",
 			// Force builds onto the remote builder: with a local job slot nix would
 			// otherwise build locally and the builder→store push would never run.
@@ -434,7 +451,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		buildMounts = append(buildMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
 		sshOpts = []corev1.EnvVar{{
 			Name:  "NIX_SSHOPTS",
-			Value: "-i " + sshPrivateKeyPath + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+			Value: "-i " + sshPrivateKeyPath + " " + sshHostKeyOpts,
 		}}
 	}
 	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
@@ -542,8 +559,17 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags), appNeedsSSH)
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
-	for _, e := range sshOpts {
-		app.Env = upsertEnv(app.Env, e)
+	// App-container NIX_SSHOPTS carries the identity for whatever the app itself
+	// SSHes to (a target host for `nixos-rebuild --target-host`). The builder key
+	// now travels in the builders= machine-spec, so we must NOT stamp -i K_infra
+	// here — that would override a caller-injected target key and break the apply
+	// (this is the core regression the fix addresses).
+	//   - caller already set NIX_SSHOPTS (target key) → leave it untouched.
+	//   - builder present but caller set nothing → host-key opts only, no identity,
+	//     so the app's build dispatch uses the builders= key.
+	//   - neither → nothing.
+	if !hasEnvVar(app.Env, "NIX_SSHOPTS") && in.sshSecretName != "" {
+		app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: sshHostKeyOpts})
 	}
 	app.VolumeMounts = upsertMounts(app.VolumeMounts, buildMounts...)
 	tmpl.Spec.Containers = setContainer(tmpl.Spec.Containers, app)

@@ -143,6 +143,11 @@ func resolveInfra(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 		}
 		if storeForSSH != nil {
 			deps.sshSecretName = sshSecretName(storeForSSH.Name)
+			// Move the builder identity into the builders= machine-spec (3rd field)
+			// so ssh-ng authenticates the dispatch itself. This frees the app
+			// container's NIX_SSHOPTS to carry a different key (e.g. the target-host
+			// key injected by the NixosConfiguration orchestrator).
+			deps.builder.sshKeyPath = sshPrivateKeyPath
 		}
 	}
 

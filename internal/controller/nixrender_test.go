@@ -332,6 +332,155 @@ func TestRenderPodTemplateSSHWiring(t *testing.T) {
 	}
 }
 
+// TestBuildNixConfigBuilderSSHKey checks D1: when the builder carries an SSH key
+// path, the builders= machine-spec ends with that key (its 3rd field), so ssh-ng
+// authenticates the build dispatch itself.
+func TestBuildNixConfigBuilderSSHKey(t *testing.T) {
+	cfg := buildNixConfig(nil, &builderInfo{
+		endpoint:   "ssh-ng://root@builder.nio.svc",
+		systems:    []string{"aarch64-linux"},
+		sshKeyPath: sshPrivateKeyPath,
+	})
+	want := "builders = ssh-ng://root@builder.nio.svc aarch64-linux " + sshPrivateKeyPath
+	if !strings.Contains(cfg, want) {
+		t.Errorf("builders line must end with the ssh key path\n want substring: %q\n got: %q", want, cfg)
+	}
+	if !strings.Contains(cfg, sshPrivateKeyPath) || sshPrivateKeyPath != "/etc/nio/ssh/ssh-privatekey" {
+		t.Errorf("expected builder key path /etc/nio/ssh/ssh-privatekey, got %q", sshPrivateKeyPath)
+	}
+
+	// No key path → no trailing key on the builders line (ephemeral/older path).
+	noKey := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://x", systems: []string{"aarch64-linux"}})
+	if strings.Contains(noKey, "aarch64-linux "+sshPrivateKeyPath) {
+		t.Errorf("builders line must not carry a key when none is set: %q", noKey)
+	}
+}
+
+// TestRenderAppKeepsCallerNIXSSHOPTS is the core regression (D2): when the
+// orchestrator already injected the target-host key via NIX_SSHOPTS on the app
+// container, render must NOT override it with the builder (K_infra) key — even
+// though a builder + store SSH secret are in play. The target apply must
+// authenticate with the Machine's own key.
+func TestRenderAppKeepsCallerNIXSSHOPTS(t *testing.T) {
+	const targetOpts = "-i /etc/nio/target-ssh/ssh-privatekey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+	base := corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Name: "app",
+			Env:  []corev1.EnvVar{{Name: "NIX_SSHOPTS", Value: targetOpts}},
+		}},
+	}}
+	in := renderInput{
+		spec: niov1alpha1.NixSpec{
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: "main"},
+			Run:    "nixpkgs#nixos-rebuild",
+			Args:   []string{"switch", "--flake", ".#web", "--target-host", "root@10.0.0.5"},
+		},
+		resolvedRevision: "abc1234",
+		kind:             "NixCronJob",
+		name:             "web-day2",
+		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
+		sshSecretName:    "store-ssh",
+	}
+	out := renderPodTemplate(in, base)
+	app := containerByName(out.Spec.Containers, "app")
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	got := envMap(app.Env)["NIX_SSHOPTS"]
+	if got != targetOpts {
+		t.Errorf("app NIX_SSHOPTS was overridden\n want: %q\n got:  %q", targetOpts, got)
+	}
+	if strings.Contains(got, sshKeyMountPath+"/") {
+		t.Errorf("app NIX_SSHOPTS must NOT reference the builder key %q: %q", sshPrivateKeyPath, got)
+	}
+	if !strings.Contains(got, "/etc/nio/target-ssh/") {
+		t.Errorf("app NIX_SSHOPTS must keep the target key: %q", got)
+	}
+}
+
+// TestRenderAppHostKeyOptsOnlyWhenNoCallerOpts covers D2's middle case: a builder
+// is present but the caller injected nothing, so the app gets host-key options
+// only (no -i), and dispatches builds using the builders= key.
+func TestRenderAppHostKeyOptsOnlyWhenNoCallerOpts(t *testing.T) {
+	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"}
+	out := renderPodTemplate(renderInput{
+		spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j",
+		builder:       &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
+		sshSecretName: "store-ssh",
+	}, corev1.PodTemplateSpec{})
+	app := containerByName(out.Spec.Containers, "app")
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	got := envMap(app.Env)["NIX_SSHOPTS"]
+	if got != sshHostKeyOpts {
+		t.Errorf("app NIX_SSHOPTS = %q, want host-key opts only %q", got, sshHostKeyOpts)
+	}
+	if strings.Contains(got, "-i ") {
+		t.Errorf("app NIX_SSHOPTS must not carry an identity when the caller set none: %q", got)
+	}
+}
+
+// TestRenderInstantiateKeepsInfraKey verifies the instantiate container still
+// carries K_infra in NIX_SSHOPTS — it needs it for the store push
+// (nix copy --to ssh-ng://store), which is not covered by the builders= key.
+func TestRenderInstantiateKeepsInfraKey(t *testing.T) {
+	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"}
+	out := renderPodTemplate(renderInput{
+		spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j",
+		builder:       &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
+		sshSecretName: "store-ssh",
+	}, corev1.PodTemplateSpec{})
+	inst := containerByName(out.Spec.InitContainers, initInstantiate)
+	if inst == nil {
+		t.Fatal("instantiate container missing")
+	}
+	got := envMap(inst.Env)["NIX_SSHOPTS"]
+	want := "-i " + sshPrivateKeyPath + " " + sshHostKeyOpts
+	if got != want {
+		t.Errorf("instantiate NIX_SSHOPTS = %q, want %q", got, want)
+	}
+}
+
+// TestRenderDayTwoChildKeepsTargetKey is the orchestrator-path regression: take
+// the day-2 NixCronJob the orchestrator builds for a config with storeRef+builderRef
+// (target key injected via targetSSHPodTemplate), render its pod through nixrender
+// with the resolved builder+store SSH secret, and confirm the app still applies to
+// the target with the Machine key — not the builder key.
+func TestRenderDayTwoChildKeepsTargetKey(t *testing.T) {
+	cfg := testConfig()
+	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: "store"}
+	cfg.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: "builder"}
+	cron, err := buildDayTwoNixCronJob(cfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildDayTwoNixCronJob: %v", err)
+	}
+	pod := cron.Spec.CronJobTemplate.JobTemplate.Spec.Template
+	out := renderPodTemplate(renderInput{
+		spec:             cron.Spec.Nix,
+		resolvedRevision: "abc1234",
+		kind:             "NixCronJob",
+		name:             cron.Name,
+		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
+		sshSecretName:    "store-ssh",
+	}, pod)
+	app := containerByName(out.Spec.Containers, "app")
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	got := envMap(app.Env)["NIX_SSHOPTS"]
+	if !strings.Contains(got, targetSSHKeyPath) {
+		t.Errorf("rendered day-2 app NIX_SSHOPTS must use the target key %q: %q", targetSSHKeyPath, got)
+	}
+	if strings.Contains(got, sshKeyMountPath+"/") {
+		t.Errorf("rendered day-2 app NIX_SSHOPTS must NOT use the builder key: %q", got)
+	}
+	// And the builders= line must carry the builder key so the dispatch still works.
+	if !strings.Contains(envMap(app.Env)["NIX_CONFIG"], "builders = ssh-ng://root@b.svc "+defaultNixSystems+" "+sshPrivateKeyPath) {
+		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)["NIX_CONFIG"])
+	}
+}
+
 // containerByName returns a pointer to the named container, or nil.
 func containerByName(cs []corev1.Container, name string) *corev1.Container {
 	for i := range cs {
