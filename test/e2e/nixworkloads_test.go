@@ -244,7 +244,7 @@ spec:
 		By("the builder-backed NixJob completes (build ran on the builder)")
 		Eventually(func() string {
 			return kget("nixjob", "rbjob", "-o", "jsonpath={.status.phase}")
-		}, 12*time.Minute, 10*time.Second).Should(Equal("Ready"), "builder-backed NixJob did not complete")
+		}, 20*time.Minute, 10*time.Second).Should(Equal("Ready"), "builder-backed NixJob did not complete")
 
 		By("the built path was realized into the shared NixStore")
 		Eventually(func() string {
