@@ -14,9 +14,12 @@ status. This is distinct from:
 - **envtest tests** — controller reconcile against a real kube-apiserver + etcd
   but **no kubelet** (no pods actually run). These live next to the controllers
   as `*_test.go` and use `suite_test.go`.
-- **real-Nix integration tests** — exercise the apply-job runner against a real
-  `nix`/`git` on the test host, skipped when those binaries are absent
-  (`internal/applyjob/runner_nix_test.go`).
+- **real-Nix integration tests** — historically exercised the bespoke v1alpha1
+  apply-job runner against a real `nix`/`git` on the test host. That runner
+  (`cmd/apply`, `internal/applyjob`) was **retired by the v1alpha2 rewrite**,
+  which runs apply as `NixJob`/`NixCronJob`; the real-Nix path is now exercised
+  through the workload family (`internal/controller/*_nix_test.go`, gated on
+  `nix`/`git` being present).
 
 E2E is the only layer where a Nix pod actually pulls the image, substitutes a
 closure, and runs — and (for `NixosConfiguration`) the only layer that can drive

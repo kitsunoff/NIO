@@ -4,6 +4,12 @@
 > Design: `docs/design/cluster-crd.md`. This CRD groups `Machine`s, generates
 > per-member node files into a flake-parts repo, and drives one idempotent
 > `converge` `NixCronJob`.
+>
+> **Naming note:** this doc predates the decision to rename the CRD Kind
+> `Cluster` → `NixCluster` (see `docs/design/nixcluster-integration-testing.md`
+> §0). References to `Cluster` below map 1:1 to `NixCluster` once the rename
+> lands. The tier-1 example was originally k3s; the **current tier-1 target is an
+> Incus cluster** (see the integration-testing plan §4–§5).
 
 ## What the controller does (recap)
 
