@@ -26,6 +26,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -37,7 +38,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
-	"github.com/kitsunoff/nixos-operator/cmd/apply"
 	"github.com/kitsunoff/nixos-operator/internal/controller"
 	"github.com/kitsunoff/nixos-operator/internal/ssh"
 	// +kubebuilder:scaffold:imports
@@ -60,12 +60,6 @@ func main() {
 	// Check for subcommands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "apply":
-			if err := apply.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			return
 		case "version":
 			fmt.Println("nixos-operator v0.1.0")
 			return
@@ -99,7 +93,8 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
-		Development: true,
+		Development:     false,
+		StacktraceLevel: zapcore.DPanicLevel,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -260,6 +255,14 @@ func main() {
 		Recorder: mgr.GetEventRecorderFor("nixcronjob-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NixCronJob")
+		os.Exit(1)
+	}
+	if err := (&controller.ClusterReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("cluster-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

@@ -70,6 +70,73 @@ spec:
                 description: Nix is the flake source, revision tracking, and build/run
                   configuration.
                 properties:
+                  additionalFiles:
+                    description: |-
+                      AdditionalFiles are injected into the fetched source tree before the Nix
+                      build and force-staged (git add --force), so a git-tree flake source
+                      includes them even under .gitignore. This is BUILD-TIME injection into the
+                      Nix source — not a runtime pod mount (for runtime files, add volumes to the
+                      workload template directly). Its purpose is per-target files a shared flake
+                      cannot carry (e.g. hardware-configuration.nix, or a secret a module imports).
+                    items:
+                      description: |-
+                        NixFile is one file injected into the source checkout before the build.
+                        Exactly one content source (Inline, ConfigMapRef, or SecretRef) must be set.
+                      properties:
+                        configMapRef:
+                          description: ConfigMapRef takes the content from a ConfigMap
+                            key (same namespace).
+                          properties:
+                            key:
+                              description: Key is the key in the ConfigMap.
+                              minLength: 1
+                              type: string
+                            name:
+                              description: Name is the ConfigMap name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        inline:
+                          description: |-
+                            Inline is literal, non-sensitive file content. Sensitive content must use
+                            secretRef (inline is carried in the pod spec, so never put secrets here).
+                          type: string
+                        path:
+                          description: |-
+                            Path is the destination relative to the source checkout root. It must be a
+                            relative path that stays inside the tree (no leading "/", no ".." segment).
+                          maxLength: 4096
+                          minLength: 1
+                          type: string
+                        secretRef:
+                          description: SecretRef takes the content from a Secret key
+                            (same namespace).
+                          properties:
+                            key:
+                              description: Key is the key in the Secret.
+                              minLength: 1
+                              type: string
+                            name:
+                              description: Name is the Secret name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - path
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one of inline, configMapRef, or secretRef
+                          must be set
+                        rule: '[has(self.inline), has(self.configMapRef), has(self.secretRef)].filter(x,
+                          x).size() == 1'
+                    maxItems: 64
+                    type: array
                   args:
                     description: |-
                       Args follow the `--` separator: runtime data, NOT built. "." here also
@@ -8982,8 +9049,11 @@ spec:
                         - name
                         type: object
                       dir:
-                        description: Dir is an optional subdirectory holding the flake
-                          (flake-in-subdir).
+                        description: |-
+                          Dir is an optional subdirectory holding the flake (flake-in-subdir). When
+                          set, the build/run commands execute with the working directory at this
+                          subdir of the checkout, so a relative installable (e.g. ".#attr") resolves
+                          against it. Must be a relative path inside the checkout.
                         type: string
                       fluxSourceRef:
                         description: |-

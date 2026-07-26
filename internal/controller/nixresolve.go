@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -131,14 +132,49 @@ func resolveRevision(ctx context.Context, c client.Client, git GitResolver, name
 	if ref == "" {
 		ref = defaultGitRef
 	}
-	// NOTE: the workload family does not yet feed CredentialsRef to the
-	// resolver; private-repo revision resolution for workloads is tracked
-	// separately. NixosConfiguration wires credentials in its own resolver call.
-	sha, err := git.LsRemote(ctx, src.GitRepo, ref, nil)
+	// Wire private-repo credentials from CredentialsRef through to ls-remote via
+	// the shared internal/gitauth builder (same secret-key convention as the
+	// NixosConfiguration apply path). Public repos leave creds nil and never
+	// touch the client.
+	var creds *gitauth.Creds
+	if src.CredentialsRef != nil {
+		var err error
+		creds, err = readGitCreds(ctx, c, namespace, src.CredentialsRef.Name)
+		if err != nil {
+			return resolvedSource{}, err
+		}
+	}
+	sha, err := git.LsRemote(ctx, src.GitRepo, ref, creds)
 	if err != nil {
 		return resolvedSource{}, err
 	}
 	return resolvedSource{revision: sha}, nil
+}
+
+// readGitCreds reads a private-repo credentials Secret into gitauth.Creds using
+// the shared key convention: "ssh-privatekey" / "known_hosts" (byte-exact) and
+// "username" / "password" (trimmed, since file-sourced values often carry a
+// trailing newline). A token-only Secret populates the password from "token".
+// The trimming must match the pod's fetch-source GIT_ASKPASS helper (the clone
+// script in nixrender.go reads only the first line of each file) so
+// controller-side ls-remote and the pod's clone authenticate identically.
+func readGitCreds(ctx context.Context, c client.Client, namespace, name string) (*gitauth.Creds, error) {
+	var secret corev1.Secret
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &secret); err != nil {
+		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
+	}
+	creds := &gitauth.Creds{
+		SSHKey:     secret.Data["ssh-privatekey"],
+		KnownHosts: secret.Data["known_hosts"],
+		Username:   strings.TrimSpace(string(secret.Data["username"])),
+		Password:   strings.TrimSpace(string(secret.Data["password"])),
+	}
+	if creds.Password == "" {
+		if token, ok := secret.Data["token"]; ok {
+			creds.Password = strings.TrimSpace(string(token))
+		}
+	}
+	return creds, nil
 }
 
 // fluxSourceGroup is the Flux source API group.
