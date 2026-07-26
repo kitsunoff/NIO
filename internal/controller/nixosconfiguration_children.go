@@ -73,14 +73,40 @@ func mapAdditionalFiles(config *niov1alpha1.NixosConfiguration) ([]niov1alpha1.N
 	return out, nil
 }
 
-// childNixSource is the flake source shared by every child.
+// isFullCommitSHA reports whether s is a full 40-char hex commit SHA. Such a
+// value must route to NixSource.Rev (resolved verbatim, no git) rather than Ref
+// (resolved via `git ls-remote`, which the distroless operator image cannot run).
+func isFullCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// childNixSource is the flake source shared by every child. A full commit SHA in
+// config.Spec.Ref is pinned via Rev (resolves without git, works in the
+// distroless operator); a branch/tag ref stays on Ref (git ls-remote polling).
 func childNixSource(config *niov1alpha1.NixosConfiguration) niov1alpha1.NixSource {
-	return niov1alpha1.NixSource{
+	src := niov1alpha1.NixSource{
 		GitRepo:        config.Spec.GitRepo,
-		Ref:            config.Spec.Ref,
 		CredentialsRef: config.Spec.CredentialsRef,
 		Dir:            config.Spec.ConfigurationSubdir,
 	}
+	if isFullCommitSHA(config.Spec.Ref) {
+		src.Rev = config.Spec.Ref
+	} else {
+		src.Ref = config.Spec.Ref
+	}
+	return src
 }
 
 // targetHost returns "<user>@<host>" for the machine (user defaults to root).

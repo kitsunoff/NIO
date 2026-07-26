@@ -172,6 +172,57 @@ func TestBuildDecommissionNixJob(t *testing.T) {
 	}
 }
 
+// commitSHA is a full 40-char hex commit used to exercise the pinned-Rev path.
+const commitSHA = "383f0f3489d4fe3828f4714a8c2f0de038946828"
+
+// TestChildSource_PinnedSHARoutesToRev asserts that when the config's Ref is a
+// full 40-hex commit SHA the child source pins it via Rev (which resolves without
+// git, so it works in the distroless operator), leaving Ref empty. A branch ref
+// keeps the current behavior (Ref set, Rev empty).
+func TestChildSource_PinnedSHARoutesToRev(t *testing.T) {
+	shaCfg := testConfig()
+	shaCfg.Spec.Ref = commitSHA
+
+	branchCfg := testConfig() // Ref == "main"
+
+	install, err := buildInstallNixJob(shaCfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildInstallNixJob: %v", err)
+	}
+	cron, err := buildDayTwoNixCronJob(shaCfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildDayTwoNixCronJob: %v", err)
+	}
+	decom, err := buildDecommissionNixJob(shaCfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildDecommissionNixJob: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		src  niov1alpha1.NixSource
+	}{
+		{"install", install.Spec.Nix.Source},
+		{"day2", cron.Spec.Nix.Source},
+		{"decommission", decom.Spec.Nix.Source},
+	} {
+		if tc.src.Rev != commitSHA {
+			t.Errorf("%s: Source.Rev = %q, want pinned SHA %q", tc.name, tc.src.Rev, commitSHA)
+		}
+		if tc.src.Ref != "" {
+			t.Errorf("%s: Source.Ref = %q, want empty when SHA is pinned", tc.name, tc.src.Ref)
+		}
+	}
+
+	binstall, err := buildInstallNixJob(branchCfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildInstallNixJob (branch): %v", err)
+	}
+	if src := binstall.Spec.Nix.Source; src.Ref != "main" || src.Rev != "" {
+		t.Errorf("branch ref: Source = {Ref:%q Rev:%q}, want {Ref:\"main\" Rev:\"\"}", src.Ref, src.Rev)
+	}
+}
+
 func TestMapAdditionalFiles(t *testing.T) {
 	cfg := &niov1alpha1.NixosConfiguration{Spec: niov1alpha1.NixosConfigurationSpec{
 		AdditionalFiles: []niov1alpha1.AdditionalFile{
