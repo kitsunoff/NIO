@@ -229,6 +229,65 @@ func TestReconcile_FullInstall_Path(t *testing.T) {
 	}
 }
 
+// TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate is the
+// regression guard for the idempotency bug where a status-update conflict after
+// install success could let a subsequent reconcile observe
+// FullDiskInstallCompleted=false and RECREATE the just-deleted install NixJob,
+// re-running nixos-anywhere and re-wiping the installed machine.
+//
+// It asserts the invariant that fixes the bug: on install success completion is
+// persisted DURABLY (re-Get proves it), the install child is deleted, and no
+// number of follow-up reconciles ever recreates the <cfg>-install NixJob.
+func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.T) {
+	cfg := smConfig()
+	cfg.Spec.FullInstall = true
+	r, c := smReconciler(t, cfg, smMachine())
+
+	// First reconcile: install child created, phase Installing.
+	smReconcile(t, r, "web")
+
+	var install niov1alpha1.NixJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+		t.Fatalf("install NixJob not created: %v", err)
+	}
+
+	// Simulate the install completing.
+	install.Status.Succeeded = 1
+	if err := c.Status().Update(context.Background(), &install); err != nil {
+		t.Fatalf("seed install status: %v", err)
+	}
+
+	// Reconcile that observes success. markFullDiskInstallCompleted must persist
+	// completion durably before deleting the child.
+	smReconcile(t, r, "web")
+
+	// Completion is durably persisted (re-Get from the API, not the in-memory copy).
+	got := getConfig(t, c, "web")
+	if !got.Status.FullDiskInstallCompleted {
+		t.Fatal("FullDiskInstallCompleted must be persisted after install success")
+	}
+	if got.Status.InstallJobRef != "" {
+		t.Errorf("InstallJobRef = %q, want cleared after success", got.Status.InstallJobRef)
+	}
+
+	// The install child is deleted.
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err == nil {
+		t.Fatal("install NixJob should be deleted after success")
+	}
+
+	// The core invariant: repeated follow-up reconciles must NEVER recreate the
+	// install child. Because completion is persisted, the caller gate
+	// (!FullDiskInstallCompleted) keeps reconcileInstall/ensureInstallNixJob from
+	// re-entering, so a second run of nixos-anywhere can never wipe the machine.
+	for i := 0; i < 3; i++ {
+		smReconcile(t, r, "web")
+		var recreated niov1alpha1.NixJob
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &recreated); err == nil {
+			t.Fatalf("install NixJob must NOT be recreated after success (follow-up reconcile %d)", i+1)
+		}
+	}
+}
+
 // TestReconcile_FullInstall_FailureBoundedByRetries checks a failing install is
 // retried up to the cap, then held in Degraded.
 func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {

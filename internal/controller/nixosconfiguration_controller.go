@@ -195,8 +195,15 @@ func (r *NixosConfigurationReconciler) reconcileInstall(ctx context.Context, con
 
 	switch {
 	case job.Status.Succeeded > 0:
-		config.Status.FullDiskInstallCompleted = true
-		config.Status.InstallJobRef = ""
+		// Persist completion DURABLY before deleting the child. If the final
+		// shared status update later in this reconcile conflicts (or is
+		// otherwise not persisted), a subsequent reconcile must never observe
+		// FullDiskInstallCompleted=false and recreate the install NixJob, which
+		// would re-run nixos-anywhere and re-wipe the installed machine. Only
+		// delete the child once completion is durable.
+		if err := r.markFullDiskInstallCompleted(ctx, config); err != nil {
+			return false, ctrl.Result{}, err
+		}
 		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
 			return false, ctrl.Result{}, err
 		}
@@ -433,6 +440,32 @@ func (r *NixosConfigurationReconciler) bumpOnRemoveRetries(ctx context.Context, 
 		}
 		latest.Status.OnRemoveRetries++
 		latest.Status.Phase = niov1alpha1.NixosConfigPhaseRemoving
+		if err := r.Status().Update(ctx, &latest); err != nil {
+			return err
+		}
+		config.Status = latest.Status
+		config.ResourceVersion = latest.ResourceVersion
+		return nil
+	})
+}
+
+// markFullDiskInstallCompleted durably persists that the full-disk install has
+// finished (status.fullDiskInstallCompleted=true, status.installJobRef cleared),
+// retrying on conflict by re-reading the latest object. This must succeed BEFORE
+// the install child is deleted so no later reconcile can observe completion as
+// false and recreate the child (which would re-wipe the installed machine). The
+// working copy is synced to the persisted state on success so the shared status
+// update later in the same reconcile does not conflict. It is idempotent: setting
+// the flag when already true is a no-op write.
+func (r *NixosConfigurationReconciler) markFullDiskInstallCompleted(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
+	key := client.ObjectKeyFromObject(config)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest niov1alpha1.NixosConfiguration
+		if err := r.Get(ctx, key, &latest); err != nil {
+			return err
+		}
+		latest.Status.FullDiskInstallCompleted = true
+		latest.Status.InstallJobRef = ""
 		if err := r.Status().Update(ctx, &latest); err != nil {
 			return err
 		}
