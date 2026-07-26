@@ -104,8 +104,18 @@ func TestBuildInstallNixJob(t *testing.T) {
 	if nix.Run != installerInstallable {
 		t.Errorf("Run = %q, want nixos-anywhere", nix.Run)
 	}
-	if strings.Join(nix.Args, " ") != "--flake .#worker root@10.0.0.5" {
-		t.Errorf("Args = %v", nix.Args)
+	// nixos-anywhere runs its own ssh (ssh-copy-id + control connection) and
+	// ignores NIX_SSHOPTS, so the install child must pass the identity + permissive
+	// host-key options explicitly via -i/--ssh-option, with the target host last.
+	wantArgs := []string{
+		"--flake", ".#worker",
+		"-i", targetSSHKeyPath,
+		"--ssh-option", "StrictHostKeyChecking=no",
+		"--ssh-option", "UserKnownHostsFile=/dev/null",
+		"root@10.0.0.5",
+	}
+	if strings.Join(nix.Args, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Errorf("Args = %v, want %v", nix.Args, wantArgs)
 	}
 	if nix.Source.Dir != "hosts/web" || nix.Source.GitRepo != "https://github.com/acme/nixcfg" {
 		t.Errorf("Source wrong: %+v", nix.Source)

@@ -157,6 +157,20 @@ func requireTargetKey(machine *niov1alpha1.Machine) error {
 	return nil
 }
 
+// installAnywhereArgs builds the nixos-anywhere install args. nixos-anywhere runs
+// its own ssh (ssh-copy-id + control connection) and does NOT honor NIX_SSHOPTS,
+// so the identity file and permissive host-key options are passed explicitly via
+// -i/--ssh-option; the target host stays the trailing positional arg.
+func installAnywhereArgs(config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) []string {
+	return []string{
+		"--flake", flakeInstallable(config.Spec.Flake),
+		"-i", targetSSHKeyPath,
+		"--ssh-option", "StrictHostKeyChecking=no",
+		"--ssh-option", "UserKnownHostsFile=/dev/null",
+		targetHost(machine),
+	}
+}
+
 // buildInstallNixJob builds the one-shot full-disk install child (nixos-anywhere).
 func buildInstallNixJob(config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*niov1alpha1.NixJob, error) {
 	if err := requireTargetKey(machine); err != nil {
@@ -173,7 +187,7 @@ func buildInstallNixJob(config *niov1alpha1.NixosConfiguration, machine *niov1al
 			Nix: niov1alpha1.NixSpec{
 				Source:          childNixSource(config),
 				Run:             installerInstallable,
-				Args:            []string{"--flake", flakeInstallable(config.Spec.Flake), targetHost(machine)},
+				Args:            installAnywhereArgs(config, machine),
 				AdditionalFiles: files,
 			},
 			JobTemplate: &batchv1.JobSpec{Template: pod},
