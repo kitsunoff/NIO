@@ -78,29 +78,29 @@ const (
 func convergeCronName(cluster string) string      { return cluster + convergeChildSuffix }
 func clusterAppInstallable(cluster string) string { return ".#cluster-" + cluster }
 
-// ClusterReconciler reconciles a Cluster object: it selects Machines per
+// NixClusterReconciler reconciles a NixCluster object: it selects Machines per
 // nodeGroup (stable + sticky), renders per-member node files, and drives ONE
 // idempotent converge NixCronJob. NIO stays abstract — converge (in the
 // downstream flake repo) owns ordering, install/switch, secrets, and post-ops.
-type ClusterReconciler struct {
+type NixClusterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=nio.homystack.com,resources=clusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=nio.homystack.com,resources=clusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=nio.homystack.com,resources=clusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixcronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=machines,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// Reconcile drives a Cluster toward its desired state.
-func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+// Reconcile drives a NixCluster toward its desired state.
+func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var cluster niov1alpha1.Cluster
+	var cluster niov1alpha1.NixCluster
 	if err := r.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -146,7 +146,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		group := &cluster.Spec.NodeGroups[i]
 		sel, err := metav1.LabelSelectorAsSelector(&group.Selector)
 		if err != nil {
-			return r.fail(ctx, &cluster, niov1alpha1.ClusterPhaseBlocked, niov1alpha1.ReasonSelectionComplete,
+			return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseBlocked, niov1alpha1.ReasonSelectionComplete,
 				fmt.Errorf("group %q selector: %w", group.Name, err))
 		}
 		candidates := matchingMachines(machineList.Items, sel, claimed)
@@ -169,7 +169,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			m := byName[name]
 			nf, err := renderMemberNodeFile(cluster.Name, name, m.Spec.Host, group.Values)
 			if err != nil {
-				return r.fail(ctx, &cluster, niov1alpha1.ClusterPhaseBlocked, niov1alpha1.ReasonInvalidNodeFile, err)
+				return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseBlocked, niov1alpha1.ReasonInvalidNodeFile, err)
 			}
 			nodeFiles = append(nodeFiles, nf)
 			gs.Members = append(gs.Members, niov1alpha1.MemberStatus{Name: name})
@@ -179,11 +179,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if err := validateAdditionalFiles(nodeFiles); err != nil {
-		return r.fail(ctx, &cluster, niov1alpha1.ClusterPhaseBlocked, niov1alpha1.ReasonInvalidNodeFile, err)
+		return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseBlocked, niov1alpha1.ReasonInvalidNodeFile, err)
 	}
 
 	if err := r.ensureConvergeCronJob(ctx, &cluster, nodeFiles); err != nil {
-		return r.fail(ctx, &cluster, niov1alpha1.ClusterPhaseDegraded, niov1alpha1.ReasonFailed, err)
+		return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseDegraded, niov1alpha1.ReasonFailed, err)
 	}
 
 	// Observe the converge cron for a coarse, job-level per-node status and phase
@@ -212,7 +212,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		log.Error(err, "failed to update Cluster status")
+		log.Error(err, "failed to update NixCluster status")
 		return ctrl.Result{}, err
 	}
 
@@ -371,7 +371,7 @@ func escapeNixString(s string) string {
 // convergePodTemplate returns the converge pod template with the cluster SSH key
 // and age key mounted, and NIX_SSHOPTS/SOPS_AGE_KEY_FILE set. nixrender
 // preserves these (upsert) on the app container.
-func convergePodTemplate(cluster *niov1alpha1.Cluster) corev1.PodTemplateSpec {
+func convergePodTemplate(cluster *niov1alpha1.NixCluster) corev1.PodTemplateSpec {
 	mode := int32(0o400)
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -415,7 +415,7 @@ func convergePodTemplate(cluster *niov1alpha1.Cluster) corev1.PodTemplateSpec {
 }
 
 // desiredConvergeCronJob builds the one owned converge NixCronJob.
-func desiredConvergeCronJob(cluster *niov1alpha1.Cluster, files []niov1alpha1.NixFile) *niov1alpha1.NixCronJob {
+func desiredConvergeCronJob(cluster *niov1alpha1.NixCluster, files []niov1alpha1.NixFile) *niov1alpha1.NixCronJob {
 	schedule := cluster.Spec.DayTwoSchedule
 	if schedule == "" {
 		schedule = defaultClusterDayTwoSchedule
@@ -425,7 +425,7 @@ func desiredConvergeCronJob(cluster *niov1alpha1.Cluster, files []niov1alpha1.Ni
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      convergeCronName(cluster.Name),
 			Namespace: cluster.Namespace,
-			Labels:    managedLabels("Cluster", cluster.Name),
+			Labels:    managedLabels("NixCluster", cluster.Name),
 		},
 		Spec: niov1alpha1.NixCronJobSpec{
 			Nix: niov1alpha1.NixSpec{
@@ -450,8 +450,8 @@ func desiredConvergeCronJob(cluster *niov1alpha1.Cluster, files []niov1alpha1.Ni
 }
 
 // ensureConvergeCronJob creates or updates the owned converge NixCronJob.
-func (r *ClusterReconciler) ensureConvergeCronJob(
-	ctx context.Context, cluster *niov1alpha1.Cluster, files []niov1alpha1.NixFile,
+func (r *NixClusterReconciler) ensureConvergeCronJob(
+	ctx context.Context, cluster *niov1alpha1.NixCluster, files []niov1alpha1.NixFile,
 ) error {
 	desired := desiredConvergeCronJob(cluster, files)
 	cron := &niov1alpha1.NixCronJob{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
@@ -486,26 +486,26 @@ func coarseMemberStatus(cron *niov1alpha1.NixCronJob, haveCron bool) string {
 // clusterPhase maps the converge cron state (and selection) to a coarse phase.
 func clusterPhase(cron *niov1alpha1.NixCronJob, haveCron bool, totalMembers int) string {
 	if totalMembers == 0 {
-		return niov1alpha1.ClusterPhaseBlocked
+		return niov1alpha1.NixClusterPhaseBlocked
 	}
 	if !haveCron {
-		return niov1alpha1.ClusterPhaseConverging
+		return niov1alpha1.NixClusterPhaseConverging
 	}
 	switch cron.Status.Phase {
 	case niov1alpha1.PhaseFailed, niov1alpha1.PhaseDegraded:
-		return niov1alpha1.ClusterPhaseDegraded
+		return niov1alpha1.NixClusterPhaseDegraded
 	case niov1alpha1.PhaseReady:
-		return niov1alpha1.ClusterPhaseReady
+		return niov1alpha1.NixClusterPhaseReady
 	}
 	if cron.Status.LastSuccessfulTime != nil {
-		return niov1alpha1.ClusterPhaseReady
+		return niov1alpha1.NixClusterPhaseReady
 	}
-	return niov1alpha1.ClusterPhaseConverging
+	return niov1alpha1.NixClusterPhaseConverging
 }
 
 // setConditions sets Ready, Stalled, GitSynced, and Underprovisioned.
-func (r *ClusterReconciler) setConditions(
-	cluster *niov1alpha1.Cluster, cron *niov1alpha1.NixCronJob, haveCron, anyUnder bool, totalMembers int,
+func (r *NixClusterReconciler) setConditions(
+	cluster *niov1alpha1.NixCluster, cron *niov1alpha1.NixCronJob, haveCron, anyUnder bool, totalMembers int,
 ) {
 	gen := cluster.Generation
 
@@ -537,7 +537,7 @@ func (r *ClusterReconciler) setConditions(
 		Reason: gitReason, ObservedGeneration: gen, Message: gitMsg,
 	})
 
-	ready := cluster.Status.Phase == niov1alpha1.ClusterPhaseReady
+	ready := cluster.Status.Phase == niov1alpha1.NixClusterPhaseReady
 	if ready {
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionTrue,
@@ -560,8 +560,8 @@ func (r *ClusterReconciler) setConditions(
 }
 
 // fail records a Degraded/Blocked + Stalled status and returns the error.
-func (r *ClusterReconciler) fail(
-	ctx context.Context, cluster *niov1alpha1.Cluster, phase, reason string, cause error,
+func (r *NixClusterReconciler) fail(
+	ctx context.Context, cluster *niov1alpha1.NixCluster, phase, reason string, cause error,
 ) (ctrl.Result, error) {
 	cluster.Status.Phase = phase
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -573,14 +573,14 @@ func (r *ClusterReconciler) fail(
 		Reason: reason, Message: cause.Error(), ObservedGeneration: cluster.Generation,
 	})
 	if err := r.Status().Update(ctx, cluster); err != nil && !apierrors.IsConflict(err) {
-		logf.FromContext(ctx).Error(err, "failed to update Cluster status after error")
+		logf.FromContext(ctx).Error(err, "failed to update NixCluster status after error")
 	}
 	return ctrl.Result{}, cause
 }
 
 // reconcileRemoving deletes the converge cron (owner GC also covers it) and
 // clears the finalizer. Node teardown / decommission is deferred (design "Out").
-func (r *ClusterReconciler) reconcileRemoving(ctx context.Context, cluster *niov1alpha1.Cluster) (ctrl.Result, error) {
+func (r *NixClusterReconciler) reconcileRemoving(ctx context.Context, cluster *niov1alpha1.NixCluster) (ctrl.Result, error) {
 	cron := &niov1alpha1.NixCronJob{
 		ObjectMeta: metav1.ObjectMeta{Name: convergeCronName(cluster.Name), Namespace: cluster.Namespace},
 	}
@@ -596,10 +596,10 @@ func (r *ClusterReconciler) reconcileRemoving(ctx context.Context, cluster *niov
 	return ctrl.Result{}, nil
 }
 
-// findClustersForMachine enqueues every Cluster in the changed Machine's
+// findClustersForMachine enqueues every NixCluster in the changed Machine's
 // namespace (any could select it — selectors are label-based, not indexable).
-func (r *ClusterReconciler) findClustersForMachine(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list niov1alpha1.ClusterList
+func (r *NixClusterReconciler) findClustersForMachine(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list niov1alpha1.NixClusterList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
@@ -612,15 +612,15 @@ func (r *ClusterReconciler) findClustersForMachine(ctx context.Context, obj clie
 	return requests
 }
 
-// SetupWithManager registers the Cluster controller with the manager.
-func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+// SetupWithManager registers the NixCluster controller with the manager.
+func (r *NixClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&niov1alpha1.Cluster{}).
+		For(&niov1alpha1.NixCluster{}).
 		Owns(&niov1alpha1.NixCronJob{}).
 		Watches(
 			&niov1alpha1.Machine{},
 			handler.EnqueueRequestsFromMapFunc(r.findClustersForMachine),
 		).
-		Named("cluster").
+		Named("nixcluster").
 		Complete(r)
 }

@@ -257,12 +257,12 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NixCronJob")
 		os.Exit(1)
 	}
-	if err := (&controller.ClusterReconciler{
+	if err := (&controller.NixClusterReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("cluster-controller"),
+		Recorder: mgr.GetEventRecorderFor("nixcluster-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
+		setupLog.Error(err, "unable to create controller", "controller", "NixCluster")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
