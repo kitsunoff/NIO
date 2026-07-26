@@ -49,7 +49,10 @@ type NixSource struct {
 	// +optional
 	Rev string `json:"rev,omitempty"`
 
-	// Dir is an optional subdirectory holding the flake (flake-in-subdir).
+	// Dir is an optional subdirectory holding the flake (flake-in-subdir). When
+	// set, the build/run commands execute with the working directory at this
+	// subdir of the checkout, so a relative installable (e.g. ".#attr") resolves
+	// against it. Must be a relative path inside the checkout.
 	// +optional
 	Dir string `json:"dir,omitempty"`
 
@@ -176,6 +179,51 @@ type NixSpec struct {
 	// Suspend pauses NIO reconciliation (no new builds / rollouts / runs).
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+
+	// AdditionalFiles are injected into the fetched source tree before the Nix
+	// build and force-staged (git add --force), so a git-tree flake source
+	// includes them even under .gitignore. This is BUILD-TIME injection into the
+	// Nix source — not a runtime pod mount (for runtime files, add volumes to the
+	// workload template directly). Its purpose is per-target files a shared flake
+	// cannot carry (e.g. hardware-configuration.nix, or a secret a module imports).
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	AdditionalFiles []NixFile `json:"additionalFiles,omitempty"`
+}
+
+// NixFile is one file injected into the source checkout before the build.
+// Exactly one content source (Inline, ConfigMapRef, or SecretRef) must be set.
+// +kubebuilder:validation:XValidation:rule="[has(self.inline), has(self.configMapRef), has(self.secretRef)].filter(x, x).size() == 1",message="exactly one of inline, configMapRef, or secretRef must be set"
+type NixFile struct {
+	// Path is the destination relative to the source checkout root. It must be a
+	// relative path that stays inside the tree (no leading "/", no ".." segment).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=4096
+	Path string `json:"path"`
+
+	// Inline is literal, non-sensitive file content. Sensitive content must use
+	// secretRef (inline is carried in the pod spec, so never put secrets here).
+	// +optional
+	Inline *string `json:"inline,omitempty"`
+
+	// ConfigMapRef takes the content from a ConfigMap key (same namespace).
+	// +optional
+	ConfigMapRef *ConfigMapKeyReference `json:"configMapRef,omitempty"`
+
+	// SecretRef takes the content from a Secret key (same namespace).
+	// +optional
+	SecretRef *SecretKeyReference `json:"secretRef,omitempty"`
+}
+
+// ConfigMapKeyReference references a single key in a ConfigMap.
+type ConfigMapKeyReference struct {
+	// Name is the ConfigMap name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Key is the key in the ConfigMap.
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
 }
 
 // NixLocalStore configures the pod-local /nix that the realized closure is

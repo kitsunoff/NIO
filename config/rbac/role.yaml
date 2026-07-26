@@ -7,22 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  - pods/log
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
+  - configmaps
   - secrets
   - services
   verbs:
@@ -32,6 +17,21 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - apps
@@ -62,6 +62,7 @@ rules:
 - apiGroups:
   - nio.homystack.com
   resources:
+  - clusters
   - machines
   - nixbuilders
   - nixcronjobs
@@ -81,6 +82,7 @@ rules:
 - apiGroups:
   - nio.homystack.com
   resources:
+  - clusters/finalizers
   - machines/finalizers
   - nixbuilders/finalizers
   - nixcronjobs/finalizers
@@ -94,6 +96,7 @@ rules:
 - apiGroups:
   - nio.homystack.com
   resources:
+  - clusters/status
   - machines/status
   - nixbuilders/status
   - nixcronjobs/status

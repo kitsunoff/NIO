@@ -18,14 +18,9 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -33,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -41,1117 +37,758 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
-	"github.com/kitsunoff/nixos-operator/internal/applyjob"
-	"github.com/kitsunoff/nixos-operator/internal/gitauth"
-	"github.com/kitsunoff/nixos-operator/internal/metrics"
 )
 
 const (
 	// RequeueInterval is the default requeue interval for pending operations.
 	RequeueInterval = 30 * time.Second
 
-	// GitPollInterval is how often a converged config re-resolves its git ref
-	// (via `git ls-remote`) to detect a new commit on the same branch. It is
-	// deliberately slower than RequeueInterval to bound remote polling; spec
-	// changes still reconcile immediately via watch events.
-	GitPollInterval = 5 * time.Minute
+	// MaxInstallRetries bounds the Installing phase before holding in Degraded.
+	MaxInstallRetries = 3
 
-	// MaxConcurrentJobs is the maximum number of concurrent apply jobs.
-	MaxConcurrentJobs = 5
-
-	// JobPendingTimeout is the timeout for jobs stuck in pending state.
-	JobPendingTimeout = 5 * time.Minute
-
-	// DefaultJobTimeout is the default timeout for nixos-rebuild jobs.
-	DefaultJobTimeout = 30 * time.Minute
-
-	// FullInstallJobTimeout is the timeout for nixos-anywhere jobs.
-	FullInstallJobTimeout = 60 * time.Minute
-
-	// MaxOnRemoveRetries is the maximum number of retries for onRemoveFlake.
+	// MaxOnRemoveRetries bounds decommission attempts before giving up.
 	MaxOnRemoveRetries = 3
+
+	// DecommissionTTLSeconds is set as ttlSecondsAfterFinished on the decommission
+	// NixJob's inner batch Job so the finished Pod/Job is reaped. It does NOT
+	// delete the orphan NixJob CR itself — reconcileRemoving deletes that CR once
+	// the terminal state is observed, before removing the finalizer.
+	DecommissionTTLSeconds = 600
 
 	// IndexConfigByMachine is the field index for machine references.
 	IndexConfigByMachine = "spec.machineRef.name"
 
-	// LabelMachineName is the label for machine name on Jobs.
+	// LabelMachineName is the label for machine name on child workloads.
 	LabelMachineName = "nio.homystack.com/machine"
 
-	// LabelConfigName is the label for config name on Jobs.
+	// LabelConfigName is the label for owning config name on child workloads.
 	LabelConfigName = "nio.homystack.com/config"
 
-	// AnnotationOnRemoveRetries tracks deletion retries.
-	AnnotationOnRemoveRetries = "nio.homystack.com/on-remove-retries"
+	// LabelOperation distinguishes the orchestrator's child roles.
+	LabelOperation = "nio.homystack.com/operation"
 
-	// AnnotationResolvedRevision records the immutable commit SHA an apply Job
-	// was created for, so success handling can persist the SHA (not the ref
-	// name) as the applied commit.
-	AnnotationResolvedRevision = "nio.homystack.com/resolved-revision"
-
-	// DefaultApplyImage is the default container image for apply jobs.
-	DefaultApplyImage = "ghcr.io/homystack/nixos-operator:latest"
+	// operationDecommission labels the orphan decommission NixJob.
+	operationDecommission = "decommission"
 )
 
-// NixosConfigurationReconciler reconciles a NixosConfiguration object.
+// NixosConfigurationReconciler reconciles a NixosConfiguration object as a
+// v1alpha2 orchestrator: it applies nothing itself, instead driving child
+// NixJob/NixCronJob workloads through an explicit state machine.
 type NixosConfigurationReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
-	// Git resolves a mutable ref to an immutable commit SHA. Defaults to
-	// ExecGitResolver when nil; tests substitute a fake.
-	Git GitResolver
-}
-
-// git returns the configured GitResolver, defaulting to the production
-// ExecGitResolver.
-func (r *NixosConfigurationReconciler) git() GitResolver {
-	if r.Git != nil {
-		return r.Git
-	}
-	return ExecGitResolver{}
-}
-
-// resolveConfigRevision resolves the configuration's git ref to an immutable
-// commit SHA. A bare ref name (e.g. "main") never changes, so without this a
-// new commit pushed to the same branch is never detected.
-func (r *NixosConfigurationReconciler) resolveConfigRevision(ctx context.Context, config *niov1alpha1.NixosConfiguration) (string, error) {
-	ref := config.Spec.Ref
-	if ref == "" {
-		ref = defaultGitRef
-	}
-
-	// Private repos: use the same credentials the apply Job is given so
-	// controller-side resolution and the Job's clone agree on auth.
-	var creds *gitauth.Creds
-	if config.Spec.CredentialsRef != nil {
-		c, err := r.readGitCredentials(ctx, config.Namespace, config.Spec.CredentialsRef.Name)
-		if err != nil {
-			return "", err
-		}
-		creds = c
-	}
-
-	return r.git().LsRemote(ctx, config.Spec.GitRepo, ref, creds)
-}
-
-// readGitCredentials loads git authentication material from a Secret in the
-// config's namespace, following the same key conventions the rest of the
-// operator uses (ssh-privatekey, known_hosts, username, password/token).
-func (r *NixosConfigurationReconciler) readGitCredentials(ctx context.Context, namespace, name string) (*gitauth.Creds, error) {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
-		return nil, fmt.Errorf("read git credentials secret %q: %w", name, err)
-	}
-	// Trim username/password/token: Secret values sourced from files commonly
-	// carry a trailing newline, and this must match the apply Job's reader
-	// (cmd/apply.loadGitCreds) so controller-side ls-remote and the Job clone
-	// authenticate identically. SSH key and known_hosts are left byte-exact.
-	creds := &gitauth.Creds{
-		SSHKey:     secret.Data["ssh-privatekey"],
-		KnownHosts: secret.Data["known_hosts"],
-		Username:   strings.TrimSpace(string(secret.Data["username"])),
-		Password:   strings.TrimSpace(string(secret.Data["password"])),
-	}
-	// A token-only secret populates the password (username defaults to "git").
-	if creds.Password == "" {
-		if token, ok := secret.Data["token"]; ok {
-			creds.Password = strings.TrimSpace(string(token))
-		}
-	}
-	return creds, nil
-}
-
-// resolveAdditionalFiles turns the spec's AdditionalFiles into concrete
-// path/content pairs the apply Job can inject. Only Inline is delivered today;
-// SecretRef and NixosFacter fail loudly rather than being silently dropped.
-func resolveAdditionalFiles(config *niov1alpha1.NixosConfiguration) ([]applyjob.AdditionalFile, error) {
-	if len(config.Spec.AdditionalFiles) == 0 {
-		return nil, nil
-	}
-	files := make([]applyjob.AdditionalFile, 0, len(config.Spec.AdditionalFiles))
-	for _, f := range config.Spec.AdditionalFiles {
-		switch f.ValueType {
-		case niov1alpha1.AdditionalFileValueTypeInline:
-			files = append(files, applyjob.AdditionalFile{Path: f.Path, Content: f.Inline})
-		default:
-			return nil, fmt.Errorf(
-				"additionalFile %q: valueType %q is not yet delivered to the apply Job (only Inline is supported)",
-				f.Path, f.ValueType)
-		}
-	}
-	return files, nil
 }
 
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixosconfigurations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixosconfigurations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixosconfigurations/finalizers,verbs=update
-// +kubebuilder:rbac:groups=nio.homystack.com,resources=machines,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=machines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=machines/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixjobs/status,verbs=get
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixcronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixcronjobs/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods;pods/log,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is the main reconciliation loop for NixosConfiguration resources.
 func (r *NixosConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// Fetch the NixosConfiguration instance
 	var config niov1alpha1.NixosConfiguration
 	if err := r.Get(ctx, req.NamespacedName, &config); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Set observedGeneration immediately
-	config.Status.ObservedGeneration = config.Generation
-
-	// Set Reconciling condition to True
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionReconciling,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonProgressing,
-		Message:            "Reconciliation in progress",
-	})
-
-	// Update status early
-	if err := r.Status().Update(ctx, &config); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Handle deletion
 	if !config.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &config)
+		return r.reconcileRemoving(ctx, &config)
 	}
 
-	// Add finalizer if not present
+	// Ensure the finalizer is present before creating any children so a delete
+	// while children exist still runs decommission.
 	if !controllerutil.ContainsFinalizer(&config, niov1alpha1.FinalizerName) {
 		controllerutil.AddFinalizer(&config, niov1alpha1.FinalizerName)
 		if err := r.Update(ctx, &config); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return ctrl.Result{}, err
 		}
 	}
 
-	// Perform reconciliation
-	result, reconcileErr := r.reconcile(ctx, &config)
+	config.Status.ObservedGeneration = config.Generation
 
-	// Set final conditions based on result
-	if reconcileErr != nil {
-		log.Error(reconcileErr, "reconciliation failed")
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionStalled,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonFailed,
-			Message:            reconcileErr.Error(),
-		})
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonFailed,
-			Message:            reconcileErr.Error(),
-		})
-	} else {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionReconciling,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonSucceeded,
-			Message:            "Reconciliation completed",
-		})
-	}
+	result, reconcileErr := r.runStateMachine(ctx, &config)
 
-	// Final status update
 	if err := r.Status().Update(ctx, &config); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
 	return result, reconcileErr
 }
 
-// reconcile performs the main reconciliation logic.
-func (r *NixosConfigurationReconciler) reconcile(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// Get the referenced Machine
-	var machine niov1alpha1.Machine
-	machineKey := types.NamespacedName{
-		Name:      config.Spec.MachineRef.Name,
-		Namespace: config.Namespace,
+// runStateMachine advances a live (non-deleting) NixosConfiguration one step,
+// mutating config.Status (phase, refs, conditions). It never persists status —
+// Reconcile does the single Status().Update.
+func (r *NixosConfigurationReconciler) runStateMachine(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
+	// Uniqueness gate (Gap 3): the earliest-created config for a machine owns it.
+	owner, err := r.machineOwner(ctx, config)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
+	if owner != config.Name {
+		msg := fmt.Sprintf("machine %q already owned by NixosConfiguration %q",
+			config.Spec.MachineRef.Name, owner)
+		r.setBlocked(config, niov1alpha1.ReasonMachineInUse, msg)
+		r.suspendDayTwoCronIfExists(ctx, config)
+		r.Recorder.Event(config, corev1.EventTypeWarning, "MachineOwned", msg)
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	}
+
+	// Machine gate.
+	var machine niov1alpha1.Machine
+	machineKey := types.NamespacedName{Name: config.Spec.MachineRef.Name, Namespace: config.Namespace}
 	if err := r.Get(ctx, machineKey, &machine); err != nil {
 		if apierrors.IsNotFound(err) {
-			meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-				Type:               niov1alpha1.ConditionReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: config.Generation,
-				Reason:             niov1alpha1.ReasonMachineNotReady,
-				Message:            fmt.Sprintf("Machine %q not found", config.Spec.MachineRef.Name),
-			})
-			r.Recorder.Event(config, corev1.EventTypeWarning, "MachineNotFound",
-				fmt.Sprintf("Machine %q not found", config.Spec.MachineRef.Name))
+			msg := fmt.Sprintf("Machine %q not found", config.Spec.MachineRef.Name)
+			r.setBlocked(config, niov1alpha1.ReasonMachineNotReady, msg)
+			r.suspendDayTwoCronIfExists(ctx, config)
+			r.Recorder.Event(config, corev1.EventTypeWarning, "MachineNotFound", msg)
 			return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 		}
 		return ctrl.Result{}, err
 	}
-
-	// Check if Machine is discoverable
 	if !machine.Status.Discoverable {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonMachineNotReady,
-			Message:            fmt.Sprintf("Machine %q is not reachable via SSH", machine.Name),
-		})
+		msg := fmt.Sprintf("Machine %q is not reachable via SSH", machine.Name)
+		r.setBlocked(config, niov1alpha1.ReasonMachineNotReady, msg)
+		r.suspendDayTwoCronIfExists(ctx, config)
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 	}
 
 	config.Status.TargetMachine = machine.Name
 
-	// Check for existing job for this config
-	existingJob, err := r.findExistingJob(ctx, config)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if existingJob != nil {
-		// Monitor existing job
-		return r.monitorJob(ctx, config, existingJob, &machine)
-	}
-
-	// Resolve the mutable ref to an immutable commit SHA so a new commit on the
-	// same branch is detected (the bare ref name never changes). Resolution uses
-	// the config's credentialsRef for private repos, but can still fail (bad
-	// creds, transient network). That must NOT block apply: on failure we degrade
-	// to the pre-SHA behavior (empty resolvedRev disables the revision check in
-	// needsApply) and let the credentialed Job proceed.
-	effectiveRef := config.Spec.Ref
-	if effectiveRef == "" {
-		effectiveRef = defaultGitRef
-	}
-	resolvedRev, err := r.resolveConfigRevision(ctx, config)
-	if err != nil {
-		log.Info("git ref resolution failed; continuing with degraded drift detection",
-			"ref", effectiveRef, "error", err.Error())
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionGitSynced,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonGitCloneFailed,
-			Message:            fmt.Sprintf("could not resolve ref %q to a SHA; drift detection degraded to spec-hash", effectiveRef),
-		})
-		r.Recorder.Event(config, corev1.EventTypeWarning, "GitResolveDegraded",
-			fmt.Sprintf("could not resolve ref %q to a SHA (bad credentials or transient network?); "+
-				"drift detection falls back to spec-hash comparison", effectiveRef))
-		resolvedRev = ""
-	} else {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionGitSynced,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonGitCloneSucceeded,
-			Message:            fmt.Sprintf("resolved ref %q to %s", effectiveRef, resolvedRev),
-		})
-	}
-
-	// Check if we need to apply configuration
-	needsApply, reason := r.needsApply(ctx, config, &machine, resolvedRev)
-	if !needsApply {
-		log.Info("configuration is up to date", "reason", reason)
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionApplied,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonConfigApplied,
-			Message:            "Configuration is applied and up to date",
-		})
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionReady,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonSucceeded,
-			Message:            "Configuration is applied and up to date",
-		})
-		meta.RemoveStatusCondition(&config.Status.Conditions, niov1alpha1.ConditionStalled)
-		// Converged: requeue on the slower git-poll cadence rather than every
-		// RequeueInterval, so a steady-state config does not run `git ls-remote`
-		// (and re-read its credentials Secret) every 30s. Spec changes still
-		// reconcile immediately via watch events.
-		return ctrl.Result{RequeueAfter: GitPollInterval}, nil
-	}
-
-	log.Info("configuration needs apply", "reason", reason)
-
-	// Check concurrency limits
-	if hasActive, err := r.hasActiveJobForMachine(ctx, &machine); err != nil {
-		return ctrl.Result{}, err
-	} else if hasActive {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionReconciling,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonMachineInUse,
-			Message:            fmt.Sprintf("Another configuration is being applied to machine %q", machine.Name),
-		})
-		r.Recorder.Event(config, corev1.EventTypeNormal, "MachineInUse",
-			fmt.Sprintf("Waiting for another configuration to finish on machine %q", machine.Name))
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
-	}
-
-	// Check global concurrency limit
-	activeCount, err := r.countActiveJobs(ctx)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if activeCount >= MaxConcurrentJobs {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               niov1alpha1.ConditionReconciling,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: config.Generation,
-			Reason:             niov1alpha1.ReasonQueued,
-			Message:            fmt.Sprintf("Waiting in queue (active jobs: %d/%d)", activeCount, MaxConcurrentJobs),
-		})
-		r.Recorder.Event(config, corev1.EventTypeNormal, "Queued",
-			fmt.Sprintf("Waiting in queue (active jobs: %d/%d)", activeCount, MaxConcurrentJobs))
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
-	}
-
-	// Create apply job
-	job, err := r.createAndSubmitApplyJob(ctx, config, &machine, resolvedRev)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	log.Info("created apply job", "job", job.Name)
-	r.Recorder.Event(config, corev1.EventTypeNormal, "ApplyStarted",
-		fmt.Sprintf("Started apply job %q", job.Name))
-
-	// Update operation state
-	config.Status.OperationState = &niov1alpha1.OperationState{
-		Type:      r.getOperationType(config),
-		StartedAt: metav1.Now(),
-		Phase:     "Starting",
-		JobName:   job.Name,
-	}
-
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionReconciling,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonApplyStarted,
-		Message:            fmt.Sprintf("Apply job %q started", job.Name),
-	})
-
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-}
-
-// monitorJob monitors the progress of an existing job.
-func (r *NixosConfigurationReconciler) monitorJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, job *batchv1.Job, machine *niov1alpha1.Machine) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// Check job status
-	if job.Status.Succeeded > 0 {
-		log.Info("job succeeded", "job", job.Name)
-		return r.handleJobSuccess(ctx, config, job, machine)
-	}
-
-	if job.Status.Failed > 0 {
-		log.Info("job failed", "job", job.Name)
-		return r.handleJobFailure(ctx, config, job)
-	}
-
-	// Job is still running - check for pending timeout
-	if job.Status.Active == 0 && job.Status.Succeeded == 0 && job.Status.Failed == 0 {
-		// Job hasn't started yet - check timeout
-		if time.Since(job.CreationTimestamp.Time) > JobPendingTimeout {
-			log.Info("job stuck in pending state", "job", job.Name)
-			meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-				Type:               niov1alpha1.ConditionStalled,
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: config.Generation,
-				Reason:             niov1alpha1.ReasonJobPending,
-				Message:            fmt.Sprintf("Job %q stuck in pending state for more than %v", job.Name, JobPendingTimeout),
-			})
+	// Install path.
+	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
+		done, res, err := r.reconcileInstall(ctx, config, &machine)
+		if err != nil || !done {
+			return res, err
 		}
+		// Install finished successfully; fall through to the day-2 path.
 	}
 
-	// Update operation state with progress
-	if config.Status.OperationState != nil {
-		config.Status.OperationState.Phase = "Running"
-	}
-
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionReconciling,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonApplyInProgress,
-		Message:            fmt.Sprintf("Apply job %q is running", job.Name),
-	})
-
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Day-2 path.
+	return r.reconcileDayTwo(ctx, config, &machine)
 }
 
-// handleJobSuccess handles successful job completion.
-func (r *NixosConfigurationReconciler) handleJobSuccess(ctx context.Context, config *niov1alpha1.NixosConfiguration, job *batchv1.Job, machine *niov1alpha1.Machine) (ctrl.Result, error) {
+// reconcileInstall drives the full-disk install child. It returns done=true only
+// when the install has completed successfully (so the caller proceeds to day-2).
+func (r *NixosConfigurationReconciler) reconcileInstall(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (bool, ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Record metrics
-	operation := "rebuild"
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		operation = "anywhere"
+	job, err := r.ensureInstallNixJob(ctx, config, machine)
+	if err != nil {
+		return false, ctrl.Result{}, err
 	}
-	if job.Status.CompletionTime != nil && job.Status.StartTime != nil {
-		duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
-		metrics.RecordJobCompletion(operation, true, duration)
-	}
+	config.Status.InstallJobRef = job.Name
 
-	// Calculate configuration hash for change detection
-	configHash := r.calculateConfigHash(config)
+	switch {
+	case job.Status.Succeeded > 0:
+		// Persist completion DURABLY before deleting the child. If the final
+		// shared status update later in this reconcile conflicts (or is
+		// otherwise not persisted), a subsequent reconcile must never observe
+		// FullDiskInstallCompleted=false and recreate the install NixJob, which
+		// would re-run nixos-anywhere and re-wipe the installed machine. Only
+		// delete the child once completion is durable.
+		if err := r.markFullDiskInstallCompleted(ctx, config); err != nil {
+			return false, ctrl.Result{}, err
+		}
+		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
+			return false, ctrl.Result{}, err
+		}
+		r.Recorder.Event(config, corev1.EventTypeNormal, "InstallSucceeded",
+			fmt.Sprintf("Full-disk install %q succeeded", job.Name))
+		return true, ctrl.Result{}, nil
 
-	// Persist the immutable SHA the Job was created for (recorded as an
-	// annotation), not the mutable ref name. Fall back to the ref for Jobs
-	// created before this annotation existed.
-	appliedRev := job.Annotations[AnnotationResolvedRevision]
-	if appliedRev == "" {
-		appliedRev = config.Spec.Ref
-	}
-
-	// Update config status
-	config.Status.AppliedCommit = appliedRev
-	config.Status.LastAppliedTime = &metav1.Time{Time: time.Now()}
-	config.Status.ConfigurationHash = configHash
-	config.Status.OperationState = nil
-
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		config.Status.FullDiskInstallCompleted = true
-	}
-
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionApplied,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonConfigApplied,
-		Message:            "Configuration applied successfully",
-	})
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionReady,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonSucceeded,
-		Message:            "Configuration applied successfully",
-	})
-	meta.RemoveStatusCondition(&config.Status.Conditions, niov1alpha1.ConditionStalled)
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionReconciling,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonSucceeded,
-		Message:            "Reconciliation completed",
-	})
-
-	// Update Machine status
-	machine.Status.HasConfiguration = true
-	machine.Status.AppliedConfiguration = config.Name
-	machine.Status.AppliedCommit = appliedRev
-	machine.Status.LastAppliedTime = config.Status.LastAppliedTime
-
-	if err := r.Status().Update(ctx, machine); err != nil {
-		log.Error(err, "failed to update machine status")
-		// Don't return error - config update is more important
-	}
-
-	r.Recorder.Event(config, corev1.EventTypeNormal, "Applied",
-		fmt.Sprintf("Configuration applied successfully via job %q", job.Name))
-
-	return ctrl.Result{RequeueAfter: RequeueInterval}, nil
-}
-
-// handleJobFailure handles failed job completion.
-func (r *NixosConfigurationReconciler) handleJobFailure(ctx context.Context, config *niov1alpha1.NixosConfiguration, job *batchv1.Job) (ctrl.Result, error) {
-	_ = ctx // ctx reserved for future use (e.g., fetching pod logs)
-
-	// Record metrics
-	operation := "rebuild"
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		operation = "anywhere"
-	}
-	if job.Status.StartTime != nil {
-		duration := time.Since(job.Status.StartTime.Time).Seconds()
-		metrics.RecordJobCompletion(operation, false, duration)
-	}
-	metrics.RecordError("nix")
-
-	// Get failure reason from job conditions
-	failureMessage := "Apply job failed"
-	for _, condition := range job.Status.Conditions {
-		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
-			if condition.Message != "" {
-				failureMessage = condition.Message
+	case job.Status.Failed > 0:
+		// A prior failure already triggered a delete-and-recreate; wait for the
+		// deletion to finish rather than counting the same failure twice.
+		if !job.DeletionTimestamp.IsZero() {
+			r.setPhase(config, niov1alpha1.NixosConfigPhaseInstalling, niov1alpha1.ReasonInstalling,
+				fmt.Sprintf("Full-disk install %q is being retried", job.Name), false, nil)
+			return false, ctrl.Result{RequeueAfter: RequeueInterval}, nil
+		}
+		// Check the cap BEFORE incrementing. Once at/over the cap the install is
+		// terminally Degraded: set it idempotently and return WITHOUT requeue and
+		// WITHOUT deleting/recreating the child, so a permanently-failing install
+		// does not churn its status/counter or storm the reconcile loop.
+		if config.Status.InstallRetries >= MaxInstallRetries {
+			msg := fmt.Sprintf("Full-disk install failed after %d retries", MaxInstallRetries)
+			if config.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
+				r.Recorder.Event(config, corev1.EventTypeWarning, "InstallFailed", msg)
 			}
-			break
+			r.setDegraded(config, msg)
+			return false, ctrl.Result{}, nil
 		}
+		// Under the cap: count this failure and delete-and-recreate the child.
+		config.Status.InstallRetries++
+		log.Info("install child failed; recreating", "job", job.Name, "retries", config.Status.InstallRetries)
+		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
+			return false, ctrl.Result{}, err
+		}
+		r.setPhase(config, niov1alpha1.NixosConfigPhaseInstalling, niov1alpha1.ReasonInstalling,
+			fmt.Sprintf("Retrying full-disk install (attempt %d/%d)", config.Status.InstallRetries, MaxInstallRetries), false, nil)
+		return false, ctrl.Result{RequeueAfter: RequeueInterval}, nil
+
+	default:
+		r.setPhase(config, niov1alpha1.NixosConfigPhaseInstalling, niov1alpha1.ReasonInstalling,
+			fmt.Sprintf("Full-disk install %q is running", job.Name), false, nil)
+		return false, ctrl.Result{RequeueAfter: RequeueInterval}, nil
 	}
-
-	config.Status.OperationState = nil
-
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionApplied,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonApplyFailed,
-		Message:            failureMessage,
-	})
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionStalled,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonApplyFailed,
-		Message:            failureMessage,
-	})
-	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-		Type:               niov1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: config.Generation,
-		Reason:             niov1alpha1.ReasonApplyFailed,
-		Message:            failureMessage,
-	})
-
-	r.Recorder.Event(config, corev1.EventTypeWarning, "ApplyFailed",
-		fmt.Sprintf("Apply job %q failed: %s", job.Name, failureMessage))
-
-	return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 }
 
-// reconcileDelete handles deletion of the NixosConfiguration resource.
-func (r *NixosConfigurationReconciler) reconcileDelete(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("handling configuration deletion")
-
-	// Cancel any running jobs
-	if err := r.cancelRunningJobs(ctx, config); err != nil {
-		log.Error(err, "failed to cancel running jobs")
+// reconcileDayTwo drives the recurring day-2 convergence child.
+func (r *NixosConfigurationReconciler) reconcileDayTwo(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (ctrl.Result, error) {
+	cron, err := r.ensureDayTwoNixCronJob(ctx, config, machine, false)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
+	config.Status.DayTwoCronJobRef = cron.Name
+	config.Status.ResolvedRevision = cron.Status.RolledOutRevision
 
-	// Apply onRemoveFlake if specified
-	if config.Spec.OnRemoveFlake != "" {
-		result, err := r.applyOnRemoveFlake(ctx, config)
-		if err != nil || result.RequeueAfter > 0 {
-			return result, err
-		}
-	}
+	gitSynced := meta.FindStatusCondition(cron.Status.Conditions, niov1alpha1.ConditionGitSynced)
 
-	// Clear Machine status
-	var machine niov1alpha1.Machine
-	machineKey := types.NamespacedName{
-		Name:      config.Spec.MachineRef.Name,
-		Namespace: config.Namespace,
-	}
-	if err := r.Get(ctx, machineKey, &machine); err == nil {
-		if machine.Status.AppliedConfiguration == config.Name {
-			machine.Status.HasConfiguration = false
-			machine.Status.AppliedConfiguration = ""
-			machine.Status.AppliedCommit = ""
-			machine.Status.LastAppliedTime = nil
-
-			if err := r.Status().Update(ctx, &machine); err != nil {
-				log.Error(err, "failed to clear machine status")
+	switch {
+	case cron.Status.Phase == niov1alpha1.PhaseReady && cron.Status.LastSuccessfulTime != nil:
+		config.Status.LastAppliedTime = cron.Status.LastSuccessfulTime
+		r.setPhase(config, niov1alpha1.NixosConfigPhaseReady, niov1alpha1.ReasonSucceeded,
+			"Day-2 convergence healthy; configuration applied", true, gitSynced)
+		if err := r.writeBackMachineStatus(ctx, config, machine); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
 			}
-		}
-	}
-
-	// Remove finalizer
-	if controllerutil.ContainsFinalizer(config, niov1alpha1.FinalizerName) {
-		controllerutil.RemoveFinalizer(config, niov1alpha1.FinalizerName)
-		if err := r.Update(ctx, config); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 
-	return ctrl.Result{}, nil
+	case cron.Status.Phase == niov1alpha1.PhaseDegraded || cron.Status.Phase == niov1alpha1.PhaseFailed:
+		r.setDegraded(config, "Day-2 convergence run failed")
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+
+	default:
+		if cron.Status.LastSuccessfulTime != nil {
+			config.Status.LastAppliedTime = cron.Status.LastSuccessfulTime
+		}
+		// Applied = install-success OR day-2 lastSuccessfulTime: a completed
+		// full-disk install already put a configuration on the machine, so
+		// Applied stays True even while day-2 is still Converging.
+		applied := config.Status.FullDiskInstallCompleted || cron.Status.LastSuccessfulTime != nil
+		r.setPhase(config, niov1alpha1.NixosConfigPhaseConverging, niov1alpha1.ReasonConverging,
+			"Day-2 convergence in progress", applied, gitSynced)
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	}
 }
 
-// findExistingJob finds an existing job for this configuration.
-func (r *NixosConfigurationReconciler) findExistingJob(ctx context.Context, config *niov1alpha1.NixosConfiguration) (*batchv1.Job, error) {
-	var jobList batchv1.JobList
-	if err := r.List(ctx, &jobList,
-		client.InNamespace(config.Namespace),
-		client.MatchingLabels{LabelConfigName: config.Name},
-	); err != nil {
-		return nil, err
-	}
-
-	for i := range jobList.Items {
-		job := &jobList.Items[i]
-		// Find active or recently completed job
-		if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
-			return job, nil
-		}
-	}
-
-	return nil, nil
-}
-
-// needsApply determines if configuration needs to be applied.
-func (r *NixosConfigurationReconciler) needsApply(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, resolvedRev string) (bool, string) {
-	_ = ctx // ctx reserved for future use (e.g., checking external state)
-
-	// First time application
-	if config.Status.AppliedCommit == "" {
-		return true, "never applied"
-	}
-
-	// Full install not yet done
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		return true, "full install not completed"
-	}
-
-	// A new commit on the same ref changes the resolved SHA even though the ref
-	// name (and thus the config hash) is unchanged.
-	if resolvedRev != "" && config.Status.AppliedCommit != resolvedRev {
-		return true, "revision changed"
-	}
-
-	// Configuration hash changed
-	currentHash := r.calculateConfigHash(config)
-	if config.Status.ConfigurationHash != currentHash {
-		return true, "configuration changed"
-	}
-
-	// Machine doesn't have this config applied
-	if machine.Status.AppliedConfiguration != config.Name {
-		return true, "machine configuration mismatch"
-	}
-
-	return false, "up to date"
-}
-
-// hasActiveJobForMachine checks if there's an active job for the machine.
-func (r *NixosConfigurationReconciler) hasActiveJobForMachine(ctx context.Context, machine *niov1alpha1.Machine) (bool, error) {
-	var jobList batchv1.JobList
-	if err := r.List(ctx, &jobList,
-		client.InNamespace(machine.Namespace),
-		client.MatchingLabels{LabelMachineName: machine.Name},
-	); err != nil {
-		return false, err
-	}
-
-	for _, job := range jobList.Items {
-		if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-// countActiveJobs counts the total number of active apply jobs.
-func (r *NixosConfigurationReconciler) countActiveJobs(ctx context.Context) (int, error) {
-	var jobList batchv1.JobList
-	if err := r.List(ctx, &jobList,
-		client.HasLabels{LabelConfigName},
-	); err != nil {
-		return 0, err
-	}
-
-	count := 0
-	for _, job := range jobList.Items {
-		if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
-			count++
-		}
-	}
-
-	return count, nil
-}
-
-// createApplyJob creates a Kubernetes Job to apply the configuration.
-//
-//nolint:unparam // ctx reserved for future use (e.g., fetching secrets for job spec)
-func (r *NixosConfigurationReconciler) createApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, resolvedRev string) (*batchv1.Job, error) {
-	_ = ctx // ctx reserved for future use
-	jobName := fmt.Sprintf("%s-apply-%d", config.Name, time.Now().Unix())
-
-	// Determine operation and timeout.
-	operation := "NixosRebuild"
-	jobTimeout := DefaultJobTimeout
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		operation = "FullInstall"
-		jobTimeout = FullInstallJobTimeout
-	}
-	timeout := int64(jobTimeout.Seconds())
-
-	// Get image from jobTemplate or use default
-	image := DefaultApplyImage
-	if config.Spec.JobTemplate != nil && config.Spec.JobTemplate.Image != "" {
-		image = config.Spec.JobTemplate.Image
-	}
-
-	// Default an empty ref the same way resolution does, so the Job's clone and
-	// controller-side resolution agree even if the CRD default were absent.
-	gitRef := config.Spec.Ref
-	if gitRef == "" {
-		gitRef = defaultGitRef
-	}
-
-	// The apply binary reads its configuration from NIO_* environment variables
-	// (see cmd/apply.LoadConfigFromEnv), not CLI flags.
-	env := []corev1.EnvVar{
-		{Name: "NIO_CONFIG_NAME", Value: config.Name},
-		{Name: "NIO_CONFIG_NAMESPACE", Value: config.Namespace},
-		{Name: "NIO_OPERATION", Value: operation},
-		{Name: "NIO_GIT_REPO", Value: config.Spec.GitRepo},
-		{Name: "NIO_GIT_REF", Value: gitRef},
-		{Name: "NIO_FLAKE", Value: config.Spec.Flake},
-		{Name: "NIO_CONFIG_SUBDIR", Value: config.Spec.ConfigurationSubdir},
-		{Name: "NIO_TARGET_HOST", Value: machine.Spec.Host},
-		{Name: "NIO_SSH_USER", Value: machine.Spec.SSHUser},
-		{Name: "NIO_TIMEOUT", Value: jobTimeout.String()},
-		// The container runs with ReadOnlyRootFilesystem; the only writable mount
-		// is the /workspace emptyDir. Point both the apply work dir and Go's
-		// temp dir (used by gitauth for credential material) at it so the clone
-		// and credential setup do not fail writing to a read-only /tmp.
-		{Name: "NIO_WORK_DIR", Value: "/workspace"},
-		{Name: "TMPDIR", Value: "/workspace"},
-	}
-
-	// Pass the resolved commit SHA so the Job fetches exactly what the controller
-	// resolved (no TOCTOU with a moving branch tip). Empty in degraded mode, in
-	// which case the Job falls back to cloning the ref's tip.
-	if resolvedRev != "" {
-		env = append(env, corev1.EnvVar{Name: "NIO_GIT_REV", Value: resolvedRev})
-	}
-
-	// Resolve and pass additional files. Without this the apply binary reads an
-	// empty NIO_ADDITIONAL_FILES and the declared files are silently dropped.
-	additionalFiles, err := resolveAdditionalFiles(config)
-	if err != nil {
-		return nil, err
-	}
-	if len(additionalFiles) > 0 {
-		encoded, err := json.Marshal(additionalFiles)
-		if err != nil {
-			return nil, fmt.Errorf("marshal additional files: %w", err)
-		}
-		env = append(env, corev1.EnvVar{Name: "NIO_ADDITIONAL_FILES", Value: string(encoded)})
-	}
-
-	// Build volumes for secrets.
-	//
-	// NOTE: mounts use DefaultMode 0o400 while the container runs as non-root
-	// (UID 1000) with a read-only root filesystem. The apply binary can still
-	// read them only because the pod sets FSGroup 1000 and the volumes are
-	// ReadOnly — kubelet ORs group-read onto the mode for fsGroup'd read-only
-	// secret volumes. Do not change FSGroup/mode without re-checking this.
-	volumes := []corev1.Volume{}
-	volumeMounts := []corev1.VolumeMount{}
-
-	// Mount SSH key secret if specified
-	if machine.Spec.SSHKeySecretRef != nil {
-		volumes = append(volumes, corev1.Volume{
-			Name: "ssh-key",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName:  machine.Spec.SSHKeySecretRef.Name,
-					DefaultMode: ptr(int32(0o400)),
-				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "ssh-key",
-			MountPath: "/secrets/ssh",
-			ReadOnly:  true,
-		})
-		env = append(env, corev1.EnvVar{Name: "NIO_SSH_KEY_PATH", Value: "/secrets/ssh/ssh-privatekey"})
-	}
-
-	// Mount git credentials if specified
-	if config.Spec.CredentialsRef != nil {
-		volumes = append(volumes, corev1.Volume{
-			Name: "git-credentials",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName:  config.Spec.CredentialsRef.Name,
-					DefaultMode: ptr(int32(0o400)),
-				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "git-credentials",
-			MountPath: "/secrets/git",
-			ReadOnly:  true,
-		})
-		env = append(env, corev1.EnvVar{Name: "NIO_GIT_CREDENTIALS_PATH", Value: "/secrets/git"})
-	}
-
-	// Add workspace volume for git clone
-	volumes = append(volumes, corev1.Volume{
-		Name: "workspace",
-		VolumeSource: corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{},
-		},
-	})
-	volumeMounts = append(volumeMounts, corev1.VolumeMount{
-		Name:      "workspace",
-		MountPath: "/workspace",
-	})
-
-	// Build pod template
-	podSpec := corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyNever,
-		Containers: []corev1.Container{
-			{
-				Name:         "apply",
-				Image:        image,
-				Command:      []string{"/manager", "apply"},
-				Env:          env,
-				VolumeMounts: volumeMounts,
-				SecurityContext: &corev1.SecurityContext{
-					RunAsNonRoot:             ptr(true),
-					RunAsUser:                ptr(int64(1000)),
-					ReadOnlyRootFilesystem:   ptr(true),
-					AllowPrivilegeEscalation: ptr(false),
-					Capabilities: &corev1.Capabilities{
-						Drop: []corev1.Capability{"ALL"},
-					},
-				},
-			},
-		},
-		Volumes: volumes,
-		SecurityContext: &corev1.PodSecurityContext{
-			RunAsNonRoot: ptr(true),
-			RunAsUser:    ptr(int64(1000)),
-			FSGroup:      ptr(int64(1000)),
-			SeccompProfile: &corev1.SeccompProfile{
-				Type: corev1.SeccompProfileTypeRuntimeDefault,
-			},
-		},
-	}
-
-	// Apply jobTemplate settings
-	if config.Spec.JobTemplate != nil {
-		if config.Spec.JobTemplate.NodeSelector != nil {
-			podSpec.NodeSelector = config.Spec.JobTemplate.NodeSelector
-		}
-		if config.Spec.JobTemplate.Tolerations != nil {
-			podSpec.Tolerations = config.Spec.JobTemplate.Tolerations
-		}
-		if config.Spec.JobTemplate.Resources != nil {
-			podSpec.Containers[0].Resources = *config.Spec.JobTemplate.Resources
-		}
-		if config.Spec.JobTemplate.ServiceAccountName != "" {
-			podSpec.ServiceAccountName = config.Spec.JobTemplate.ServiceAccountName
-		}
-	}
-
-	annotations := map[string]string{}
-	if resolvedRev != "" {
-		annotations[AnnotationResolvedRevision] = resolvedRev
-	}
-
-	backoffLimit := int32(0)
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: config.Namespace,
-			Labels: map[string]string{
-				LabelConfigName:  config.Name,
-				LabelMachineName: machine.Name,
-			},
-			Annotations: annotations,
-		},
-		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds: &timeout,
-			BackoffLimit:          &backoffLimit,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						LabelConfigName:  config.Name,
-						LabelMachineName: machine.Name,
-					},
-				},
-				Spec: podSpec,
-			},
-		},
-	}
-
-	// Set owner reference
-	if err := controllerutil.SetControllerReference(config, job, r.Scheme); err != nil {
-		return nil, err
-	}
-
-	return job, nil
-}
-
-// createAndSubmitApplyJob creates and submits an apply job to Kubernetes.
-func (r *NixosConfigurationReconciler) createAndSubmitApplyJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, resolvedRev string) (*batchv1.Job, error) {
-	job, err := r.createApplyJob(ctx, config, machine, resolvedRev)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := r.Create(ctx, job); err != nil {
-		return nil, err
-	}
-
-	return job, nil
-}
-
-// cancelRunningJobs cancels all running jobs for this configuration.
-func (r *NixosConfigurationReconciler) cancelRunningJobs(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
-	var jobList batchv1.JobList
-	if err := r.List(ctx, &jobList,
-		client.InNamespace(config.Namespace),
-		client.MatchingLabels{LabelConfigName: config.Name},
-	); err != nil {
-		return err
-	}
-
-	for i := range jobList.Items {
-		job := &jobList.Items[i]
-		if job.Status.Active > 0 {
-			// Delete the job to cancel it
-			propagation := metav1.DeletePropagationBackground
-			if err := r.Delete(ctx, job, &client.DeleteOptions{
-				PropagationPolicy: &propagation,
-			}); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// applyOnRemoveFlake creates a Job to apply the onRemoveFlake configuration.
-func (r *NixosConfigurationReconciler) applyOnRemoveFlake(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
+// reconcileRemoving handles deletion: it decommissions the machine via an orphan
+// NixJob (which outlives the parent), then removes the finalizer.
+func (r *NixosConfigurationReconciler) reconcileRemoving(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Check retry count
-	retryCount := 0
-	if countStr, ok := config.Annotations[AnnotationOnRemoveRetries]; ok {
-		if _, err := fmt.Sscanf(countStr, "%d", &retryCount); err != nil {
-			log.Error(err, "failed to parse retry count")
-		}
-	}
-
-	if retryCount >= MaxOnRemoveRetries {
-		log.Info("max onRemoveFlake retries exceeded, skipping", "retries", retryCount)
-		r.Recorder.Event(config, corev1.EventTypeWarning, "OnRemoveFlakeFailed",
-			fmt.Sprintf("Max retries (%d) exceeded for onRemoveFlake", MaxOnRemoveRetries))
+	if !controllerutil.ContainsFinalizer(config, niov1alpha1.FinalizerName) {
 		return ctrl.Result{}, nil
 	}
 
-	// Get machine
+	// Stop day-2 convergence during decommission.
+	if err := r.deleteDayTwoCronIfExists(ctx, config); err != nil {
+		log.Error(err, "failed to delete day-2 cron during removal")
+	}
+
 	var machine niov1alpha1.Machine
-	machineKey := types.NamespacedName{
-		Name:      config.Spec.MachineRef.Name,
-		Namespace: config.Namespace,
-	}
-	if err := r.Get(ctx, machineKey, &machine); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("machine not found for onRemoveFlake, skipping")
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, err
+	machineKey := types.NamespacedName{Name: config.Spec.MachineRef.Name, Namespace: config.Namespace}
+	machineErr := r.Get(ctx, machineKey, &machine)
+	machineFound := machineErr == nil
+	if machineErr != nil && !apierrors.IsNotFound(machineErr) {
+		return ctrl.Result{}, machineErr
 	}
 
-	// Check if machine is discoverable
-	if !machine.Status.Discoverable {
-		log.Info("machine not discoverable, retrying onRemoveFlake later")
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
-	}
-
-	// Check for existing onRemove job
-	jobName := fmt.Sprintf("%s-onremove", config.Name)
-	var existingJob batchv1.Job
-	jobKey := types.NamespacedName{Name: jobName, Namespace: config.Namespace}
-	err := r.Get(ctx, jobKey, &existingJob)
-	if err == nil {
-		// Job exists - check status
-		if existingJob.Status.Succeeded > 0 {
-			log.Info("onRemoveFlake job completed successfully")
-			return ctrl.Result{}, nil
-		}
-		if existingJob.Status.Failed > 0 {
-			log.Info("onRemoveFlake job failed, incrementing retry count")
-			// Increment retry count
-			if config.Annotations == nil {
-				config.Annotations = make(map[string]string)
-			}
-			config.Annotations[AnnotationOnRemoveRetries] = fmt.Sprintf("%d", retryCount+1)
-			if err := r.Update(ctx, config); err != nil {
+	// Nothing to decommission: clear machine writeback and finalize.
+	if config.Spec.OnRemoveFlake == "" || !machineFound {
+		if machineFound {
+			if err := r.clearMachineStatus(ctx, config, &machine); err != nil {
 				return ctrl.Result{}, err
 			}
-			// Delete failed job to allow retry
-			if err := r.Delete(ctx, &existingJob); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 		}
-		// Job still running
-		log.Info("onRemoveFlake job still running")
-		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
+		return r.finalize(ctx, config)
 	}
 
-	// Create onRemove job (similar to apply job but with OnRemoveFlake)
-	log.Info("creating onRemoveFlake job", "flake", config.Spec.OnRemoveFlake)
-
-	// Create a modified config for the onRemove job
-	onRemoveConfig := config.DeepCopy()
-	onRemoveConfig.Spec.Flake = config.Spec.OnRemoveFlake
-
-	// The decommission Job is a one-shot; it does not record an applied commit,
-	// so no resolved revision annotation is needed.
-	job, err := r.createApplyJob(ctx, onRemoveConfig, &machine, "")
+	// Discover the orphan decommission job by label (an operator restart may have
+	// lost status.decommissionJobRef).
+	job, err := r.findDecommissionJob(ctx, config)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("build onRemove job: %w", err)
+		return ctrl.Result{}, err
 	}
 
-	// Override job name and add onRemove label
-	job.Name = jobName
-	job.Labels["nio.homystack.com/operation"] = "onRemove"
-
-	if err := r.Create(ctx, job); err != nil {
-		return ctrl.Result{}, fmt.Errorf("submit onRemove job: %w", err)
+	if job == nil {
+		// Not found (never created, or self-cleaned before success was observed):
+		// (re)create it. Retries are only counted on observed failures below.
+		newJob, err := r.ensureDecommissionNixJob(ctx, config, &machine)
+		if err != nil {
+			// Cannot build/create (e.g. no SSH key): decommission is impossible,
+			// so finalize rather than block deletion forever.
+			r.Recorder.Event(config, corev1.EventTypeWarning, "OnRemoveFlakeSkipped",
+				fmt.Sprintf("Cannot run onRemoveFlake: %v", err))
+			return r.finalize(ctx, config)
+		}
+		config.Status.DecommissionJobRef = newJob.Name
+		config.Status.Phase = niov1alpha1.NixosConfigPhaseRemoving
+		if err := r.statusUpdate(ctx, config); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 	}
 
-	r.Recorder.Event(config, corev1.EventTypeNormal, "OnRemoveFlakeStarted",
-		fmt.Sprintf("Started onRemoveFlake job with flake %s", config.Spec.OnRemoveFlake))
+	config.Status.DecommissionJobRef = job.Name
 
-	return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	switch {
+	case job.Status.Succeeded > 0:
+		if err := r.clearMachineStatus(ctx, config, &machine); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Delete the orphan decommission NixJob CR (best-effort) BEFORE removing
+		// the finalizer: the finalizer keeps this orchestrator reconciling, so we
+		// are alive to clean it up. Deleting the CR cascades its owned onremove
+		// ConfigMap. Its ttlSecondsAfterFinished only reaps the inner batch Job,
+		// not the CR, so without this the orphan leaks on every deletion.
+		if err := r.deleteDecommissionJob(ctx, job); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(config, corev1.EventTypeNormal, "OnRemoveFlakeSucceeded",
+			"Decommission flake applied successfully")
+		return r.finalize(ctx, config)
+
+	case job.Status.Failed > 0:
+		if job.DeletionTimestamp.IsZero() {
+			// Persist the incremented retry count robustly BEFORE deleting the
+			// child, so a status-update conflict cannot drop the count and let
+			// decommission exceed MaxOnRemoveRetries.
+			if err := r.bumpOnRemoveRetries(ctx, config); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		}
+		if config.Status.OnRemoveRetries >= MaxOnRemoveRetries {
+			r.Recorder.Event(config, corev1.EventTypeWarning, "OnRemoveFlakeFailed",
+				fmt.Sprintf("Decommission failed after %d attempts; finalizing anyway", MaxOnRemoveRetries))
+			if err := r.clearMachineStatus(ctx, config, &machine); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Terminal give-up: clean up the orphan CR before finalizing.
+			if err := r.deleteDecommissionJob(ctx, job); err != nil {
+				return ctrl.Result{}, err
+			}
+			return r.finalize(ctx, config)
+		}
+		config.Status.Phase = niov1alpha1.NixosConfigPhaseRemoving
+		if err := r.statusUpdate(ctx, config); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+
+	default:
+		config.Status.Phase = niov1alpha1.NixosConfigPhaseRemoving
+		if err := r.statusUpdate(ctx, config); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+	}
 }
 
-// calculateConfigHash calculates a hash of the configuration spec.
-func (r *NixosConfigurationReconciler) calculateConfigHash(config *niov1alpha1.NixosConfiguration) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(config.Spec.GitRepo))
-	_, _ = h.Write([]byte(config.Spec.Ref))
-	_, _ = h.Write([]byte(config.Spec.Flake))
-	_, _ = h.Write([]byte(config.Spec.ConfigurationSubdir))
-	_, _ = fmt.Fprintf(h, "%v", config.Spec.FullInstall)
-	for _, f := range config.Spec.AdditionalFiles {
-		_, _ = h.Write([]byte(f.Path))
-		_, _ = h.Write([]byte(f.Inline))
+// finalize removes the finalizer, allowing the API server to delete the object.
+func (r *NixosConfigurationReconciler) finalize(ctx context.Context, config *niov1alpha1.NixosConfiguration) (ctrl.Result, error) {
+	controllerutil.RemoveFinalizer(config, niov1alpha1.FinalizerName)
+	if err := r.Update(ctx, config); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
 	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
+	return ctrl.Result{}, nil
 }
 
-// getOperationType returns the operation type for the current configuration.
-func (r *NixosConfigurationReconciler) getOperationType(config *niov1alpha1.NixosConfiguration) niov1alpha1.OperationType {
-	if config.Spec.FullInstall && !config.Status.FullDiskInstallCompleted {
-		return niov1alpha1.OperationTypeFullInstall
+// deleteDecommissionJob deletes the orphan decommission NixJob CR best-effort
+// (a missing object is fine — it may have already been reaped).
+func (r *NixosConfigurationReconciler) deleteDecommissionJob(ctx context.Context, job *niov1alpha1.NixJob) error {
+	if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
+		return err
 	}
-	return niov1alpha1.OperationTypeNixosRebuild
+	return nil
 }
 
-// findConfigsForMachine returns reconcile requests for all NixosConfigurations that reference the given Machine.
+// bumpOnRemoveRetries increments status.onRemoveRetries and persists it,
+// retrying on conflict by re-reading the latest object so a transient conflict
+// cannot drop the count (which would let decommission exceed MaxOnRemoveRetries).
+// The working copy is synced to the persisted state on success.
+func (r *NixosConfigurationReconciler) bumpOnRemoveRetries(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
+	key := client.ObjectKeyFromObject(config)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest niov1alpha1.NixosConfiguration
+		if err := r.Get(ctx, key, &latest); err != nil {
+			return err
+		}
+		latest.Status.OnRemoveRetries++
+		latest.Status.Phase = niov1alpha1.NixosConfigPhaseRemoving
+		if err := r.Status().Update(ctx, &latest); err != nil {
+			return err
+		}
+		config.Status = latest.Status
+		config.ResourceVersion = latest.ResourceVersion
+		return nil
+	})
+}
+
+// markFullDiskInstallCompleted durably persists that the full-disk install has
+// finished (status.fullDiskInstallCompleted=true, status.installJobRef cleared),
+// retrying on conflict by re-reading the latest object. This must succeed BEFORE
+// the install child is deleted so no later reconcile can observe completion as
+// false and recreate the child (which would re-wipe the installed machine). The
+// working copy is synced to the persisted state on success so the shared status
+// update later in the same reconcile does not conflict. It is idempotent: setting
+// the flag when already true is a no-op write.
+func (r *NixosConfigurationReconciler) markFullDiskInstallCompleted(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
+	key := client.ObjectKeyFromObject(config)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest niov1alpha1.NixosConfiguration
+		if err := r.Get(ctx, key, &latest); err != nil {
+			return err
+		}
+		latest.Status.FullDiskInstallCompleted = true
+		latest.Status.InstallJobRef = ""
+		if err := r.Status().Update(ctx, &latest); err != nil {
+			return err
+		}
+		config.Status = latest.Status
+		config.ResourceVersion = latest.ResourceVersion
+		return nil
+	})
+}
+
+// statusUpdate persists status, treating a conflict as a soft (retryable) error.
+func (r *NixosConfigurationReconciler) statusUpdate(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
+	if err := r.Status().Update(ctx, config); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// machineOwner returns the name of the NixosConfiguration that owns config's
+// target machine: the one with the earliest creationTimestamp (tie-break by
+// name). Listing by namespace and filtering in Go avoids depending on the field
+// index, which is unavailable to a direct (non-cached) client in tests.
+func (r *NixosConfigurationReconciler) machineOwner(ctx context.Context, config *niov1alpha1.NixosConfiguration) (string, error) {
+	var list niov1alpha1.NixosConfigurationList
+	if err := r.List(ctx, &list, client.InNamespace(config.Namespace)); err != nil {
+		return "", err
+	}
+	winner := config
+	for i := range list.Items {
+		c := &list.Items[i]
+		if c.Spec.MachineRef.Name != config.Spec.MachineRef.Name {
+			continue
+		}
+		if c.Name == config.Name {
+			continue
+		}
+		if configEarlier(c, winner) {
+			winner = c
+		}
+	}
+	return winner.Name, nil
+}
+
+// configEarlier reports whether a should win ownership over b: earlier
+// creationTimestamp, or the lexicographically smaller name on a tie.
+func configEarlier(a, b *niov1alpha1.NixosConfiguration) bool {
+	if a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.Name < b.Name
+	}
+	return a.CreationTimestamp.Before(&b.CreationTimestamp)
+}
+
+// childLabels are the common labels stamped on install/day-2 children.
+func childLabels(config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) map[string]string {
+	return map[string]string{
+		LabelConfigName:  config.Name,
+		LabelMachineName: machine.Name,
+	}
+}
+
+// ensureInstallNixJob creates-or-updates the owned install NixJob and returns
+// its current state.
+func (r *NixosConfigurationReconciler) ensureInstallNixJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*niov1alpha1.NixJob, error) {
+	desired, err := buildInstallNixJob(config, machine)
+	if err != nil {
+		return nil, err
+	}
+	desired.Labels = childLabels(config, machine)
+	if err := controllerutil.SetControllerReference(config, desired, r.Scheme); err != nil {
+		return nil, err
+	}
+
+	var existing niov1alpha1.NixJob
+	err = r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			return nil, err
+		}
+		return desired, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if !existing.DeletionTimestamp.IsZero() {
+		return &existing, nil
+	}
+	existing.Labels = desired.Labels
+	existing.Spec = desired.Spec
+	if err := r.Update(ctx, &existing); err != nil {
+		return nil, err
+	}
+	return &existing, nil
+}
+
+// ensureDayTwoNixCronJob creates-or-updates the owned day-2 NixCronJob (with the
+// requested suspend state) and returns its current state.
+func (r *NixosConfigurationReconciler) ensureDayTwoNixCronJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine, suspend bool) (*niov1alpha1.NixCronJob, error) {
+	desired, err := buildDayTwoNixCronJob(config, machine)
+	if err != nil {
+		return nil, err
+	}
+	desired.Labels = childLabels(config, machine)
+	desired.Spec.Nix.Suspend = suspend
+	if err := controllerutil.SetControllerReference(config, desired, r.Scheme); err != nil {
+		return nil, err
+	}
+
+	var existing niov1alpha1.NixCronJob
+	err = r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			return nil, err
+		}
+		return desired, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if !existing.DeletionTimestamp.IsZero() {
+		return &existing, nil
+	}
+	existing.Labels = desired.Labels
+	existing.Spec = desired.Spec
+	if err := r.Update(ctx, &existing); err != nil {
+		return nil, err
+	}
+	return &existing, nil
+}
+
+// ensureDecommissionNixJob creates the orphan decommission NixJob (NO ownerRef,
+// so it survives parent deletion) if absent, and returns it.
+func (r *NixosConfigurationReconciler) ensureDecommissionNixJob(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) (*niov1alpha1.NixJob, error) {
+	desired, err := buildDecommissionNixJob(config, machine)
+	if err != nil {
+		return nil, err
+	}
+	desired.Labels = map[string]string{
+		LabelConfigName:  config.Name,
+		LabelMachineName: machine.Name,
+		LabelOperation:   operationDecommission,
+	}
+	// buildDecommissionNixJob always sets JobTemplate; reap the finished inner
+	// batch Job. Note this TTL does NOT delete the orphan NixJob CR — the
+	// orchestrator deletes that CR in reconcileRemoving before finalizing.
+	desired.Spec.JobTemplate.TTLSecondsAfterFinished = ptr(int32(DecommissionTTLSeconds))
+	// Deliberately NO SetControllerReference (Key decision #3): an ownerRef would
+	// cascade-delete the job the moment the parent is removed.
+
+	var existing niov1alpha1.NixJob
+	err = r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			return nil, err
+		}
+		r.Recorder.Event(config, corev1.EventTypeNormal, "OnRemoveFlakeStarted",
+			fmt.Sprintf("Started decommission job %q", desired.Name))
+		return desired, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &existing, nil
+}
+
+// findDecommissionJob discovers the orphan decommission NixJob for config by
+// label, independent of status.decommissionJobRef.
+func (r *NixosConfigurationReconciler) findDecommissionJob(ctx context.Context, config *niov1alpha1.NixosConfiguration) (*niov1alpha1.NixJob, error) {
+	var list niov1alpha1.NixJobList
+	if err := r.List(ctx, &list,
+		client.InNamespace(config.Namespace),
+		client.MatchingLabels{LabelConfigName: config.Name, LabelOperation: operationDecommission},
+	); err != nil {
+		return nil, err
+	}
+	if len(list.Items) == 0 {
+		return nil, nil
+	}
+	return &list.Items[0], nil
+}
+
+// suspendDayTwoCronIfExists suspends the day-2 cron (keeping run history) when
+// the config is Blocked. Suspend is modeled by the workload's Nix.Suspend knob.
+func (r *NixosConfigurationReconciler) suspendDayTwoCronIfExists(ctx context.Context, config *niov1alpha1.NixosConfiguration) {
+	log := logf.FromContext(ctx)
+	var cron niov1alpha1.NixCronJob
+	key := types.NamespacedName{Name: dayTwoChildName(config.Name), Namespace: config.Namespace}
+	if err := r.Get(ctx, key, &cron); err != nil {
+		return
+	}
+	if cron.Spec.Nix.Suspend {
+		return
+	}
+	cron.Spec.Nix.Suspend = true
+	if err := r.Update(ctx, &cron); err != nil {
+		log.Error(err, "failed to suspend day-2 cron")
+	}
+}
+
+// deleteDayTwoCronIfExists deletes the day-2 cron so convergence stops during
+// decommission.
+func (r *NixosConfigurationReconciler) deleteDayTwoCronIfExists(ctx context.Context, config *niov1alpha1.NixosConfiguration) error {
+	var cron niov1alpha1.NixCronJob
+	key := types.NamespacedName{Name: dayTwoChildName(config.Name), Namespace: config.Namespace}
+	if err := r.Get(ctx, key, &cron); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !cron.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, &cron))
+}
+
+// writeBackMachineStatus records the applied config/commit on the Machine
+// (Gap 6), so `kubectl get machine` reflects what the node runs.
+func (r *NixosConfigurationReconciler) writeBackMachineStatus(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) error {
+	machine.Status.HasConfiguration = true
+	machine.Status.AppliedConfiguration = config.Name
+	machine.Status.AppliedCommit = config.Status.ResolvedRevision
+	machine.Status.LastAppliedTime = config.Status.LastAppliedTime
+	return r.Status().Update(ctx, machine)
+}
+
+// clearMachineStatus clears the applied-config writeback on the Machine, but
+// only if it still points at this config.
+func (r *NixosConfigurationReconciler) clearMachineStatus(ctx context.Context, config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) error {
+	if machine.Status.AppliedConfiguration != config.Name {
+		return nil
+	}
+	machine.Status.HasConfiguration = false
+	machine.Status.AppliedConfiguration = ""
+	machine.Status.AppliedCommit = ""
+	machine.Status.LastAppliedTime = nil
+	if err := r.Status().Update(ctx, machine); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return nil
+}
+
+// setPhase sets the phase and derives the standard conditions.
+func (r *NixosConfigurationReconciler) setPhase(config *niov1alpha1.NixosConfiguration, phase, reason, msg string, applied bool, childGitSynced *metav1.Condition) {
+	config.Status.Phase = phase
+	gen := config.Generation
+
+	ready := phase == niov1alpha1.NixosConfigPhaseReady
+	stalled := phase == niov1alpha1.NixosConfigPhaseDegraded || phase == niov1alpha1.NixosConfigPhaseBlocked
+
+	readyStatus := metav1.ConditionFalse
+	if ready {
+		readyStatus = metav1.ConditionTrue
+	}
+	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+		Type:               niov1alpha1.ConditionReady,
+		Status:             readyStatus,
+		ObservedGeneration: gen,
+		Reason:             reason,
+		Message:            msg,
+	})
+
+	if stalled {
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:               niov1alpha1.ConditionStalled,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: gen,
+			Reason:             reason,
+			Message:            msg,
+		})
+	} else {
+		meta.RemoveStatusCondition(&config.Status.Conditions, niov1alpha1.ConditionStalled)
+	}
+
+	reconcilingStatus := metav1.ConditionTrue
+	if ready || stalled {
+		reconcilingStatus = metav1.ConditionFalse
+	}
+	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+		Type:               niov1alpha1.ConditionReconciling,
+		Status:             reconcilingStatus,
+		ObservedGeneration: gen,
+		Reason:             reason,
+		Message:            msg,
+	})
+
+	appliedStatus := metav1.ConditionFalse
+	appliedReason := niov1alpha1.ReasonWaiting
+	if applied {
+		appliedStatus = metav1.ConditionTrue
+		appliedReason = niov1alpha1.ReasonConfigApplied
+	}
+	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+		Type:               niov1alpha1.ConditionApplied,
+		Status:             appliedStatus,
+		ObservedGeneration: gen,
+		Reason:             appliedReason,
+		Message:            msg,
+	})
+
+	if childGitSynced != nil {
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:               niov1alpha1.ConditionGitSynced,
+			Status:             childGitSynced.Status,
+			ObservedGeneration: gen,
+			Reason:             childGitSynced.Reason,
+			Message:            childGitSynced.Message,
+		})
+	}
+}
+
+// setBlocked is a convenience for the Blocked phase.
+func (r *NixosConfigurationReconciler) setBlocked(config *niov1alpha1.NixosConfiguration, reason, msg string) {
+	r.setPhase(config, niov1alpha1.NixosConfigPhaseBlocked, reason, msg, false, nil)
+}
+
+// setDegraded is a convenience for the Degraded phase.
+func (r *NixosConfigurationReconciler) setDegraded(config *niov1alpha1.NixosConfiguration, msg string) {
+	r.setPhase(config, niov1alpha1.NixosConfigPhaseDegraded, niov1alpha1.ReasonApplyFailed, msg, false, nil)
+}
+
+// findConfigsForMachine enqueues configs referencing a changed Machine.
 func (r *NixosConfigurationReconciler) findConfigsForMachine(ctx context.Context, obj client.Object) []reconcile.Request {
 	log := logf.FromContext(ctx)
-	machine := obj.(*niov1alpha1.Machine)
+	machine, ok := obj.(*niov1alpha1.Machine)
+	if !ok {
+		return nil
+	}
 
 	var configList niov1alpha1.NixosConfigurationList
 	if err := r.List(ctx, &configList,
@@ -1163,26 +800,38 @@ func (r *NixosConfigurationReconciler) findConfigsForMachine(ctx context.Context
 	}
 
 	requests := make([]reconcile.Request, 0, len(configList.Items))
-
-	for _, config := range configList.Items {
+	for i := range configList.Items {
 		requests = append(requests, reconcile.Request{
 			NamespacedName: types.NamespacedName{
-				Name:      config.Name,
-				Namespace: config.Namespace,
+				Name:      configList.Items[i].Name,
+				Namespace: configList.Items[i].Namespace,
 			},
 		})
 	}
-
-	if len(requests) > 0 {
-		log.Info("found configurations for machine", "machine", machine.Name, "count", len(requests))
-	}
-
 	return requests
+}
+
+// findConfigsForOrphanRemoveJob maps an orphan decommission NixJob back to its
+// config via labels (the job has no ownerRef, so Owns() cannot enqueue it).
+func (r *NixosConfigurationReconciler) findConfigsForOrphanRemoveJob(_ context.Context, obj client.Object) []reconcile.Request {
+	job, ok := obj.(*niov1alpha1.NixJob)
+	if !ok {
+		return nil
+	}
+	if job.Labels[LabelOperation] != operationDecommission {
+		return nil
+	}
+	cfgName := job.Labels[LabelConfigName]
+	if cfgName == "" {
+		return nil
+	}
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{Name: cfgName, Namespace: job.Namespace},
+	}}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NixosConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Set up field index for machine references
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &niov1alpha1.NixosConfiguration{},
 		IndexConfigByMachine,
 		func(obj client.Object) []string {
@@ -1195,10 +844,15 @@ func (r *NixosConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&niov1alpha1.NixosConfiguration{}).
-		Owns(&batchv1.Job{}).
+		Owns(&niov1alpha1.NixJob{}).
+		Owns(&niov1alpha1.NixCronJob{}).
 		Watches(
 			&niov1alpha1.Machine{},
 			handler.EnqueueRequestsFromMapFunc(r.findConfigsForMachine),
+		).
+		Watches(
+			&niov1alpha1.NixJob{},
+			handler.EnqueueRequestsFromMapFunc(r.findConfigsForOrphanRemoveJob),
 		).
 		Named("nixosconfiguration").
 		Complete(r)

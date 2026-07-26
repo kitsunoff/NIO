@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -27,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
+	"github.com/kitsunoff/nixos-operator/internal/gitauth"
 )
 
 // Pod-render constants for the generated NIO workload pods (design §4.5).
@@ -38,9 +40,19 @@ const (
 	nixBootstrapMount  = "/nix-vol"
 	workspaceMountPath = "/workspace"
 
+	// gitCredsVolumeName / gitCredsMountPath expose a private-repo credentials
+	// Secret to the fetch-source init-container (mirrors internal/gitauth keys).
+	gitCredsVolumeName = "nio-git-creds"
+	gitCredsMountPath  = "/etc/nio/git-creds"
+
 	initBootstrap   = "bootstrap"
 	initFetchSource = "fetch-source"
+	initInjectFiles = "inject-files"
 	initInstantiate = "instantiate"
+
+	// filesMountBase is where referenced ConfigMap/Secret file sources are mounted
+	// in the inject-files init-container (one indexed subdir per referenced object).
+	filesMountBase = "/etc/nio/files"
 
 	defaultAppContainer = "app"
 	// defaultNixSystems is what an unqualified NixBuilder advertises. It covers
@@ -51,6 +63,12 @@ const (
 	// cacheNixosPublicKey is the well-known public key for cache.nixos.org.
 	cacheNixosPublicKey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 	cacheNixosURL       = "https://cache.nixos.org"
+
+	// sshHostKeyOpts are the permissive host-key options every SSH dispatch needs
+	// (no host-key pinning in v1alpha2). They carry no identity: the builder key
+	// lives in the builders= machine-spec and the target key in the caller-injected
+	// NIX_SSHOPTS, so this alone never forces the wrong identity onto a connection.
+	sshHostKeyOpts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 )
 
 // storeInfo carries the resolved NixStore endpoints for NIX_CONFIG assembly.
@@ -64,6 +82,11 @@ type storeInfo struct {
 type builderInfo struct {
 	endpoint string
 	systems  []string
+	// sshKeyPath is the builder SSH private-key path emitted as the machine-spec's
+	// 3rd field in the builders= line. Set when a store-owned SSH secret is mounted,
+	// so ssh-ng authenticates the build dispatch with this key — freeing the app
+	// container's NIX_SSHOPTS to carry a different (target-host) identity.
+	sshKeyPath string
 }
 
 // compositeRevision returns the pod-template revision key
@@ -109,8 +132,14 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 		if len(builder.systems) > 0 {
 			systemList = strings.Join(builder.systems, ",")
 		}
+		buildersLine := "builders = " + builder.endpoint + " " + systemList
+		// Machine-spec 3rd field = builder SSH key, so ssh-ng authenticates the build
+		// dispatch itself and the app's NIX_SSHOPTS can hold the target-host key.
+		if builder.sshKeyPath != "" {
+			buildersLine += " " + builder.sshKeyPath
+		}
 		lines = append(lines,
-			"builders = "+builder.endpoint+" "+systemList,
+			buildersLine,
 			"builders-use-substitutes = true",
 			// Force builds onto the remote builder: with a local job slot nix would
 			// otherwise build locally and the builder→store push would never run.
@@ -160,7 +189,134 @@ func buildCommand(run string, prebuild, nixFlags []string) []string {
 // fetchSourceScript returns the shell for the fetch-source init. Direct-git mode
 // shallow-fetches the resolved commit; Flux mode downloads the artifact tarball
 // and synthesizes a git tree so `.` is a hermetic flake input (design §4.5).
-func fetchSourceScript(flux bool) string {
+// validateFilePath rejects an AdditionalFile destination that is absolute,
+// escapes the source checkout root, or contains characters outside a safe set.
+// The charset restriction also keeps the generated inject script's double-quoted
+// paths free of shell metacharacters. Injected paths are attacker-influenced
+// only by the CR author (who already controls the flake), but traversal into the
+// pod filesystem is defense-in-depth worth enforcing.
+func validateFilePath(p string) error {
+	if p == "" {
+		return fmt.Errorf("path is empty")
+	}
+	if path.IsAbs(p) {
+		return fmt.Errorf("path %q must be relative", p)
+	}
+	for _, r := range p {
+		if !isSafePathChar(r) {
+			return fmt.Errorf("path %q contains an unsupported character %q (allowed: letters, digits, . _ - /)", p, r)
+		}
+	}
+	clean := path.Clean(p)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("path %q escapes the source tree", p)
+	}
+	return nil
+}
+
+// isSafePathChar reports whether r is allowed in an AdditionalFile path.
+func isSafePathChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '.', r == '_', r == '-', r == '/':
+		return true
+	default:
+		return false
+	}
+}
+
+// validateAdditionalFiles checks every AdditionalFile destination path. It runs
+// in the reconcile path so an invalid file stalls the workload instead of
+// baking a bad path into the pod.
+func validateAdditionalFiles(files []niov1alpha1.NixFile) error {
+	for _, f := range files {
+		if err := validateFilePath(f.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// additionalFilesInjection builds the inject-files init-container (and the
+// ConfigMap/Secret volumes it needs) that writes AdditionalFiles into the
+// checkout and force-stages them, so a git-tree flake source includes them even
+// under .gitignore. Every source is mounted and copied — explicit
+// configMapRef/secretRef, and inline content via the operator-owned nixfiles
+// ConfigMap (inlineCMName, key file-<index>) so inline never bloats the pod
+// spec. Returns ok=false when there are no files.
+func additionalFilesInjection(files []niov1alpha1.NixFile, image, inlineCMName string) (corev1.Container, []corev1.Volume, bool) {
+	if len(files) == 0 {
+		return corev1.Container{}, nil, false
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: nixStorePodVolume, MountPath: nixMountPath},
+		{Name: workspaceVolume, MountPath: workspaceMountPath},
+	}
+	var vols []corev1.Volume
+	volIdx := map[string]int{} // "cm/<name>" | "sec/<name>" -> index (dedup)
+	mode := int32(0o400)
+	refDir := func(kind, name string) string {
+		key := kind + "/" + name
+		if _, ok := volIdx[key]; !ok {
+			idx := len(volIdx)
+			volIdx[key] = idx
+			var src corev1.VolumeSource
+			if kind == "cm" {
+				src = corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: name}, DefaultMode: &mode}}
+			} else {
+				src = corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: name, DefaultMode: &mode}}
+			}
+			volName := fmt.Sprintf("nio-file-%d", idx)
+			mountPath := fmt.Sprintf("%s/%d", filesMountBase, idx)
+			vols = append(vols, corev1.Volume{Name: volName, VolumeSource: src})
+			mounts = append(mounts, corev1.VolumeMount{Name: volName, MountPath: mountPath, ReadOnly: true})
+		}
+		return fmt.Sprintf("%s/%d", filesMountBase, volIdx[key])
+	}
+
+	var b strings.Builder
+	b.WriteString("set -eu\ncd " + workspaceMountPath + "\n")
+	paths := make([]string, 0, len(files))
+	for i, f := range files {
+		paths = append(paths, f.Path)
+		// Paths are charset-validated, so double-quoting is metacharacter-safe.
+		b.WriteString(`mkdir -p "$(dirname "` + f.Path + `")"` + "\n")
+		switch {
+		case f.ConfigMapRef != nil:
+			b.WriteString(`cp "` + refDir("cm", f.ConfigMapRef.Name) + "/" + f.ConfigMapRef.Key + `" "` + f.Path + `"` + "\n")
+		case f.SecretRef != nil:
+			b.WriteString(`cp "` + refDir("sec", f.SecretRef.Name) + "/" + f.SecretRef.Key + `" "` + f.Path + `"` + "\n")
+		default: // inline → copied from the owned nixfiles ConfigMap (out of the pod spec)
+			src := refDir("cm", inlineCMName) + "/" + fmt.Sprintf("file-%d", i)
+			b.WriteString(`cp "` + src + `" "` + f.Path + `"` + "\n")
+		}
+	}
+	// Force-stage the exact paths (never `git add --all`, which honors .gitignore
+	// and would silently drop matching files Nix then can't see).
+	b.WriteString("git add --force --")
+	for _, p := range paths {
+		b.WriteString(` "` + p + `"`)
+	}
+	b.WriteByte('\n')
+
+	return corev1.Container{
+		Name:         initInjectFiles,
+		Image:        image,
+		Command:      []string{"nix", "shell", "nixpkgs#gitMinimal", "--command", "sh", "-c", b.String()},
+		VolumeMounts: mounts,
+	}, vols, true
+}
+
+// fetchSourceScript builds the fetch-source init-container script. In Flux mode
+// it downloads the pre-authenticated artifact tarball. In direct-git mode it
+// clones the exact resolved revision; when hasCreds is set it first wires
+// private-repo auth from the mounted credentials (NIO_GIT_CREDENTIALS_PATH),
+// mirroring the internal/gitauth posture — SSH via GIT_SSH_COMMAND (honoring a
+// pinned known_hosts), HTTPS via a non-interactive GIT_ASKPASS helper so the
+// secret never lands in argv.
+func fetchSourceScript(flux, hasCreds, sshRepo bool) string {
 	if flux {
 		return `set -eu
 nix shell nixpkgs#gitMinimal nixpkgs#curl --command sh -c '
@@ -170,9 +326,42 @@ nix shell nixpkgs#gitMinimal nixpkgs#curl --command sh -c '
     git -c user.email=nio@homystack.com -c user.name=nio commit --quiet --message "flux artifact $NIO_REVISION")'
 `
 	}
+
+	pkgs := "nixpkgs#gitMinimal"
+	authPrelude := ""
+	switch {
+	case hasCreds && sshRepo:
+		// openssh is needed because git shells out to ssh, which the nix image lacks.
+		pkgs = "nixpkgs#gitMinimal nixpkgs#openssh"
+		// Copy the key to a writable path at 0600 (mounted secret files are
+		// read-only and ssh rejects group/other-readable or ill-owned keys).
+		authPrelude = `  install -m 600 "$NIO_GIT_CREDENTIALS_PATH/ssh-privatekey" /workspace/.nio-ssh-key
+  if [ -s "$NIO_GIT_CREDENTIALS_PATH/known_hosts" ]; then
+    GIT_SSH_COMMAND="ssh -i /workspace/.nio-ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$NIO_GIT_CREDENTIALS_PATH/known_hosts"
+  else
+    GIT_SSH_COMMAND="ssh -i /workspace/.nio-ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  fi
+  export GIT_SSH_COMMAND
+`
+	case hasCreds:
+		// HTTPS: a GIT_ASKPASS helper reads username/password (or a token) from the
+		// mounted secret at request time. Quoted heredoc → the helper body is written
+		// verbatim (expanded when git invokes it, not now).
+		authPrelude = `  cat > /workspace/.nio-askpass <<"NIOASKPASS"
+#!/bin/sh
+case "$1" in
+Username*) head -n1 "$NIO_GIT_CREDENTIALS_PATH/username" 2>/dev/null || printf git ;;
+Password*) head -n1 "$NIO_GIT_CREDENTIALS_PATH/password" 2>/dev/null || head -n1 "$NIO_GIT_CREDENTIALS_PATH/token" 2>/dev/null ;;
+esac
+NIOASKPASS
+  chmod +x /workspace/.nio-askpass
+  export GIT_ASKPASS=/workspace/.nio-askpass GIT_TERMINAL_PROMPT=0
+`
+	}
+
 	return `set -eu
-nix shell nixpkgs#gitMinimal --command sh -c '
-  git init --quiet /workspace && cd /workspace
+nix shell ` + pkgs + ` --command sh -c '
+` + authPrelude + `  git init --quiet /workspace && cd /workspace
   git remote add origin "$NIO_GIT_REPO"
   git fetch --depth 1 origin "$NIO_REVISION"
   git checkout --detach FETCH_HEAD'
@@ -210,6 +399,14 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	rev := compositeRevision(in.resolvedRevision, nix.Run, nix.Args)
 	nixConfig := buildNixConfig(in.store, in.builder)
 	flux := nix.Source.FluxSourceRef != nil
+
+	// Build/run work in the flake subdir when Source.Dir is set, so a relative
+	// installable resolves against it. Dir is validated (relative, no traversal)
+	// in the reconcile path before render.
+	workDir := workspaceMountPath
+	if nix.Source.Dir != "" {
+		workDir = path.Join(workspaceMountPath, nix.Source.Dir)
+	}
 
 	// Labels + revision annotation.
 	labels := managedLabels(in.kind, in.name)
@@ -254,16 +451,19 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		buildMounts = append(buildMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
 		sshOpts = []corev1.EnvVar{{
 			Name:  "NIX_SSHOPTS",
-			Value: "-i " + sshPrivateKeyPath + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+			Value: "-i " + sshPrivateKeyPath + " " + sshHostKeyOpts,
 		}}
 	}
 	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
 
-	// When dispatching to a remote builder, nix invokes `ssh`; the nix image has
-	// no ssh binary, so run the build/run commands inside a shell that brings
-	// openssh onto PATH.
-	wrapSSH := func(cmd []string) []string {
-		if in.sshSecretName == "" {
+	// Any command that SSHes out needs openssh on PATH (the nix image has none):
+	// a remote builder dispatch, or a target host whose NIX_SSHOPTS the caller
+	// (e.g. the NixosConfiguration orchestrator) injected onto the app container.
+	// Broad, convenient rule: NIX_SSHOPTS present ⇒ wrap in openssh.
+	appNeedsSSH := in.sshSecretName != "" ||
+		hasEnvVar(findOrNewContainer(tmpl.Spec.Containers, appName).Env, "NIX_SSHOPTS")
+	wrapSSH := func(cmd []string, needsSSH bool) []string {
+		if !needsSSH {
 			return cmd
 		}
 		return []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command " + shellJoin(cmd)}
@@ -272,7 +472,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	// instantiate: build (dispatched to the remote builder when one is used), and
 	// with a store+builder also push the built closure into the shared NixStore so
 	// other pods substitute it rather than rebuild (ADR-0008, delegated build).
-	instantiateCmd := wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
+	instantiateCmd := wrapSSH(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags), in.sshSecretName != "")
 	if in.sshSecretName != "" && in.store != nil && in.store.pushURL != "" {
 		installables := append([]string{nix.Run}, nix.Prebuild...)
 		build := shellJoin(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
@@ -293,6 +493,29 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		fetchEnv = append(fetchEnv, corev1.EnvVar{Name: "NIO_GIT_REPO", Value: nix.Source.GitRepo})
 	}
 
+	// Private-repo credentials: mount the Secret into fetch-source and let the
+	// clone authenticate. Credentials apply only to the direct-git clone (Flux
+	// pulls a pre-authenticated artifact URL from the source-controller).
+	fetchMounts := nixAndWorkspace
+	credsSecretName := ""
+	if !flux && nix.Source.CredentialsRef != nil {
+		credsSecretName = nix.Source.CredentialsRef.Name
+	}
+	hasCreds := credsSecretName != ""
+	sshRepo := hasCreds && gitauth.IsSSHRepo(nix.Source.GitRepo)
+	if hasCreds {
+		mode := int32(0o400)
+		tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, corev1.Volume{
+			Name: gitCredsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: credsSecretName, DefaultMode: &mode},
+			},
+		})
+		fetchMounts = append(append([]corev1.VolumeMount{}, nixAndWorkspace...),
+			corev1.VolumeMount{Name: gitCredsVolumeName, MountPath: gitCredsMountPath, ReadOnly: true})
+		fetchEnv = append(fetchEnv, corev1.EnvVar{Name: "NIO_GIT_CREDENTIALS_PATH", Value: gitCredsMountPath})
+	}
+
 	inits := []corev1.Container{
 		{
 			Name:         initBootstrap,
@@ -303,31 +526,50 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		{
 			Name:         initFetchSource,
 			Image:        image,
-			Command:      []string{"sh", "-c", fetchSourceScript(flux)},
+			Command:      []string{"sh", "-c", fetchSourceScript(flux, hasCreds, sshRepo)},
 			Env:          fetchEnv,
-			VolumeMounts: nixAndWorkspace,
-		},
-		{
-			Name:         initInstantiate,
-			Image:        image,
-			WorkingDir:   workspaceMountPath,
-			Command:      instantiateCmd,
-			Env:          instantiateEnv,
-			VolumeMounts: buildMounts,
+			VolumeMounts: fetchMounts,
 		},
 	}
+
+	// inject-files (optional): write AdditionalFiles into the checkout and
+	// force-stage them, after fetch-source's clone and before the build.
+	if inject, injVols, ok := additionalFilesInjection(nix.AdditionalFiles, image, additionalFilesConfigMapName(in.name)); ok {
+		for _, v := range injVols {
+			tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, v)
+		}
+		inits = append(inits, inject)
+	}
+
+	inits = append(inits, corev1.Container{
+		Name:         initInstantiate,
+		Image:        image,
+		WorkingDir:   workDir,
+		Command:      instantiateCmd,
+		Env:          instantiateEnv,
+		VolumeMounts: buildMounts,
+	})
 	// Prepend our init-containers, dropping any prior copies (idempotent re-render).
-	tmpl.Spec.InitContainers = append(inits, filterOutContainers(tmpl.Spec.InitContainers, initBootstrap, initFetchSource, initInstantiate)...)
+	tmpl.Spec.InitContainers = append(inits, filterOutContainers(tmpl.Spec.InitContainers, initBootstrap, initFetchSource, initInjectFiles, initInstantiate)...)
 
 	// App container: owned image/command/NIX_CONFIG/mounts, user fields preserved.
 	app := findOrNewContainer(tmpl.Spec.Containers, appName)
 	app.Image = image
-	app.WorkingDir = workspaceMountPath
-	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags))
+	app.WorkingDir = workDir
+	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags), appNeedsSSH)
 	app.Args = nil
 	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
-	for _, e := range sshOpts {
-		app.Env = upsertEnv(app.Env, e)
+	// App-container NIX_SSHOPTS carries the identity for whatever the app itself
+	// SSHes to (a target host for `nixos-rebuild --target-host`). The builder key
+	// now travels in the builders= machine-spec, so we must NOT stamp -i K_infra
+	// here — that would override a caller-injected target key and break the apply
+	// (this is the core regression the fix addresses).
+	//   - caller already set NIX_SSHOPTS (target key) → leave it untouched.
+	//   - builder present but caller set nothing → host-key opts only, no identity,
+	//     so the app's build dispatch uses the builders= key.
+	//   - neither → nothing.
+	if !hasEnvVar(app.Env, "NIX_SSHOPTS") && in.sshSecretName != "" {
+		app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: sshHostKeyOpts})
 	}
 	app.VolumeMounts = upsertMounts(app.VolumeMounts, buildMounts...)
 	tmpl.Spec.Containers = setContainer(tmpl.Spec.Containers, app)
@@ -412,6 +654,16 @@ func findOrNewContainer(containers []corev1.Container, name string) corev1.Conta
 }
 
 // upsertEnv replaces an env var by name or appends it.
+// hasEnvVar reports whether env contains a variable with the given name.
+func hasEnvVar(env []corev1.EnvVar, name string) bool {
+	for i := range env {
+		if env[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func upsertEnv(env []corev1.EnvVar, e corev1.EnvVar) []corev1.EnvVar {
 	for i := range env {
 		if env[i].Name == e.Name {

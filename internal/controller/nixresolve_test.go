@@ -21,6 +21,8 @@ import (
 	"errors"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -105,6 +107,110 @@ func TestResolveRevisionLsRemote(t *testing.T) {
 	}
 	if res.artifactURL != "" {
 		t.Errorf("direct-git mode should not set artifactURL")
+	}
+}
+
+// recordingGit is a GitResolver that captures the credentials it was handed,
+// so tests can assert the resolver wires CredentialsRef through to ls-remote.
+type recordingGit struct {
+	sha  string
+	seen *gitauth.Creds
+}
+
+func (f *recordingGit) LsRemote(_ context.Context, _, _ string, creds *gitauth.Creds) (string, error) {
+	f.seen = creds
+	return f.sha, nil
+}
+
+func TestResolveRevisionWiresUsernamePassword(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "gitcreds"},
+		Data: map[string][]byte{
+			// Trailing newlines mimic file-sourced Secret values; they must be trimmed.
+			"username": []byte("bob\n"),
+			"password": []byte("s3cret\n"),
+		},
+	}
+	c := fake.NewClientBuilder().WithRuntimeObjects(secret).Build()
+	rec := &recordingGit{sha: "sha1"}
+	res, err := resolveRevision(context.Background(), c, rec, "apps",
+		niov1alpha1.NixSource{
+			GitRepo:        "https://example.com/r",
+			Ref:            "main",
+			CredentialsRef: &niov1alpha1.SecretReference{Name: "gitcreds"},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.revision != "sha1" {
+		t.Errorf("revision = %q, want sha1", res.revision)
+	}
+	if rec.seen == nil {
+		t.Fatal("credentials were not wired to LsRemote (got nil)")
+	}
+	if rec.seen.Username != "bob" || rec.seen.Password != "s3cret" {
+		t.Errorf("creds = %+v, want trimmed bob/s3cret", rec.seen)
+	}
+}
+
+func TestResolveRevisionWiresTokenAndSSHKey(t *testing.T) {
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "token"},
+		Data:       map[string][]byte{"token": []byte("ghp_abc\n")},
+	}
+	sshSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "sshkey"},
+		Data: map[string][]byte{
+			"ssh-privatekey": []byte("PRIVATE"),
+			"known_hosts":    []byte("host ssh-ed25519 AAAA"),
+		},
+	}
+	c := fake.NewClientBuilder().WithRuntimeObjects(tokenSecret, sshSecret).Build()
+
+	// Token-only secret populates the password (git-over-HTTPS token auth).
+	rec := &recordingGit{sha: "s"}
+	if _, err := resolveRevision(context.Background(), c, rec, "apps",
+		niov1alpha1.NixSource{GitRepo: "https://x/r", Ref: "main",
+			CredentialsRef: &niov1alpha1.SecretReference{Name: "token"}}); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	if rec.seen == nil || rec.seen.Password != "ghp_abc" {
+		t.Errorf("token not wired as password: %+v", rec.seen)
+	}
+
+	// SSH key + known_hosts are forwarded byte-exact.
+	rec2 := &recordingGit{sha: "s"}
+	if _, err := resolveRevision(context.Background(), c, rec2, "apps",
+		niov1alpha1.NixSource{GitRepo: "git@x:r.git", Ref: "main",
+			CredentialsRef: &niov1alpha1.SecretReference{Name: "sshkey"}}); err != nil {
+		t.Fatalf("ssh: %v", err)
+	}
+	if rec2.seen == nil || string(rec2.seen.SSHKey) != "PRIVATE" ||
+		string(rec2.seen.KnownHosts) != "host ssh-ed25519 AAAA" {
+		t.Errorf("ssh key/known_hosts not wired: %+v", rec2.seen)
+	}
+}
+
+func TestResolveRevisionNoCredentialsRefPassesNil(t *testing.T) {
+	// Without a CredentialsRef the resolver must not touch the client and must
+	// pass nil creds (public-repo path). A nil client proves it is untouched.
+	rec := &recordingGit{sha: "s"}
+	if _, err := resolveRevision(context.Background(), nil, rec, "apps",
+		niov1alpha1.NixSource{GitRepo: "https://x/r", Ref: "main"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.seen != nil {
+		t.Errorf("expected nil creds for public repo, got %+v", rec.seen)
+	}
+}
+
+func TestResolveRevisionCredentialsSecretMissing(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	_, err := resolveRevision(context.Background(), c, &recordingGit{sha: "s"}, "apps",
+		niov1alpha1.NixSource{GitRepo: "https://x/r", Ref: "main",
+			CredentialsRef: &niov1alpha1.SecretReference{Name: "missing"}})
+	if err == nil {
+		t.Error("expected error when credentialsRef points at a missing secret")
 	}
 }
 
