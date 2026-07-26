@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: clusters.nio.homystack.com
+  name: nixclusters.nio.homystack.com
 spec:
   group: nio.homystack.com
   names:
-    kind: Cluster
-    listKind: ClusterList
-    plural: clusters
-    singular: cluster
+    kind: NixCluster
+    listKind: NixClusterList
+    plural: nixclusters
+    singular: nixcluster
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -27,8 +27,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Cluster is an abstract grouping of Machines driven by one idempotent
-          converge.
+        description: NixCluster is an abstract grouping of Machines driven by one
+          idempotent converge.
         properties:
           apiVersion:
             description: |-
@@ -49,7 +49,7 @@ spec:
             type: object
           spec:
             description: |-
-              ClusterSpec defines an abstract cluster: it groups Machines into nodeGroups,
+              NixClusterSpec defines an abstract cluster: it groups Machines into nodeGroups,
               maps opaque per-group values onto each member, and drives ONE idempotent
               converge NixCronJob against the downstream flake-parts repo. NIO never
               interprets the cluster's meaning (k3s/proxmox/etc) — semantics live in the
@@ -256,7 +256,7 @@ spec:
             - source
             type: object
           status:
-            description: ClusterStatus is the observed state of a Cluster.
+            description: NixClusterStatus is the observed state of a NixCluster.
             properties:
               conditions:
                 description: 'Conditions: Ready, Stalled, GitSynced, Underprovisioned.'

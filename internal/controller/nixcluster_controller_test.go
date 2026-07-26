@@ -264,9 +264,9 @@ func TestRenderMemberNodeFile_HostileName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDesiredConvergeCronJob_Shape(t *testing.T) {
-	cluster := &niov1alpha1.Cluster{
+	cluster := &niov1alpha1.NixCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
-		Spec: niov1alpha1.ClusterSpec{
+		Spec: niov1alpha1.NixClusterSpec{
 			Source:    niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
 			SSHKeyRef: &niov1alpha1.SecretReference{Name: "cluster-ssh"},
 			AgeKeyRef: &niov1alpha1.SecretReference{Name: "cluster-age"},
@@ -323,9 +323,9 @@ func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 
 func TestDesiredConvergeCronJob_CustomSchedule(t *testing.T) {
 	const customSchedule = "0 * * * *"
-	cluster := &niov1alpha1.Cluster{
+	cluster := &niov1alpha1.NixCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
-		Spec:       niov1alpha1.ClusterSpec{DayTwoSchedule: customSchedule},
+		Spec:       niov1alpha1.NixClusterSpec{DayTwoSchedule: customSchedule},
 	}
 	cron := desiredConvergeCronJob(cluster, nil)
 	if cron.Spec.CronJobTemplate.Schedule != customSchedule {
@@ -373,12 +373,12 @@ func assertEnv(t *testing.T, env []corev1.EnvVar, name string) {
 // End-to-end reconcile (envtest) — S1 stability/stickiness, S2, S5.
 // ---------------------------------------------------------------------------
 
-var _ = Describe("Cluster Controller", func() {
+var _ = Describe("NixCluster Controller", func() {
 	var counter int
 	ctx := context.Background()
 
-	newReconciler := func() *ClusterReconciler {
-		return &ClusterReconciler{
+	newReconciler := func() *NixClusterReconciler {
+		return &NixClusterReconciler{
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
 			Recorder: record.NewFakeRecorder(50),
@@ -405,7 +405,7 @@ var _ = Describe("Cluster Controller", func() {
 
 	// memberNames returns the sorted member names of a named group in status.
 	memberNames := func(name, group string) []string {
-		var c niov1alpha1.Cluster
+		var c niov1alpha1.NixCluster
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &c)).To(Succeed())
 		for _, g := range c.Status.NodeGroups {
 			if g.Name == group {
@@ -425,9 +425,9 @@ var _ = Describe("Cluster Controller", func() {
 				makeMachine(n, map[string]string{"role": "worker"})
 			}
 			name := "sel"
-			cluster := &niov1alpha1.Cluster{
+			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-				Spec: niov1alpha1.ClusterSpec{
+				Spec: niov1alpha1.NixClusterSpec{
 					Source: niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
 					NodeGroups: []niov1alpha1.NodeGroup{{
 						Name:     "workers",
@@ -473,9 +473,9 @@ var _ = Describe("Cluster Controller", func() {
 			makeMachine("wrk", map[string]string{"tier": "a"})
 
 			name := "claim"
-			cluster := &niov1alpha1.Cluster{
+			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-				Spec: niov1alpha1.ClusterSpec{
+				Spec: niov1alpha1.NixClusterSpec{
 					Source: niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
 					NodeGroups: []niov1alpha1.NodeGroup{
 						{Name: "servers", Selector: metav1.LabelSelector{MatchLabels: map[string]string{"role": "server"}}},
@@ -501,9 +501,9 @@ var _ = Describe("Cluster Controller", func() {
 			makeMachine("m-02", map[string]string{"role": "worker"})
 
 			name := "under"
-			cluster := &niov1alpha1.Cluster{
+			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-				Spec: niov1alpha1.ClusterSpec{
+				Spec: niov1alpha1.NixClusterSpec{
 					Source: niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
 					NodeGroups: []niov1alpha1.NodeGroup{{
 						Name:     "workers",
@@ -520,7 +520,7 @@ var _ = Describe("Cluster Controller", func() {
 
 			Expect(memberNames(name, "workers")).To(Equal([]string{"m-01", "m-02"}))
 
-			var c niov1alpha1.Cluster
+			var c niov1alpha1.NixCluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &c)).To(Succeed())
 			cond := meta.FindStatusCondition(c.Status.Conditions, niov1alpha1.ConditionUnderprovisioned)
 			Expect(cond).NotTo(BeNil())
@@ -533,9 +533,9 @@ var _ = Describe("Cluster Controller", func() {
 			makeMachine("node-01", map[string]string{"role": "server"})
 
 			name := "conv"
-			cluster := &niov1alpha1.Cluster{
+			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-				Spec: niov1alpha1.ClusterSpec{
+				Spec: niov1alpha1.NixClusterSpec{
 					Source:    niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
 					SSHKeyRef: &niov1alpha1.SecretReference{Name: "cluster-ssh"},
 					AgeKeyRef: &niov1alpha1.SecretReference{Name: "cluster-age"},
@@ -560,9 +560,9 @@ var _ = Describe("Cluster Controller", func() {
 			Expect(cron.Spec.Nix.AdditionalFiles).To(HaveLen(1))
 			Expect(cron.Spec.Nix.AdditionalFiles[0].Path).To(Equal("modules/nodes/node-01.nix"))
 			Expect(cron.OwnerReferences).To(HaveLen(1))
-			Expect(cron.OwnerReferences[0].Kind).To(Equal("Cluster"))
+			Expect(cron.OwnerReferences[0].Kind).To(Equal("NixCluster"))
 
-			var c niov1alpha1.Cluster
+			var c niov1alpha1.NixCluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &c)).To(Succeed())
 			Expect(c.Status.ConvergeJobRef).To(Equal(name + "-converge"))
 		})
