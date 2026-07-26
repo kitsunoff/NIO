@@ -233,6 +233,75 @@ func TestChildSource_PinnedSHARoutesToRev(t *testing.T) {
 	}
 }
 
+// TestBuildChild_StoreBuilderRefPassthrough asserts the config's StoreRef and
+// BuilderRef are passed straight through to all three children's NixSpec (opt-in
+// build/substitute caching + build offload), and stay nil when the config leaves
+// them unset.
+func TestBuildChild_StoreBuilderRefPassthrough(t *testing.T) {
+	cfg := testConfig()
+	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: "store"}
+	cfg.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: "builder"}
+
+	install, err := buildInstallNixJob(cfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildInstallNixJob: %v", err)
+	}
+	cron, err := buildDayTwoNixCronJob(cfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildDayTwoNixCronJob: %v", err)
+	}
+	decom, err := buildDecommissionNixJob(cfg, testMachine())
+	if err != nil {
+		t.Fatalf("buildDecommissionNixJob: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		nix  niov1alpha1.NixSpec
+	}{
+		{"install", install.Spec.Nix},
+		{"day2", cron.Spec.Nix},
+		{"decommission", decom.Spec.Nix},
+	} {
+		if tc.nix.StoreRef == nil || tc.nix.StoreRef.Name != "store" {
+			t.Errorf("%s: StoreRef = %+v, want {Name:\"store\"}", tc.name, tc.nix.StoreRef)
+		}
+		if tc.nix.BuilderRef == nil || tc.nix.BuilderRef.Name != "builder" {
+			t.Errorf("%s: BuilderRef = %+v, want {Name:\"builder\"}", tc.name, tc.nix.BuilderRef)
+		}
+	}
+
+	// Unset on the config → nil on every child.
+	bare := testConfig() // StoreRef/BuilderRef nil
+	binstall, err := buildInstallNixJob(bare, testMachine())
+	if err != nil {
+		t.Fatalf("buildInstallNixJob (bare): %v", err)
+	}
+	bcron, err := buildDayTwoNixCronJob(bare, testMachine())
+	if err != nil {
+		t.Fatalf("buildDayTwoNixCronJob (bare): %v", err)
+	}
+	bdecom, err := buildDecommissionNixJob(bare, testMachine())
+	if err != nil {
+		t.Fatalf("buildDecommissionNixJob (bare): %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		nix  niov1alpha1.NixSpec
+	}{
+		{"install", binstall.Spec.Nix},
+		{"day2", bcron.Spec.Nix},
+		{"decommission", bdecom.Spec.Nix},
+	} {
+		if tc.nix.StoreRef != nil {
+			t.Errorf("%s: StoreRef = %+v, want nil when unset", tc.name, tc.nix.StoreRef)
+		}
+		if tc.nix.BuilderRef != nil {
+			t.Errorf("%s: BuilderRef = %+v, want nil when unset", tc.name, tc.nix.BuilderRef)
+		}
+	}
+}
+
 func TestMapAdditionalFiles(t *testing.T) {
 	cfg := &niov1alpha1.NixosConfiguration{Spec: niov1alpha1.NixosConfigurationSpec{
 		AdditionalFiles: []niov1alpha1.AdditionalFile{

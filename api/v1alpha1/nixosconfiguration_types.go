@@ -73,6 +73,18 @@ type NixosConfigurationSpec struct {
 	// JobTemplate customizes the apply Job pods.
 	// +optional
 	JobTemplate *JobTemplate `json:"jobTemplate,omitempty"`
+
+	// StoreRef points the child workloads' nix at a shared NixStore for
+	// build/substitute caching (much faster day-2 convergence). Optional;
+	// passed through to the install/day-2/decommission children. Same namespace.
+	// +optional
+	StoreRef *LocalObjectReference `json:"storeRef,omitempty"`
+
+	// BuilderRef offloads the child workloads' builds to a shared NixBuilder.
+	// Optional; passed through to the children. Same namespace. Typically set
+	// together with StoreRef.
+	// +optional
+	BuilderRef *LocalObjectReference `json:"builderRef,omitempty"`
 }
 
 // MachineReference references a Machine resource in the same namespace.

@@ -106,6 +106,20 @@ spec:
                   - valueType
                   type: object
                 type: array
+              builderRef:
+                description: |-
+                  BuilderRef offloads the child workloads' builds to a shared NixBuilder.
+                  Optional; passed through to the children. Same namespace. Typically set
+                  together with StoreRef.
+                properties:
+                  name:
+                    description: Name of the referenced object (must be in the same
+                      namespace).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               configurationSubdir:
                 description: ConfigurationSubdir is the subdirectory containing Nix
                   configuration.
@@ -280,6 +294,20 @@ spec:
                 description: Ref is the git reference (branch, tag, or commit) to
                   checkout.
                 type: string
+              storeRef:
+                description: |-
+                  StoreRef points the child workloads' nix at a shared NixStore for
+                  build/substitute caching (much faster day-2 convergence). Optional;
+                  passed through to the install/day-2/decommission children. Same namespace.
+                properties:
+                  name:
+                    description: Name of the referenced object (must be in the same
+                      namespace).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - machineRef
             type: object
