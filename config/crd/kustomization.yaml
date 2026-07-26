@@ -10,7 +10,7 @@ resources:
 - bases/nio.homystack.com_nixjobs.yaml
 - bases/nio.homystack.com_nixcronjobs.yaml
 - bases/nio.homystack.com_nixstatefulsets.yaml
-- bases/nio.homystack.com_clusters.yaml
+- bases/nio.homystack.com_nixclusters.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
