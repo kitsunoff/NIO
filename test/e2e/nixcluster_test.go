@@ -31,14 +31,14 @@ import (
 	"github.com/kitsunoff/nixos-operator/test/utils"
 )
 
-// clustersNamespace is where the Cluster + Machine CRs are exercised. It is
-// separate from nio-workloads so Cluster selection (which lists every Machine in
+// clustersNamespace is where the NixCluster + Machine CRs are exercised. It is
+// separate from nio-workloads so NixCluster selection (which lists every Machine in
 // the namespace) never sees the workload fixtures.
 const clustersNamespace = "nio-clusters"
 
 // Fully-qualified kinds avoid any short-name ambiguity with other CRDs.
 const (
-	clusterKind = "clusters.nio.homystack.com"
+	clusterKind = "nixclusters.nio.homystack.com"
 	machineKind = "machines.nio.homystack.com"
 	cronKind    = "nixcronjobs.nio.homystack.com"
 )
@@ -94,13 +94,13 @@ func convergeNodeFile(cluster, machine string) string {
 		fmt.Sprintf("jsonpath={.spec.nix.additionalFiles[?(@.path=='modules/nodes/%s.nix')].inline}", machine))
 }
 
-var _ = Describe("Cluster (tier-2)", Ordered, func() {
+var _ = Describe("NixCluster (tier-2)", Ordered, func() {
 	// clusterRev pins the converge NixCronJob source. Its content is irrelevant
 	// for tier-2 (converge never runs on Kind); pinning a resolved SHA on the host
 	// sidesteps in-cluster git ls-remote (the operator image is distroless).
 	var clusterRev string
 
-	// clusterSource renders the pinned source block shared by every Cluster.
+	// clusterSource renders the pinned source block shared by every NixCluster.
 	clusterSource := func() string {
 		return `{gitRepo: "https://github.com/kitsunoff/NIO", rev: "` + clusterRev + `"}`
 	}
@@ -123,7 +123,7 @@ var _ = Describe("Cluster (tier-2)", Ordered, func() {
 	})
 
 	AfterEach(func() {
-		// Scenarios are independent: clear all Clusters (waits out the finalizer,
+		// Scenarios are independent: clear all NixClusters (waits out the finalizer,
 		// which GCs the owned converge cron), then Machines/Secrets, so no object
 		// leaks into the next scenario's namespace-wide Machine listing.
 		By("cleaning up cluster-scenario objects")
@@ -145,10 +145,10 @@ var _ = Describe("Cluster (tier-2)", Ordered, func() {
 			applyMachine(n, "10.0.0."+strings.TrimPrefix(n, "m-0"), map[string]string{"role": "worker"})
 		}
 
-		By("applying a Cluster with a workers nodeGroup, count 3")
+		By("applying a NixCluster with a workers nodeGroup, count 3")
 		applyYAML(`
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: {name: c-s1, namespace: ` + clustersNamespace + `}
 spec:
   source: ` + clusterSource() + `
@@ -162,7 +162,7 @@ spec:
 			return groupMembers("c-s1", "workers")
 		}, 2*time.Minute, 3*time.Second).Should(Equal("m-01 m-02 m-03"))
 
-		By("re-touching the Cluster yields an identical member list (stable)")
+		By("re-touching the NixCluster yields an identical member list (stable)")
 		_, _ = utils.Run(exec.Command("kubectl", "-n", clustersNamespace, "annotate",
 			clusterKind, "c-s1", "e2e.nio/touch=1", "--overwrite"))
 		Consistently(func() string {
@@ -188,10 +188,10 @@ spec:
 		applyMachine("dual", "10.0.1.1", map[string]string{"role": "server", "zone": "z1"})
 		applyMachine("only-second", "10.0.1.2", map[string]string{"zone": "z1"})
 
-		By("applying a Cluster whose two nodeGroups both match 'dual'")
+		By("applying a NixCluster whose two nodeGroups both match 'dual'")
 		applyYAML(`
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: {name: c-s2, namespace: ` + clustersNamespace + `}
 spec:
   source: ` + clusterSource() + `
@@ -218,10 +218,10 @@ spec:
 		By("creating a selected Machine node-01 with host 10.0.0.5")
 		applyMachine("node-01", "10.0.0.5", map[string]string{"role": "cp"})
 
-		By("applying a Cluster whose nodeGroup carries values k3s.role=server")
+		By("applying a NixCluster whose nodeGroup carries values k3s.role=server")
 		applyYAML(`
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: {name: c-s3, namespace: ` + clustersNamespace + `}
 spec:
   source: ` + clusterSource() + `
@@ -272,10 +272,10 @@ stringData: {keys.txt: "dummy-age"}
 `)
 		applyMachine("s4-node", "10.0.2.1", map[string]string{"role": "worker"})
 
-		By("applying a Cluster referencing both key Secrets")
+		By("applying a NixCluster referencing both key Secrets")
 		applyYAML(`
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: {name: c-s4, namespace: ` + clustersNamespace + `}
 spec:
   source: ` + clusterSource() + `
@@ -331,7 +331,7 @@ spec:
 
 		applyYAML(`
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: {name: c-s5, namespace: ` + clustersNamespace + `}
 spec:
   source: ` + clusterSource() + `

@@ -46,14 +46,14 @@ const (
 	ConditionGitSynced = "GitSynced"
 )
 
-// Cluster-specific condition types.
+// NixCluster-specific condition types.
 const (
 	// ConditionUnderprovisioned indicates a nodeGroup has fewer matching Machines
 	// than its requested count (provisioning is deferred; the gap is surfaced).
 	ConditionUnderprovisioned = "Underprovisioned"
 )
 
-// Cluster-specific reasons.
+// NixCluster-specific reasons.
 const (
 	ReasonUnderprovisioned  = "Underprovisioned"
 	ReasonFullyProvisioned  = "FullyProvisioned"

@@ -87,7 +87,7 @@ resources:
   controller: true
   domain: homystack.com
   group: nio
-  kind: Cluster
+  kind: NixCluster
   path: github.com/kitsunoff/nixos-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

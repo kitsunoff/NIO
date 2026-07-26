@@ -21,12 +21,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ClusterSpec defines an abstract cluster: it groups Machines into nodeGroups,
+// NixClusterSpec defines an abstract cluster: it groups Machines into nodeGroups,
 // maps opaque per-group values onto each member, and drives ONE idempotent
 // converge NixCronJob against the downstream flake-parts repo. NIO never
 // interprets the cluster's meaning (k3s/proxmox/etc) — semantics live in the
 // flake repo + its nixcluster modules.
-type ClusterSpec struct {
+type NixClusterSpec struct {
 	// Source is the downstream flake-parts repo (the cluster). The converge
 	// NixCronJob checks it out and runs its per-cluster app.
 	Source NixSource `json:"source"`
@@ -82,8 +82,8 @@ type NodeGroup struct {
 	Values *apiextensionsv1.JSON `json:"values,omitempty"`
 }
 
-// ClusterStatus is the observed state of a Cluster.
-type ClusterStatus struct {
+// NixClusterStatus is the observed state of a NixCluster.
+type NixClusterStatus struct {
 	// Phase is a coarse, human-facing lifecycle state.
 	// +kubebuilder:validation:Enum=Ready;Converging;Degraded;Blocked
 	// +optional
@@ -140,12 +140,12 @@ type MemberStatus struct {
 	Status string `json:"status,omitempty"`
 }
 
-// Cluster phase values.
+// NixCluster phase values.
 const (
-	ClusterPhaseReady      = "Ready"
-	ClusterPhaseConverging = "Converging"
-	ClusterPhaseDegraded   = "Degraded"
-	ClusterPhaseBlocked    = "Blocked"
+	NixClusterPhaseReady      = "Ready"
+	NixClusterPhaseConverging = "Converging"
+	NixClusterPhaseDegraded   = "Degraded"
+	NixClusterPhaseBlocked    = "Blocked"
 )
 
 // Per-member status values.
@@ -162,24 +162,24 @@ const (
 // +kubebuilder:printcolumn:name="Converge",type=string,JSONPath=`.status.convergeJobRef`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// Cluster is an abstract grouping of Machines driven by one idempotent converge.
-type Cluster struct {
+// NixCluster is an abstract grouping of Machines driven by one idempotent converge.
+type NixCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ClusterSpec   `json:"spec,omitempty"`
-	Status ClusterStatus `json:"status,omitempty"`
+	Spec   NixClusterSpec   `json:"spec,omitempty"`
+	Status NixClusterStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// ClusterList contains a list of Cluster.
-type ClusterList struct {
+// NixClusterList contains a list of NixCluster.
+type NixClusterList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Cluster `json:"items"`
+	Items           []NixCluster `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&Cluster{}, &ClusterList{})
+	SchemeBuilder.Register(&NixCluster{}, &NixClusterList{})
 }
