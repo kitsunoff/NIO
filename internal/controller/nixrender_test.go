@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
 )
@@ -477,6 +478,49 @@ func TestRenderDayTwoChildKeepsTargetKey(t *testing.T) {
 	}
 	// And the builders= line must carry the builder key so the dispatch still works.
 	if !strings.Contains(envMap(app.Env)["NIX_CONFIG"], "builders = ssh-ng://root@b.svc "+defaultNixSystems+" "+sshPrivateKeyPath) {
+		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)["NIX_CONFIG"])
+	}
+}
+
+// TestRenderConvergeKeepsClusterKey is the cluster-path counterpart of
+// TestRenderDayTwoChildKeepsTargetKey: a NixCluster with storeRef+builderRef
+// renders a converge pod whose app container must still SSH to the cluster
+// members with the cluster key (mounted by convergePodTemplate), never with the
+// builder key — while the builders= line keeps carrying the builder key so the
+// build dispatch itself still authenticates.
+func TestRenderConvergeKeepsClusterKey(t *testing.T) {
+	cluster := &niov1alpha1.NixCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		Spec: niov1alpha1.NixClusterSpec{
+			Source:     niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
+			SSHKeyRef:  &niov1alpha1.SecretReference{Name: "cluster-ssh"},
+			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "store"},
+			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "builder"},
+		},
+	}
+	cron := desiredConvergeCronJob(cluster, nil)
+	out := renderPodTemplate(renderInput{
+		spec:             cron.Spec.Nix,
+		resolvedRevision: "abc1234",
+		kind:             "NixCronJob",
+		name:             cron.Name,
+		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
+		sshSecretName:    "store-ssh",
+	}, cron.Spec.CronJobTemplate.JobTemplate.Spec.Template)
+
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
+	if app == nil {
+		t.Fatal("app container missing")
+	}
+	got := envMap(app.Env)["NIX_SSHOPTS"]
+	if got != clusterNixSSHOpts {
+		t.Errorf("converge app NIX_SSHOPTS = %q, want the cluster key opts %q", got, clusterNixSSHOpts)
+	}
+	if strings.Contains(got, sshKeyMountPath+"/") {
+		t.Errorf("converge app NIX_SSHOPTS must NOT reference the builder key: %q", got)
+	}
+	if !strings.Contains(envMap(app.Env)["NIX_CONFIG"],
+		"builders = ssh-ng://root@b.svc "+defaultNixSystems+" "+sshPrivateKeyPath) {
 		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)["NIX_CONFIG"])
 	}
 }
