@@ -434,6 +434,12 @@ func desiredConvergeCronJob(cluster *niov1alpha1.NixCluster, files []niov1alpha1
 				Args:            []string{"converge"},
 				AdditionalFiles: files,
 				TriggerOnChange: ptr(true),
+				// Optional store/builder acceleration: when the NixCluster
+				// references a NixStore/NixBuilder, the converge pod builds
+				// against the shared store instead of rebuilding the member
+				// closure in an ephemeral in-pod /nix on every run.
+				StoreRef:   cluster.Spec.StoreRef,
+				BuilderRef: cluster.Spec.BuilderRef,
 			},
 			CronJobTemplate: batchv1.CronJobSpec{
 				Schedule:          schedule,

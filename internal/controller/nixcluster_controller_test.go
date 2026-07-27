@@ -333,6 +333,41 @@ func TestDesiredConvergeCronJob_CustomSchedule(t *testing.T) {
 	}
 }
 
+// A cluster that references a NixStore/NixBuilder must pass those through to the
+// converge NixCronJob's NixSpec, so the converge pod builds against the shared
+// store instead of rebuilding the whole closure in an ephemeral in-pod /nix.
+func TestDesiredConvergeCronJob_StoreBuilderRef(t *testing.T) {
+	cluster := &niov1alpha1.NixCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		Spec: niov1alpha1.NixClusterSpec{
+			Source:     niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
+			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "cache-store"},
+			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "builder"},
+		},
+	}
+	cron := desiredConvergeCronJob(cluster, nil)
+	if cron.Spec.Nix.StoreRef == nil || cron.Spec.Nix.StoreRef.Name != "cache-store" {
+		t.Errorf("converge NixSpec.StoreRef = %v, want {cache-store}", cron.Spec.Nix.StoreRef)
+	}
+	if cron.Spec.Nix.BuilderRef == nil || cron.Spec.Nix.BuilderRef.Name != "builder" {
+		t.Errorf("converge NixSpec.BuilderRef = %v, want {builder}", cron.Spec.Nix.BuilderRef)
+	}
+}
+
+// With neither set, the converge NixSpec leaves them nil (in-pod ephemeral build
+// is the default — no store/builder acceleration required).
+func TestDesiredConvergeCronJob_NoStoreBuilderByDefault(t *testing.T) {
+	cluster := &niov1alpha1.NixCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		Spec:       niov1alpha1.NixClusterSpec{Source: niov1alpha1.NixSource{GitRepo: "https://example.com/prod"}},
+	}
+	cron := desiredConvergeCronJob(cluster, nil)
+	if cron.Spec.Nix.StoreRef != nil || cron.Spec.Nix.BuilderRef != nil {
+		t.Errorf("expected no store/builder by default, got store=%v builder=%v",
+			cron.Spec.Nix.StoreRef, cron.Spec.Nix.BuilderRef)
+	}
+}
+
 func assertVolume(t *testing.T, vols []corev1.Volume, name, secret string) {
 	t.Helper()
 	for _, v := range vols {

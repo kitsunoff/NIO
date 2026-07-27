@@ -69,6 +69,20 @@ spec:
                 required:
                 - name
                 type: object
+              builderRef:
+                description: |-
+                  BuilderRef optionally delegates the converge build to a NixBuilder (same
+                  namespace), which realizes into StoreRef's NixStore. Pairs with StoreRef to
+                  accelerate day-two converges (cached closure instead of an in-pod rebuild).
+                properties:
+                  name:
+                    description: Name of the referenced object (must be in the same
+                      namespace).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               dayTwoSchedule:
                 default: '*/30 * * * *'
                 description: DayTwoSchedule is the converge cadence (cron schedule).
@@ -246,6 +260,20 @@ spec:
                   name:
                     description: Name is the Secret name (must be in the same namespace
                       as the referencing resource).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              storeRef:
+                description: |-
+                  StoreRef optionally points the converge pod at a NixStore (same namespace),
+                  so its build artifacts persist across runs. Without it a fresh converge pod
+                  rebuilds the whole member closure in an ephemeral in-pod /nix every run.
+                properties:
+                  name:
+                    description: Name of the referenced object (must be in the same
+                      namespace).
                     minLength: 1
                     type: string
                 required:

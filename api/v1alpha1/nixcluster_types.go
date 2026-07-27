@@ -43,6 +43,18 @@ type NixClusterSpec struct {
 	// +optional
 	AgeKeyRef *SecretReference `json:"ageKeyRef,omitempty"`
 
+	// StoreRef optionally points the converge pod at a NixStore (same namespace),
+	// so its build artifacts persist across runs. Without it a fresh converge pod
+	// rebuilds the whole member closure in an ephemeral in-pod /nix every run.
+	// +optional
+	StoreRef *LocalObjectReference `json:"storeRef,omitempty"`
+
+	// BuilderRef optionally delegates the converge build to a NixBuilder (same
+	// namespace), which realizes into StoreRef's NixStore. Pairs with StoreRef to
+	// accelerate day-two converges (cached closure instead of an in-pod rebuild).
+	// +optional
+	BuilderRef *LocalObjectReference `json:"builderRef,omitempty"`
+
 	// DayTwoSchedule is the converge cadence (cron schedule).
 	// +kubebuilder:default="*/30 * * * *"
 	// +optional
