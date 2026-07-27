@@ -469,9 +469,32 @@ func (r *NixClusterReconciler) ensureConvergeCronJob(
 	return err
 }
 
+// convergeStall returns the converge cron's Stalled condition while it is set —
+// the state a missing or unready storeRef/builderRef produces. It is the only
+// place the accurate diagnosis ("NixStore %q not found") exists, and it means
+// the converge never ran, so the cluster must not report an apply failure.
+func convergeStall(cron *niov1alpha1.NixCronJob, haveCron bool) *metav1.Condition {
+	if !haveCron {
+		return nil
+	}
+	cond := meta.FindStatusCondition(cron.Status.Conditions, niov1alpha1.ConditionStalled)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return nil
+	}
+	return cond
+}
+
 // coarseMemberStatus derives a job-level per-node status from the converge cron.
 func coarseMemberStatus(cron *niov1alpha1.NixCronJob, haveCron bool) string {
 	if !haveCron {
+		return niov1alpha1.MemberStatusPending
+	}
+	// A stalled converge applied nothing, so members keep their last known
+	// state rather than being blamed for a failure that never reached them.
+	if convergeStall(cron, haveCron) != nil {
+		if cron.Status.LastSuccessfulTime != nil {
+			return niov1alpha1.MemberStatusApplied
+		}
 		return niov1alpha1.MemberStatusPending
 	}
 	switch cron.Status.Phase {
@@ -496,6 +519,11 @@ func clusterPhase(cron *niov1alpha1.NixCronJob, haveCron bool, totalMembers int)
 	}
 	if !haveCron {
 		return niov1alpha1.NixClusterPhaseConverging
+	}
+	// Waiting on a dependency we cannot resolve is Blocked; Degraded would claim
+	// the cluster itself is broken.
+	if convergeStall(cron, haveCron) != nil {
+		return niov1alpha1.NixClusterPhaseBlocked
 	}
 	switch cron.Status.Phase {
 	case niov1alpha1.PhaseFailed, niov1alpha1.PhaseDegraded:
@@ -543,6 +571,11 @@ func (r *NixClusterReconciler) setConditions(
 		Reason: gitReason, ObservedGeneration: gen, Message: gitMsg,
 	})
 
+	// The converge child holds the only accurate diagnosis when it is stalled on
+	// an unresolvable storeRef/builderRef — mirror it onto the cluster so
+	// `kubectl describe` names the broken reference.
+	stall := convergeStall(cron, haveCron)
+
 	ready := cluster.Status.Phase == niov1alpha1.NixClusterPhaseReady
 	if ready {
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -558,11 +591,36 @@ func (r *NixClusterReconciler) setConditions(
 			reason = niov1alpha1.ReasonWaiting
 			msg = "no Machines selected for any nodeGroup"
 		}
+		if stall != nil {
+			reason = stall.Reason
+			msg = "converge is stalled: " + stall.Message
+		}
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: reason, ObservedGeneration: gen, Message: msg,
 		})
 	}
+
+	switch {
+	case stall != nil:
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+			Reason: stall.Reason, ObservedGeneration: gen,
+			Message: "converge is stalled: " + stall.Message,
+		})
+	case isMirroredStall(cluster):
+		// The dependency resolved; drop the condition we mirrored earlier so the
+		// cluster does not stay marked stalled forever. Stalled conditions set by
+		// the reconciler itself (`fail`) carry other reasons and are left alone.
+		meta.RemoveStatusCondition(&cluster.Status.Conditions, niov1alpha1.ConditionStalled)
+	}
+}
+
+// isMirroredStall reports whether the cluster's Stalled condition is one we
+// mirrored from the converge child rather than one the reconciler set itself.
+func isMirroredStall(cluster *niov1alpha1.NixCluster) bool {
+	cond := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled)
+	return cond != nil && cond.Reason == reasonInfraNotReady
 }
 
 // fail records a Degraded/Blocked + Stalled status and returns the error.

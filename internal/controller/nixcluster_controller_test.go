@@ -368,6 +368,94 @@ func TestDesiredConvergeCronJob_NoStoreBuilderByDefault(t *testing.T) {
 	}
 }
 
+// stalledConvergeCron returns a converge cron that is Degraded because its
+// storeRef/builderRef could not be resolved — the state a typo in either field
+// produces. Nothing was applied to any member in this state.
+func stalledConvergeCron(msg string) *niov1alpha1.NixCronJob {
+	cron := &niov1alpha1.NixCronJob{}
+	cron.Status.Phase = niov1alpha1.PhaseDegraded
+	meta.SetStatusCondition(&cron.Status.Conditions, metav1.Condition{
+		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+		Reason: reasonInfraNotReady, Message: msg,
+	})
+	return cron
+}
+
+// A converge stalled on a missing NixStore/NixBuilder never touched a node, so
+// reporting members as Failed would claim an apply broke them. Report the last
+// known state instead: Pending when nothing ever converged.
+func TestCoarseMemberStatus_InfraStallIsNotFailed(t *testing.T) {
+	cron := stalledConvergeCron(`NixStore "cache-store" not found`)
+	if got := coarseMemberStatus(cron, true); got != niov1alpha1.MemberStatusPending {
+		t.Errorf("member status = %q, want %q", got, niov1alpha1.MemberStatusPending)
+	}
+
+	// After a previous successful converge the members ARE applied; a later
+	// infra stall must not retroactively downgrade them.
+	now := metav1.Now()
+	cron.Status.LastSuccessfulTime = &now
+	if got := coarseMemberStatus(cron, true); got != niov1alpha1.MemberStatusApplied {
+		t.Errorf("member status after a successful converge = %q, want %q",
+			got, niov1alpha1.MemberStatusApplied)
+	}
+}
+
+// A cluster waiting on a dependency it cannot resolve is Blocked, not Degraded:
+// Degraded means the cluster itself is broken.
+func TestClusterPhase_InfraStallIsBlocked(t *testing.T) {
+	got := clusterPhase(stalledConvergeCron(`NixBuilder "builder" not ready`), true, 3)
+	if got != niov1alpha1.NixClusterPhaseBlocked {
+		t.Errorf("phase = %q, want %q", got, niov1alpha1.NixClusterPhaseBlocked)
+	}
+}
+
+// The only accurate diagnosis lives on the child. Surface it on the NixCluster,
+// so `kubectl describe nixcluster` says which reference is wrong instead of
+// "converge in progress".
+func TestSetConditions_PropagatesInfraStallMessage(t *testing.T) {
+	const msg = `NixStore "cache-store" not found`
+	cluster := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"}}
+	cron := stalledConvergeCron(msg)
+	cluster.Status.Phase = clusterPhase(cron, true, 2)
+
+	(&NixClusterReconciler{}).setConditions(cluster, cron, true, false, 2)
+
+	stalled := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled)
+	if stalled == nil || stalled.Status != metav1.ConditionTrue {
+		t.Fatalf("Stalled condition = %+v, want True", stalled)
+	}
+	if stalled.Reason != reasonInfraNotReady || !strings.Contains(stalled.Message, msg) {
+		t.Errorf("Stalled condition must carry the child's reason and message, got %+v", stalled)
+	}
+	ready := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %+v, want False", ready)
+	}
+	if !strings.Contains(ready.Message, msg) {
+		t.Errorf("Ready message must explain the stall, got %q", ready.Message)
+	}
+}
+
+// Once the reference resolves, the propagated Stalled condition must go away —
+// otherwise the cluster stays marked stalled forever.
+func TestSetConditions_ClearsInfraStallWhenResolved(t *testing.T) {
+	cluster := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"}}
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+		Reason: reasonInfraNotReady, Message: `NixStore "cache-store" not found`,
+	})
+
+	healthy := &niov1alpha1.NixCronJob{}
+	healthy.Status.Phase = niov1alpha1.PhaseProgressing
+	cluster.Status.Phase = clusterPhase(healthy, true, 2)
+
+	(&NixClusterReconciler{}).setConditions(cluster, healthy, true, false, 2)
+
+	if cond := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled); cond != nil {
+		t.Errorf("Stalled condition must be cleared once the dependency resolves, got %+v", cond)
+	}
+}
+
 func assertVolume(t *testing.T, vols []corev1.Volume, name, secret string) {
 	t.Helper()
 	for _, v := range vols {
