@@ -251,7 +251,7 @@ same two defects live in the NixosConfiguration neighbour.
   mirrored condition can never be cleared because `isMirroredStall` only
   recognises `InfraNotReady` — the setting and clearing branches disagree.
 - Fix: narrow `convergeStall` to `reasonInfraNotReady`, making the pair symmetric.
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
 
 ### B2 (must-fix) — a converge that fails every run reports Ready / all members Applied
 - Symptom: `observe()` calls `markReady` as soon as the batch CronJob exists,
@@ -265,7 +265,7 @@ same two defects live in the NixosConfiguration neighbour.
   removed the one accidental path that showed anything.
 - Fix: NixCronJob already `Owns(&batchv1.Job{})` — enumerate owned Jobs, detect
   `JobFailed`, record it in status, and map it to `Failed`/`Degraded`.
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
 
 ### B3 (must-fix) — "members keep their last known status" was not what the code did
 - Symptom: on an infra stall the code returned `Applied` whenever
@@ -273,21 +273,21 @@ same two defects live in the NixosConfiguration neighbour.
   to `Applied` the moment someone typo'd `storeRef`.
 - Fix: carry the previous per-member status from `cluster.Status.NodeGroups`
   (already read for sticky selection) and report exactly that.
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
 
 ### B4 (must-fix) — the same false storeRef/builderRef claim in NixosConfiguration
 - Symptom: `nixosconfiguration_types.go:77-87` still said "build/substitute
   caching (much faster day-2 convergence)" and "typically set together" — the
   exact wording N1 was raised for, on the same `kubectl explain` surface.
 - Fix: restate both fields there too, regenerate the CRD.
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
 
 ### B5 (must-fix) — the same N2 defect in NixosConfiguration
 - Symptom: `nixosconfiguration_controller.go:275-277` maps a Degraded day-two
   cron to "Day-2 convergence run failed", so a typo'd storeRef claims a run
   failed when no run happened.
 - Fix: treat an infra stall as a stall, surfacing the child's message.
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
 
 ### B6 (must-fix) — `examples/nixcluster.yaml` could not be applied as written
 - Symptom: it referenced `store`/`linux-builder` while living in namespace
@@ -295,7 +295,7 @@ same two defects live in the NixosConfiguration neighbour.
   strictly same-namespace. It also pointed at an x86_64-only builder while its
   own comment warns that a builder must cover the members' systems.
 - Fix: same namespace as the rest of the examples, and spell out the arch match.
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
 
 ### B7 (must-fix) — the builder/arch foot-gun was closed by prose only
 - Symptom: N3 was "fixed" with a field comment and a test that pins the trap
@@ -307,4 +307,10 @@ same two defects live in the NixosConfiguration neighbour.
   architecture that list cannot build, report `Blocked` with the mismatch instead
   of letting converge burn its activeDeadline. Missing facts or an unqualified
   builder never block (nothing is proven).
-- Status: fixed (commit 3d8ee01)
+- Status: fixed (commit c0d9658)
+
+Decision on the untracked design notes (E1 step 5): `docs/design/architecture.md`
+and `docs/design/nixcluster-deep-dive.md` are ~50% Russian prose, and committing
+to a public repo is publishing, so both stay local and are now gitignored along
+with `nio-go-rewrite.md`, `SESSION-HANDOFF.md` and this run's TODO/report. Their
+content is the input for E4's English Design section, not a commit.

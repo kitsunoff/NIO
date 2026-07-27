@@ -37,3 +37,5 @@ go.work
 /.agent-e2e/NIGHT-REPORT.md
 /SESSION-HANDOFF.md
 /docs/design/nio-go-rewrite.md
+/docs/design/architecture.md
+/docs/design/nixcluster-deep-dive.md
