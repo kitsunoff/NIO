@@ -329,7 +329,7 @@ introduced by the round-2 fixes themselves.
   `Applied` — the exact B2 symptom, reintroduced.
 - Fix: a run happening at all proves the stall is resolved, so the RunFailed
   branch clears it.
-- Status: fixed (commit 8d9df26)
+- Status: fixed (commit be7e58e)
 
 ### C2 (must-fix) — one-off runs could degrade the workload but never recover it
 - Symptom: failures were counted from all owned Jobs (including the `-manual`
@@ -343,7 +343,7 @@ introduced by the round-2 fixes themselves.
   bookkeeping as an additional success source, and make both monotonic so a Job
   pruned by a TTL or history limit cannot resurrect a stale verdict. One-off Jobs
   now also carry a TTL, since the CronJob's history limits never applied to them.
-- Status: fixed (commit 8d9df26)
+- Status: fixed (commit be7e58e)
 
 ### C3 (must-fix) — the builder preflight was dead code
 - Symptom: `checkBuilderCoversMembers` reads
@@ -353,7 +353,7 @@ introduced by the round-2 fixes themselves.
 - Fix: the Machine controller now collects the architecture from `uname -m` on
   each successful discovery (best-effort — a fact we cannot gather is not a
   machine we cannot reach) and stamps `LastHardwareScanTime`.
-- Status: fixed (commit 8d9df26)
+- Status: fixed (commit be7e58e)
 
 ### C4 (must-fix) — Stalled conditions the reconciler set itself were never cleared
 - Symptom: only `InfraNotReady` was cleared, so the new `BuilderSystemMismatch`
@@ -363,7 +363,7 @@ introduced by the round-2 fixes themselves.
   rendering, the preflight and the child, so every Stalled reason is obsolete
   there. A persisting failure re-sets it on the next failing reconcile, which
   returns long before that point.
-- Status: fixed (commit 8d9df26)
+- Status: fixed (commit be7e58e)
 
 Should-fix items from the same round, also addressed in 8d9df26: the RunFailed
 message no longer says "scheduled" (it fires for one-off runs too), and the design
