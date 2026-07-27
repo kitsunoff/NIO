@@ -525,6 +525,53 @@ func TestRenderConvergeKeepsClusterKey(t *testing.T) {
 	}
 }
 
+// TestRenderStoreOnlyDoesNotPush pins the real storeRef contract: a store with
+// no builder is a SUBSTITUTER only. Nothing is copied into it, so the paths a
+// store-only pod builds do not survive the pod. The NixCluster/NixosConfiguration
+// field docs must keep saying that — this test is what makes the claim checkable.
+func TestRenderStoreOnlyDoesNotPush(t *testing.T) {
+	out := renderPodTemplate(renderInput{
+		spec:             niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"},
+		resolvedRevision: "abc1234",
+		kind:             "NixCronJob",
+		name:             "j",
+		// Store resolved, no builder ⇒ resolveInfra leaves sshSecretName empty.
+		store: &storeInfo{
+			substituterURL: "http://store.nio.svc",
+			publicKey:      "store-1:AAAA",
+			pushURL:        "ssh-ng://root@store.nio.svc",
+		},
+	}, corev1.PodTemplateSpec{})
+
+	inst := containerByName(out.Spec.InitContainers, initInstantiate)
+	if inst == nil {
+		t.Fatal("instantiate container missing")
+	}
+	joined := strings.Join(inst.Command, " ") + " " + strings.Join(inst.Args, " ")
+	if strings.Contains(joined, "nix copy") {
+		t.Errorf("store-only instantiate must not push into the store: %q", joined)
+	}
+	// It must still substitute FROM the store — that is the whole benefit.
+	if !strings.Contains(envMap(inst.Env)["NIX_CONFIG"], "substituters = http://store.nio.svc") {
+		t.Errorf("store-only instantiate must substitute from the store: %q", envMap(inst.Env)["NIX_CONFIG"])
+	}
+}
+
+// TestBuildNixConfigUnqualifiedBuilderHasNoLocalFallback pins the builderRef
+// foot-gun the field docs warn about: a NixBuilder without spec.systems is
+// advertised for both common Linux arches whatever it can really build, and
+// delegation sets max-jobs = 0, so there is no local fallback when the dispatch
+// cannot satisfy a derivation.
+func TestBuildNixConfigUnqualifiedBuilderHasNoLocalFallback(t *testing.T) {
+	cfg := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://root@b.svc"})
+	if !strings.Contains(cfg, "builders = ssh-ng://root@b.svc "+defaultNixSystems) {
+		t.Errorf("an unqualified builder must be advertised as %q: %q", defaultNixSystems, cfg)
+	}
+	if !strings.Contains(cfg, "max-jobs = 0") {
+		t.Errorf("delegation must force builds remote (max-jobs = 0): %q", cfg)
+	}
+}
+
 // containerByName returns a pointer to the named container, or nil.
 func containerByName(cs []corev1.Container, name string) *corev1.Container {
 	for i := range cs {
