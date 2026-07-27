@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -193,6 +194,12 @@ func (r *MachineReconciler) reconcile(ctx context.Context, machine *niov1alpha1.
 			Message:            "SSH connection successful",
 		})
 		r.Recorder.Event(machine, corev1.EventTypeNormal, "Discoverable", "Machine is reachable via SSH")
+
+		// While we have a working connection, record the machine's architecture.
+		// Consumers depend on it — the NixCluster controller refuses a cluster
+		// whose builder cannot build a member's architecture, and it can only do
+		// that if somebody actually collects the fact.
+		r.scanArchitecture(ctx, machine)
 	} else {
 		// Only set SSHFailed if checkDiscoverable didn't already set a more specific reason
 		// (e.g., CredentialsMissing was set when secret was not found)
@@ -214,6 +221,41 @@ func (r *MachineReconciler) reconcile(ctx context.Context, machine *niov1alpha1.
 
 	// Requeue for periodic check
 	return ctrl.Result{RequeueAfter: DiscoveryInterval}, nil
+}
+
+// scanArchitecture records the machine's CPU architecture from `uname -m`.
+//
+// Best-effort by design: it runs on an already-proven connection and a failure
+// (or an unrecognisable answer) leaves the previously collected facts untouched
+// rather than reporting a machine as broken. Discoverability is what the Machine
+// controller is responsible for; this is an extra fact gathered on the way.
+func (r *MachineReconciler) scanArchitecture(ctx context.Context, machine *niov1alpha1.Machine) {
+	log := logf.FromContext(ctx)
+
+	sshConfig, err := r.buildSSHConfig(ctx, machine)
+	if err != nil {
+		return // already surfaced as CredentialsMissing by checkDiscoverable
+	}
+
+	scanCtx, cancel := context.WithTimeout(ctx, DefaultSSHTimeout)
+	defer cancel()
+
+	out, err := r.SSHClient.RunCommand(scanCtx, machine.Spec.Host, DefaultSSHPort, sshConfig, "uname -m")
+	if err != nil {
+		log.V(1).Info("architecture scan failed", "host", machine.Spec.Host, "error", err)
+		return
+	}
+	arch := strings.TrimSpace(out)
+	if arch == "" {
+		return
+	}
+
+	if machine.Status.HardwareFacts == nil {
+		machine.Status.HardwareFacts = &niov1alpha1.HardwareFacts{}
+	}
+	machine.Status.HardwareFacts.Architecture = arch
+	now := metav1.Now()
+	machine.Status.LastHardwareScanTime = &now
 }
 
 // checkDiscoverable tests SSH connectivity to the machine.

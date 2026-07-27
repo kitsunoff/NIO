@@ -258,12 +258,36 @@ pod builds.
 Consequences worth stating plainly:
 
 - A `NixBuilder` without `spec.systems` is advertised for both common Linux
-  architectures whether or not it can build them; pointing an aarch64 cluster at
-  an x86_64-only builder turns a slow converge into a failing one.
+  architectures whether or not it can build them. Where the mismatch is
+  **provable** — the builder declares an explicit `spec.systems` and a selected
+  Machine has reported an architecture it does not cover — the reconcile refuses
+  up front: phase `Blocked`, `Stalled` with reason `BuilderSystemMismatch` naming
+  the member and the system it needs. Nothing is blocked on a guess: an
+  unqualified builder, a builder that does not exist yet, or a Machine whose
+  facts have not been collected all pass the check silently and fail (or not) at
+  converge time as before. The member architecture comes from
+  `Machine.status.hardwareFacts.architecture`, collected by the Machine
+  controller from `uname -m` on each successful discovery.
 - A missing or not-yet-ready store/builder **stalls** the converge child. The
   cluster mirrors that child's `Stalled` condition (reason `InfraNotReady`, with
   the message naming the reference), reports phase `Blocked`, and leaves members
-  at their last known status — a stalled converge applied nothing.
+  at their last known status — a stalled converge applied nothing. The mirrored
+  condition is dropped as soon as a reconcile completes.
+
+## Reporting a failing converge
+
+A `CronJob` keeps scheduling regardless of whether its runs succeed, so the
+converge child's health comes from the runs, not from the schedule:
+
+- The NixCronJob scans the Jobs it owns — both the ones its CronJob scheduled and
+  the one-off Jobs fired by `triggerOnChange` — and records `lastFailedTime` and
+  `lastSuccessfulTime` from the same population. Both are monotonic, so a Job
+  pruned by a TTL or a history limit never resurrects a stale verdict.
+- While the most recent finished run is a failure, the child is `Degraded` with
+  reason `RunFailed`; the cluster maps that to phase `Degraded` and members
+  `Failed`.
+- A run happening at all clears any `Stalled` condition, so a live failure is
+  never hidden behind an out-of-date stall message.
 
 ## Testing
 

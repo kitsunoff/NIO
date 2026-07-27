@@ -686,26 +686,22 @@ func (r *NixClusterReconciler) setConditions(
 		})
 	}
 
-	switch {
-	case stall != nil:
+	if stall != nil {
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
 			Reason: stall.Reason, ObservedGeneration: gen,
 			Message: "converge is stalled: " + stall.Message,
 		})
-	case isMirroredStall(cluster):
-		// The dependency resolved; drop the condition we mirrored earlier so the
-		// cluster does not stay marked stalled forever. Stalled conditions set by
-		// the reconciler itself (`fail`) carry other reasons and are left alone.
-		meta.RemoveStatusCondition(&cluster.Status.Conditions, niov1alpha1.ConditionStalled)
+		return
 	}
-}
 
-// isMirroredStall reports whether the cluster's Stalled condition is one we
-// mirrored from the converge child rather than one the reconciler set itself.
-func isMirroredStall(cluster *niov1alpha1.NixCluster) bool {
-	cond := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled)
-	return cond != nil && cond.Reason == reasonInfraNotReady
+	// Reaching here means the reconcile got all the way through: selection,
+	// node-file rendering, the builder preflight and the converge child all
+	// succeeded. Every Stalled condition is therefore obsolete, whether we
+	// mirrored it from the child or set it ourselves in `fail` — a persisting
+	// failure re-sets it on the next failing reconcile, which returns long before
+	// this point.
+	meta.RemoveStatusCondition(&cluster.Status.Conditions, niov1alpha1.ConditionStalled)
 }
 
 // fail records a Degraded/Blocked + Stalled status and returns the error.

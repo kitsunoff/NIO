@@ -38,6 +38,12 @@ import (
 
 const kindNixCronJob = "NixCronJob"
 
+// immediateJobTTLSeconds bounds how long a one-off Job fired on a revision change
+// sticks around after finishing. The CronJob's history limits do not apply to it,
+// so without a TTL these accumulate for the lifetime of the workload. A day is
+// long enough to inspect a failure by hand.
+const immediateJobTTLSeconds = 24 * 60 * 60
+
 // NixCronJobReconciler reconciles a NixCronJob into an owned batch/v1 CronJob,
 // pinning its jobTemplate to the resolved revision, and optionally firing a
 // one-off Job on a new revision.
@@ -193,13 +199,21 @@ func (r *NixCronJobReconciler) fireImmediateJob(ctx context.Context, ncj *niov1a
 		return err
 	}
 	cj := r.desiredCronJob(ncj, res, deps)
+	jobSpec := *cj.Spec.JobTemplate.Spec.DeepCopy()
+	// One-off Jobs are not covered by the CronJob's history limits, so without a
+	// TTL every revision change leaves a Job behind forever. The observed
+	// last-failed/last-succeeded times are monotonic, so pruning a Job never
+	// resurrects a stale verdict.
+	if jobSpec.TTLSecondsAfterFinished == nil {
+		jobSpec.TTLSecondsAfterFinished = ptr(int32(immediateJobTTLSeconds))
+	}
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
 			Namespace: ncj.Namespace,
 			Labels:    managedLabels(kindNixCronJob, ncj.Name),
 		},
-		Spec: cj.Spec.JobTemplate.Spec,
+		Spec: jobSpec,
 	}
 	if err := controllerutil.SetControllerReference(ncj, job, r.Scheme); err != nil {
 		return err
@@ -218,7 +232,6 @@ func (r *NixCronJobReconciler) observe(ctx context.Context, ncj *niov1alpha1.Nix
 		return
 	}
 	ncj.Status.LastScheduleTime = cj.Status.LastScheduleTime
-	ncj.Status.LastSuccessfulTime = cj.Status.LastSuccessfulTime
 	active := make([]string, 0, len(cj.Status.Active))
 	for _, ref := range cj.Status.Active {
 		active = append(active, ref.Name)
@@ -226,16 +239,24 @@ func (r *NixCronJobReconciler) observe(ctx context.Context, ncj *niov1alpha1.Nix
 	ncj.Status.ActiveJobs = active
 
 	// A CronJob keeps scheduling whether or not its runs succeed, so "the CronJob
-	// exists" is not a health signal on its own. Look at the runs: if the most
-	// recent finished run failed, the workload is Degraded, however healthy the
-	// schedule is. Without this a converge that fails every single time reports
-	// Ready forever.
-	ncj.Status.LastFailedTime = r.lastFailedRun(ctx, ncj, &cj)
-	if failing, msg := latestRunFailed(ncj.Status.LastFailedTime, ncj.Status.LastSuccessfulTime); failing {
+	// exists" is not a health signal on its own. Look at the runs themselves.
+	// Failures and successes MUST be read from the same population: the CronJob's
+	// own lastSuccessfulTime covers only the Jobs it scheduled, so a one-off
+	// triggerOnChange run could otherwise degrade the workload without ever being
+	// able to clear it again.
+	lastFailed, lastSucceeded := r.lastFinishedRuns(ctx, ncj, &cj)
+	ncj.Status.LastFailedTime = lastFailed
+	ncj.Status.LastSuccessfulTime = lastSucceeded
+
+	if failing, msg := latestRunFailed(lastFailed, lastSucceeded); failing {
 		st.Phase = niov1alpha1.PhaseDegraded
 		setCondition(&st.Conditions, niov1alpha1.ConditionReady, metav1.ConditionFalse,
 			reasonRunFailed, msg, ncj.Generation)
 		st.RolledOutRevision = res.revision
+		// The run happened, so whatever stalled an earlier reconcile is resolved.
+		// Leaving that condition behind would keep consumers reading a stale
+		// diagnosis (and, for an infra stall, outrank this failure entirely).
+		clearStalled(st)
 		return
 	}
 
@@ -244,36 +265,62 @@ func (r *NixCronJobReconciler) observe(ctx context.Context, ncj *niov1alpha1.Nix
 	markReady(st, res.revision, ncj.Generation)
 }
 
-// lastFailedRun returns the completion time of the most recent failed Job owned
-// by this NixCronJob — either scheduled by the projected CronJob or fired
-// directly on a revision change. Nil when no run has failed.
-func (r *NixCronJobReconciler) lastFailedRun(
+// lastFinishedRuns returns the completion times of the most recent failed and
+// most recent successful run of this NixCronJob, counting both the Jobs the
+// projected CronJob scheduled and the one-off Jobs fired on a revision change.
+// Both come from the same scan, so "did the latest run fail?" is answerable.
+func (r *NixCronJobReconciler) lastFinishedRuns(
 	ctx context.Context, ncj *niov1alpha1.NixCronJob, cj *batchv1.CronJob,
-) *metav1.Time {
+) (lastFailed, lastSucceeded *metav1.Time) {
+	// Both signals are monotonic: they only ever move forward. Jobs are pruned by
+	// history limits and TTLs, and forgetting a failure because its Job was
+	// garbage-collected would flip a broken workload back to Ready.
+	lastFailed = ncj.Status.LastFailedTime
+	lastSucceeded = ncj.Status.LastSuccessfulTime
+	// The CronJob controller's own bookkeeping is a valid success signal too.
+	if later(lastSucceeded, cj.Status.LastSuccessfulTime) {
+		lastSucceeded = cj.Status.LastSuccessfulTime
+	}
+
+	// Served from the manager's Job cache (the controller already Owns Jobs), so
+	// this is an in-memory scan rather than an API call per reconcile.
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(ncj.Namespace)); err != nil {
 		// Observation only: an unreadable Job list must not flip the phase.
-		return ncj.Status.LastFailedTime
+		return lastFailed, lastSucceeded
 	}
-	var latest *metav1.Time
+
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
 		if !ownedBy(job, ncj.UID) && !ownedBy(job, cj.UID) {
 			continue
 		}
-		cond := findJobCondition(job, batchv1.JobFailed)
-		if cond == nil || cond.Status != corev1.ConditionTrue {
-			continue
+		if at := jobFinishedAt(job, batchv1.JobFailed); at != nil && later(lastFailed, at) {
+			lastFailed = at
 		}
-		at := job.Status.CompletionTime
-		if at == nil {
-			at = &cond.LastTransitionTime
-		}
-		if latest == nil || latest.Before(at) {
-			latest = at.DeepCopy()
+		if at := jobFinishedAt(job, batchv1.JobComplete); at != nil && later(lastSucceeded, at) {
+			lastSucceeded = at
 		}
 	}
-	return latest
+	return lastFailed, lastSucceeded
+}
+
+// jobFinishedAt returns when the Job reached the given terminal condition, or nil
+// if it did not.
+func jobFinishedAt(job *batchv1.Job, want batchv1.JobConditionType) *metav1.Time {
+	cond := findJobCondition(job, want)
+	if cond == nil || cond.Status != corev1.ConditionTrue {
+		return nil
+	}
+	if job.Status.CompletionTime != nil {
+		return job.Status.CompletionTime.DeepCopy()
+	}
+	return cond.LastTransitionTime.DeepCopy()
+}
+
+// later reports whether candidate is newer than current (nil current loses).
+func later(current, candidate *metav1.Time) bool {
+	return current == nil || current.Before(candidate)
 }
 
 // latestRunFailed reports whether the most recent finished run failed, i.e. a
@@ -285,7 +332,7 @@ func latestRunFailed(lastFailed, lastSuccessful *metav1.Time) (bool, string) {
 	if lastSuccessful != nil && !lastSuccessful.Before(lastFailed) {
 		return false, ""
 	}
-	return true, "the most recent scheduled run failed at " + lastFailed.UTC().Format(time.RFC3339)
+	return true, "the most recent run failed at " + lastFailed.UTC().Format(time.RFC3339)
 }
 
 // ownedBy reports whether obj carries an ownerReference with the given UID.

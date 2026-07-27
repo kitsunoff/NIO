@@ -517,23 +517,37 @@ func TestSetConditions_PropagatesInfraStallMessage(t *testing.T) {
 	}
 }
 
-// Once the reference resolves, the propagated Stalled condition must go away —
-// otherwise the cluster stays marked stalled forever.
-func TestSetConditions_ClearsInfraStallWhenResolved(t *testing.T) {
-	cluster := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"}}
-	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
-		Reason: reasonInfraNotReady, Message: `NixStore "cache-store" not found`,
-	})
+// setConditions only runs once a reconcile got all the way through selection,
+// rendering, the builder preflight and the converge child. Every Stalled reason
+// is therefore obsolete by then — including the ones the reconciler sets itself,
+// which would otherwise linger with a false message until the cluster happened
+// to reach Ready.
+func TestSetConditions_ClearsAnyStalledOnceTheReconcileSucceeds(t *testing.T) {
+	for _, reason := range []string{
+		reasonInfraNotReady,
+		reasonBuilderSystemMismatch,
+		niov1alpha1.ReasonInvalidNodeFile,
+		niov1alpha1.ReasonSelectionComplete,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			cluster := &niov1alpha1.NixCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+			}
+			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+				Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+				Reason: reason, Message: "a diagnosis that is now out of date",
+			})
 
-	healthy := &niov1alpha1.NixCronJob{}
-	healthy.Status.Phase = niov1alpha1.PhaseProgressing
-	cluster.Status.Phase = clusterPhase(healthy, true, 2)
+			healthy := &niov1alpha1.NixCronJob{}
+			healthy.Status.Phase = niov1alpha1.PhaseProgressing
+			cluster.Status.Phase = clusterPhase(healthy, true, 2)
 
-	(&NixClusterReconciler{}).setConditions(cluster, healthy, true, false, 2)
+			(&NixClusterReconciler{}).setConditions(cluster, healthy, true, false, 2)
 
-	if cond := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled); cond != nil {
-		t.Errorf("Stalled condition must be cleared once the dependency resolves, got %+v", cond)
+			if cond := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled); cond != nil {
+				t.Errorf("Stalled(%s) must be cleared once the reconcile succeeds, got %+v", reason, cond)
+			}
+		})
 	}
 }
 

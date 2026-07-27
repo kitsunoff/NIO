@@ -314,3 +314,60 @@ and `docs/design/nixcluster-deep-dive.md` are ~50% Russian prose, and committing
 to a public repo is publishing, so both stay local and are now gitignored along
 with `nio-go-rewrite.md`, `SESSION-HANDOFF.md` and this run's TODO/report. Their
 content is the input for E4's English Design section, not a commit.
+
+## 2026-07-28 — night run iteration 3 — Gate B — the B2 fix reopened B2
+
+Gate C had passed again (20/20 specs, 725s). The third review round found four
+defects, each demonstrated with a failing test rather than argued — three of them
+introduced by the round-2 fixes themselves.
+
+### C1 (must-fix) — a stale Stalled condition outranked a live failure
+- Symptom: the new RunFailed branch in `observe()` returned before `markReady`,
+  so `clearStalled` never ran. Because `coarseMemberStatus` checks the stall
+  BEFORE the run outcome, a workload whose runs kept failing reported phase
+  `Blocked` with a long-dead `NixStore "…" not found` message and members
+  `Applied` — the exact B2 symptom, reintroduced.
+- Fix: a run happening at all proves the stall is resolved, so the RunFailed
+  branch clears it.
+- Status: fixed (commit 8d9df26)
+
+### C2 (must-fix) — one-off runs could degrade the workload but never recover it
+- Symptom: failures were counted from all owned Jobs (including the `-manual`
+  Jobs `fireImmediateJob` creates) while success came only from the projected
+  CronJob's `lastSuccessfulTime`, which the kube CronJob controller updates for
+  scheduled Jobs only. A failed one-off followed by a successful one-off stayed
+  Degraded until a *scheduled* run happened to succeed — up to a full day at the
+  default converge cadence, and NixCluster sets `triggerOnChange` on its cron, so
+  this is the cluster's default path.
+- Fix: read both signals from the same scan of owned Jobs, keep the CronJob's own
+  bookkeeping as an additional success source, and make both monotonic so a Job
+  pruned by a TTL or history limit cannot resurrect a stale verdict. One-off Jobs
+  now also carry a TTL, since the CronJob's history limits never applied to them.
+- Status: fixed (commit 8d9df26)
+
+### C3 (must-fix) — the builder preflight was dead code
+- Symptom: `checkBuilderCoversMembers` reads
+  `Machine.status.hardwareFacts.architecture`, and nothing in the repository ever
+  wrote `HardwareFacts` — no controller, no job. The preflight always saw nil and
+  returned nil, so the builder/arch foot-gun was still guarded by prose only.
+- Fix: the Machine controller now collects the architecture from `uname -m` on
+  each successful discovery (best-effort — a fact we cannot gather is not a
+  machine we cannot reach) and stamps `LastHardwareScanTime`.
+- Status: fixed (commit 8d9df26)
+
+### C4 (must-fix) — Stalled conditions the reconciler set itself were never cleared
+- Symptom: only `InfraNotReady` was cleared, so the new `BuilderSystemMismatch`
+  (and `InvalidNodeFile`, `SelectionComplete`) stayed True with a false message
+  until the cluster happened to reach `Ready`.
+- Fix: `setConditions` runs only after a reconcile completed selection,
+  rendering, the preflight and the child, so every Stalled reason is obsolete
+  there. A persisting failure re-sets it on the next failing reconcile, which
+  returns long before that point.
+- Status: fixed (commit 8d9df26)
+
+Should-fix items from the same round, also addressed in 8d9df26: the RunFailed
+message no longer says "scheduled" (it fires for one-off runs too), and the design
+doc now documents the preflight, the new reason, and how a failing converge is
+reported. Left as noted follow-ups: `r.fail` requeues with error backoff for a
+configuration mistake that cannot self-heal without a spec edit (consistent with
+every other `fail` call site, so changing it is a separate decision).

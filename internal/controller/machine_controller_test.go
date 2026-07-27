@@ -425,6 +425,64 @@ var _ = Describe("Machine state transitions", func() {
 			Expect(machine.Status.Discoverable).To(BeTrue())
 		})
 
+		It("should record the architecture on a discoverable machine", func() {
+			var ranCommand string
+			successSSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return nil
+				},
+				RunCommandFunc: func(ctx context.Context, host string, port int, config *ssh.Config, command string) (string, error) {
+					ranCommand = command
+					return "aarch64\n", nil
+				},
+			}
+
+			reconciler := &MachineReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(10),
+				SSHClient: successSSH,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			machine := &niov1alpha1.Machine{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			Expect(ranCommand).To(Equal("uname -m"))
+			Expect(machine.Status.HardwareFacts).NotTo(BeNil())
+			// Trimmed: the NixCluster builder preflight matches on the exact value.
+			Expect(machine.Status.HardwareFacts.Architecture).To(Equal("aarch64"))
+			Expect(machine.Status.LastHardwareScanTime).NotTo(BeNil())
+		})
+
+		It("should stay discoverable when the architecture scan fails", func() {
+			flakySSH := &ssh.MockClient{
+				CheckConnectionFunc: func(ctx context.Context, host string, port int, config *ssh.Config) error {
+					return nil
+				},
+				RunCommandFunc: func(ctx context.Context, host string, port int, config *ssh.Config, command string) (string, error) {
+					return "", fmt.Errorf("command not found")
+				},
+			}
+
+			reconciler := &MachineReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(10),
+				SSHClient: flakySSH,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			machine := &niov1alpha1.Machine{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, machine)).To(Succeed())
+			// A fact we could not gather is not a machine we cannot reach.
+			Expect(machine.Status.Discoverable).To(BeTrue())
+			Expect(machine.Status.LastHardwareScanTime).To(BeNil())
+		})
+
 		It("should transition from Discoverable to Undiscoverable on SSH failure", func() {
 			// First reconcile with successful SSH
 			successSSH := &ssh.MockClient{
