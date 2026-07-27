@@ -272,6 +272,13 @@ func (r *NixosConfigurationReconciler) reconcileDayTwo(ctx context.Context, conf
 		}
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 
+	// A day-two cron stalled on a missing NixStore/NixBuilder never ran, so
+	// claiming the run failed is wrong — and the reference name it is waiting on
+	// is the only useful thing to report.
+	case convergeStall(cron, true) != nil:
+		r.setDegraded(config, "Day-2 convergence is stalled: "+convergeStall(cron, true).Message)
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+
 	case cron.Status.Phase == niov1alpha1.PhaseDegraded || cron.Status.Phase == niov1alpha1.PhaseFailed:
 		r.setDegraded(config, "Day-2 convergence run failed")
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil

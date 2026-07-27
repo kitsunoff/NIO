@@ -28,3 +28,12 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Agent scratch: worktrees and session state, never part of the repo
+.claude/
+
+# Internal run logs and narrative drafts: local only, never published
+/.agent-e2e/NIGHT-TODO.md
+/.agent-e2e/NIGHT-REPORT.md
+/SESSION-HANDOFF.md
+/docs/design/nio-go-rewrite.md

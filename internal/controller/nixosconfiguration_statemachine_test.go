@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +286,48 @@ func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.
 		if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &recreated); err == nil {
 			t.Fatalf("install NixJob must NOT be recreated after success (follow-up reconcile %d)", i+1)
 		}
+	}
+}
+
+// TestReconcile_DayTwoStalledOnInfra_DoesNotClaimTheRunFailed covers the same
+// defect the NixCluster side had: a day-two cron stalled on a missing
+// NixStore/NixBuilder never ran, so reporting "run failed" is wrong and hides
+// the one useful fact — which reference it is waiting for.
+func TestReconcile_DayTwoStalledOnInfra_DoesNotClaimTheRunFailed(t *testing.T) {
+	cfg := smConfig()
+	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: "cache-store"}
+	r, c := smReconciler(t, cfg, smMachine())
+
+	smReconcile(t, r, "web")
+
+	var cron niov1alpha1.NixCronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+		t.Fatalf("day-2 cron not created: %v", err)
+	}
+
+	// The child resolves its infra and cannot: it stalls, it does not run.
+	const stallMsg = `NixStore "cache-store" not found`
+	cron.Status.Phase = niov1alpha1.PhaseDegraded
+	meta.SetStatusCondition(&cron.Status.Conditions, metav1.Condition{
+		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+		Reason: reasonInfraNotReady, Message: stallMsg,
+	})
+	if err := c.Status().Update(context.Background(), &cron); err != nil {
+		t.Fatalf("seed cron status: %v", err)
+	}
+
+	smReconcile(t, r, "web")
+
+	got := getConfig(t, c, "web")
+	ready := meta.FindStatusCondition(got.Status.Conditions, niov1alpha1.ConditionReady)
+	if ready == nil {
+		t.Fatal("Ready condition missing")
+	}
+	if strings.Contains(ready.Message, "run failed") {
+		t.Errorf("must not claim a run failed when the cron never ran: %q", ready.Message)
+	}
+	if !strings.Contains(ready.Message, stallMsg) {
+		t.Errorf("Ready message must name the unresolved reference, got %q", ready.Message)
 	}
 }
 

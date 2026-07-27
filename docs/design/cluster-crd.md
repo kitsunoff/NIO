@@ -159,7 +159,7 @@ status:
       desired: 3
       selected: 3
   convergeJobRef: prod-converge
-  conditions: [ … ]                                  # Ready / Stalled / GitSynced
+  conditions: [ … ]                                  # Ready / Stalled / GitSynced / Underprovisioned
 ```
 
 Cluster is **namespaced** (same namespace as its Machines). `values` is a

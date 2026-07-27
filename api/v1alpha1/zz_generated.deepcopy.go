@@ -721,6 +721,10 @@ func (in *NixCronJobStatus) DeepCopyInto(out *NixCronJobStatus) {
 		in, out := &in.LastSuccessfulTime, &out.LastSuccessfulTime
 		*out = (*in).DeepCopy()
 	}
+	if in.LastFailedTime != nil {
+		in, out := &in.LastFailedTime, &out.LastFailedTime
+		*out = (*in).DeepCopy()
+	}
 	if in.ActiveJobs != nil {
 		in, out := &in.ActiveJobs, &out.ActiveJobs
 		*out = make([]string, len(*in))

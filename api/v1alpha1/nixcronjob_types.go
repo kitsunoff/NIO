@@ -47,6 +47,12 @@ type NixCronJobStatus struct {
 	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
 	// +optional
 	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
+	// LastFailedTime is when the most recent run of this cron failed. A CronJob
+	// keeps scheduling regardless of whether its runs succeed, so this is what
+	// distinguishes "scheduled and working" from "scheduled and failing every
+	// time" — consumers (e.g. NixCluster) map it to a failure status.
+	// +optional
+	LastFailedTime *metav1.Time `json:"lastFailedTime,omitempty"`
 	// +optional
 	ActiveJobs []string `json:"activeJobs,omitempty"`
 }

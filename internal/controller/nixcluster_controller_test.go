@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,8 +31,11 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
@@ -382,21 +386,98 @@ func stalledConvergeCron(msg string) *niov1alpha1.NixCronJob {
 }
 
 // A converge stalled on a missing NixStore/NixBuilder never touched a node, so
-// reporting members as Failed would claim an apply broke them. Report the last
-// known state instead: Pending when nothing ever converged.
-func TestCoarseMemberStatus_InfraStallIsNotFailed(t *testing.T) {
+// reporting members as Failed would claim an apply broke them. The member keeps
+// exactly the status it last reported — Pending when it never reported one.
+func TestCoarseMemberStatus_InfraStallKeepsPreviousStatus(t *testing.T) {
 	cron := stalledConvergeCron(`NixStore "cache-store" not found`)
-	if got := coarseMemberStatus(cron, true); got != niov1alpha1.MemberStatusPending {
-		t.Errorf("member status = %q, want %q", got, niov1alpha1.MemberStatusPending)
-	}
 
-	// After a previous successful converge the members ARE applied; a later
-	// infra stall must not retroactively downgrade them.
+	if got := coarseMemberStatus(cron, true, ""); got != niov1alpha1.MemberStatusPending {
+		t.Errorf("member status with no history = %q, want %q", got, niov1alpha1.MemberStatusPending)
+	}
+	if got := coarseMemberStatus(cron, true, niov1alpha1.MemberStatusApplied); got != niov1alpha1.MemberStatusApplied {
+		t.Errorf("previously-applied member = %q, want %q", got, niov1alpha1.MemberStatusApplied)
+	}
+	// The important case: a member that FAILED on the last real run must not be
+	// upgraded to Applied just because a converge later stalled before running.
 	now := metav1.Now()
 	cron.Status.LastSuccessfulTime = &now
-	if got := coarseMemberStatus(cron, true); got != niov1alpha1.MemberStatusApplied {
-		t.Errorf("member status after a successful converge = %q, want %q",
-			got, niov1alpha1.MemberStatusApplied)
+	if got := coarseMemberStatus(cron, true, niov1alpha1.MemberStatusFailed); got != niov1alpha1.MemberStatusFailed {
+		t.Errorf("previously-failed member = %q, want %q", got, niov1alpha1.MemberStatusFailed)
+	}
+}
+
+// A git error also stalls the child, but it is a different failure with a
+// different meaning: it must not be mirrored as an infra stall, or the mirrored
+// condition can never be cleared again (only InfraNotReady is recognised there).
+func TestConvergeStall_OnlyMatchesInfraNotReady(t *testing.T) {
+	cron := &niov1alpha1.NixCronJob{}
+	cron.Status.Phase = niov1alpha1.PhaseDegraded
+	meta.SetStatusCondition(&cron.Status.Conditions, metav1.Condition{
+		Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+		Reason: reasonGitError, Message: "revision not found",
+	})
+
+	if convergeStall(cron, true) != nil {
+		t.Error("a git-error stall must not be treated as an infra stall")
+	}
+	if got := clusterPhase(cron, true, 3); got != niov1alpha1.NixClusterPhaseDegraded {
+		t.Errorf("phase on a git-error stall = %q, want %q", got, niov1alpha1.NixClusterPhaseDegraded)
+	}
+	if got := coarseMemberStatus(cron, true, niov1alpha1.MemberStatusApplied); got != niov1alpha1.MemberStatusFailed {
+		t.Errorf("member status on a git-error stall = %q, want %q", got, niov1alpha1.MemberStatusFailed)
+	}
+}
+
+// A CronJob keeps scheduling whether its runs succeed or not, so a converge that
+// fails every time must still surface as a failure rather than as Ready.
+func TestCoarseMemberStatus_FailedRunIsFailed(t *testing.T) {
+	failedAt := metav1.NewTime(metav1.Now().Add(-time.Minute))
+	cron := &niov1alpha1.NixCronJob{}
+	cron.Status.Phase = niov1alpha1.PhaseDegraded
+	cron.Status.LastFailedTime = &failedAt
+
+	if got := coarseMemberStatus(cron, true, niov1alpha1.MemberStatusApplied); got != niov1alpha1.MemberStatusFailed {
+		t.Errorf("member status = %q, want %q", got, niov1alpha1.MemberStatusFailed)
+	}
+	if got := clusterPhase(cron, true, 1); got != niov1alpha1.NixClusterPhaseDegraded {
+		t.Errorf("phase = %q, want %q", got, niov1alpha1.NixClusterPhaseDegraded)
+	}
+
+	// A success AFTER the failure means the cron recovered.
+	recovered := metav1.Now()
+	cron.Status.LastSuccessfulTime = &recovered
+	cron.Status.Phase = niov1alpha1.PhaseReady
+	if got := coarseMemberStatus(cron, true, ""); got != niov1alpha1.MemberStatusApplied {
+		t.Errorf("member status after recovery = %q, want %q", got, niov1alpha1.MemberStatusApplied)
+	}
+}
+
+// latestRunFailed is the shared "is the most recent finished run a failure?"
+// predicate; both the cron's own phase and the cluster's member status use it.
+func TestLatestRunFailed(t *testing.T) {
+	early := metav1.NewTime(metav1.Now().Add(-time.Hour))
+	late := metav1.Now()
+
+	for _, tc := range []struct {
+		name            string
+		failed, success *metav1.Time
+		wantFailing     bool
+	}{
+		{name: "never ran", wantFailing: false},
+		{name: "only failures", failed: &late, wantFailing: true},
+		{name: "failure then success", failed: &early, success: &late, wantFailing: false},
+		{name: "success then failure", failed: &late, success: &early, wantFailing: true},
+		{name: "only successes", success: &late, wantFailing: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, msg := latestRunFailed(tc.failed, tc.success)
+			if got != tc.wantFailing {
+				t.Errorf("latestRunFailed = %v, want %v", got, tc.wantFailing)
+			}
+			if got && msg == "" {
+				t.Error("a failing verdict must carry an explanatory message")
+			}
+		})
 	}
 }
 
@@ -453,6 +534,117 @@ func TestSetConditions_ClearsInfraStallWhenResolved(t *testing.T) {
 
 	if cond := meta.FindStatusCondition(cluster.Status.Conditions, niov1alpha1.ConditionStalled); cond != nil {
 		t.Errorf("Stalled condition must be cleared once the dependency resolves, got %+v", cond)
+	}
+}
+
+// nixSystemForArch must recognise exactly the architectures NIO supports and
+// stay silent about everything else — the preflight built on it may only fire on
+// a provable mismatch.
+func TestNixSystemForArch(t *testing.T) {
+	for in, want := range map[string]string{
+		"x86_64":  "x86_64-linux",
+		"amd64":   "x86_64-linux",
+		"AArch64": "aarch64-linux",
+		"arm64":   "aarch64-linux",
+		" x86_64": "x86_64-linux",
+		"riscv64": "",
+		"":        "",
+	} {
+		if got := nixSystemForArch(in); got != want {
+			t.Errorf("nixSystemForArch(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// machineWithArch returns a Machine reporting the given architecture (empty means
+// hardware facts were never collected).
+func machineWithArch(arch string) *niov1alpha1.Machine {
+	m := &niov1alpha1.Machine{ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "infra"}}
+	if arch != "" {
+		m.Status.HardwareFacts = &niov1alpha1.HardwareFacts{Architecture: arch}
+	}
+	return m
+}
+
+// The preflight refuses a cluster whose builder cannot build a member's arch —
+// converge would otherwise burn its whole activeDeadline and fail on an opaque
+// nix error, because delegation leaves no local fallback.
+func TestCheckBuilderCoversMembers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := niov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	builder := func(name string, systems ...string) *niov1alpha1.NixBuilder {
+		return &niov1alpha1.NixBuilder{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "infra"},
+			Spec:       niov1alpha1.NixBuilderSpec{Systems: systems},
+		}
+	}
+	groups := []niov1alpha1.NodeGroupStatus{{
+		Name:    "control-plane",
+		Members: []niov1alpha1.MemberStatus{{Name: "node-01"}},
+	}}
+
+	tests := []struct {
+		name       string
+		builderRef string
+		objects    []client.Object
+		machine    *niov1alpha1.Machine
+		wantErr    bool
+	}{{
+		name:       "provable mismatch is refused",
+		builderRef: "builder",
+		objects:    []client.Object{builder("builder", "x86_64-linux")},
+		machine:    machineWithArch("aarch64"),
+		wantErr:    true,
+	}, {
+		name:       "builder covers the member",
+		builderRef: "builder",
+		objects:    []client.Object{builder("builder", "x86_64-linux", "aarch64-linux")},
+		machine:    machineWithArch("aarch64"),
+	}, {
+		name:       "unqualified builder proves nothing",
+		builderRef: "builder",
+		objects:    []client.Object{builder("builder")},
+		machine:    machineWithArch("aarch64"),
+	}, {
+		name:       "machine has not reported its architecture",
+		builderRef: "builder",
+		objects:    []client.Object{builder("builder", "x86_64-linux")},
+		machine:    machineWithArch(""),
+	}, {
+		name:       "builder does not exist yet (the child stalls instead)",
+		builderRef: "builder",
+		machine:    machineWithArch("aarch64"),
+	}, {
+		name:    "no builderRef at all",
+		machine: machineWithArch("aarch64"),
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := &niov1alpha1.NixCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+			}
+			if tc.builderRef != "" {
+				cluster.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: tc.builderRef}
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objects...).Build()
+			r := &NixClusterReconciler{Client: c, Scheme: scheme}
+
+			err := r.checkBuilderCoversMembers(context.Background(), cluster,
+				map[string]*niov1alpha1.Machine{"node-01": tc.machine}, groups)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected the mismatch to be refused")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected refusal: %v", err)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "aarch64-linux") {
+				t.Errorf("the error must name the system the member needs: %v", err)
+			}
+		})
 	}
 }
 

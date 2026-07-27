@@ -74,15 +74,24 @@ type NixosConfigurationSpec struct {
 	// +optional
 	JobTemplate *JobTemplate `json:"jobTemplate,omitempty"`
 
-	// StoreRef points the child workloads' nix at a shared NixStore for
-	// build/substitute caching (much faster day-2 convergence). Optional;
-	// passed through to the install/day-2/decommission children. Same namespace.
+	// StoreRef adds a shared NixStore (same namespace) to the child workloads as
+	// a SUBSTITUTER: paths the store already holds are fetched instead of built.
+	// It is not a cache the children fill — a child pushes into the store only
+	// when BuilderRef is set too, and then only the paths it builds directly.
+	// StoreRef additionally supplies the SSH identity used to reach BuilderRef's
+	// builder, so a builder with no store on either object cannot be dispatched
+	// to. Optional; passed through to the install/day-2/decommission children.
 	// +optional
 	StoreRef *LocalObjectReference `json:"storeRef,omitempty"`
 
-	// BuilderRef offloads the child workloads' builds to a shared NixBuilder.
-	// Optional; passed through to the children. Same namespace. Typically set
-	// together with StoreRef.
+	// BuilderRef offloads the child workloads' builds to a shared NixBuilder
+	// (same namespace) instead of building in the pod. This is what actually
+	// speeds up day-two convergence — the closures are realized on the builder
+	// and stay in the builder's /nix, so give that NixBuilder `spec.storage` or
+	// its /nix is an emptyDir that dies with the pod. The builder must be able to
+	// build the target's system: a NixBuilder without `spec.systems` is
+	// advertised for both common Linux architectures, and delegation sets
+	// `max-jobs = 0`, so there is no local fallback if it cannot.
 	// +optional
 	BuilderRef *LocalObjectReference `json:"builderRef,omitempty"`
 }

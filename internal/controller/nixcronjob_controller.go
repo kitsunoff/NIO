@@ -18,12 +18,14 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -223,9 +225,90 @@ func (r *NixCronJobReconciler) observe(ctx context.Context, ncj *niov1alpha1.Nix
 	}
 	ncj.Status.ActiveJobs = active
 
-	// The CronJob is applied and pinned to the resolved revision: it is Ready as
-	// scheduling infrastructure (individual runs report their own status).
+	// A CronJob keeps scheduling whether or not its runs succeed, so "the CronJob
+	// exists" is not a health signal on its own. Look at the runs: if the most
+	// recent finished run failed, the workload is Degraded, however healthy the
+	// schedule is. Without this a converge that fails every single time reports
+	// Ready forever.
+	ncj.Status.LastFailedTime = r.lastFailedRun(ctx, ncj, &cj)
+	if failing, msg := latestRunFailed(ncj.Status.LastFailedTime, ncj.Status.LastSuccessfulTime); failing {
+		st.Phase = niov1alpha1.PhaseDegraded
+		setCondition(&st.Conditions, niov1alpha1.ConditionReady, metav1.ConditionFalse,
+			reasonRunFailed, msg, ncj.Generation)
+		st.RolledOutRevision = res.revision
+		return
+	}
+
+	// The CronJob is applied, pinned to the resolved revision, and its last
+	// finished run did not fail.
 	markReady(st, res.revision, ncj.Generation)
+}
+
+// lastFailedRun returns the completion time of the most recent failed Job owned
+// by this NixCronJob — either scheduled by the projected CronJob or fired
+// directly on a revision change. Nil when no run has failed.
+func (r *NixCronJobReconciler) lastFailedRun(
+	ctx context.Context, ncj *niov1alpha1.NixCronJob, cj *batchv1.CronJob,
+) *metav1.Time {
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(ncj.Namespace)); err != nil {
+		// Observation only: an unreadable Job list must not flip the phase.
+		return ncj.Status.LastFailedTime
+	}
+	var latest *metav1.Time
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if !ownedBy(job, ncj.UID) && !ownedBy(job, cj.UID) {
+			continue
+		}
+		cond := findJobCondition(job, batchv1.JobFailed)
+		if cond == nil || cond.Status != corev1.ConditionTrue {
+			continue
+		}
+		at := job.Status.CompletionTime
+		if at == nil {
+			at = &cond.LastTransitionTime
+		}
+		if latest == nil || latest.Before(at) {
+			latest = at.DeepCopy()
+		}
+	}
+	return latest
+}
+
+// latestRunFailed reports whether the most recent finished run failed, i.e. a
+// failure exists and no success happened after it.
+func latestRunFailed(lastFailed, lastSuccessful *metav1.Time) (bool, string) {
+	if lastFailed == nil {
+		return false, ""
+	}
+	if lastSuccessful != nil && !lastSuccessful.Before(lastFailed) {
+		return false, ""
+	}
+	return true, "the most recent scheduled run failed at " + lastFailed.UTC().Format(time.RFC3339)
+}
+
+// ownedBy reports whether obj carries an ownerReference with the given UID.
+func ownedBy(obj client.Object, owner types.UID) bool {
+	if owner == "" {
+		return false
+	}
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == owner {
+			return true
+		}
+	}
+	return false
+}
+
+// findJobCondition returns the named Job condition, or nil.
+func findJobCondition(job *batchv1.Job, t batchv1.JobConditionType) *batchv1.JobCondition {
+	for i := range job.Status.Conditions {
+		if job.Status.Conditions[i].Type == t {
+			return &job.Status.Conditions[i]
+		}
+	}
+	return nil
 }
 
 // SetupWithManager registers the NixCronJob controller with the manager.

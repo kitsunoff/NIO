@@ -161,3 +161,150 @@ Bash-tool background runner reaps long-running background commands intermittentl
 (~7–10 min); the passing run was launched detached via `nohup` so it survived to
 completion. Gate C must be run detached in this environment.
 
+## 2026-07-28 — night run iteration 1 — Gate B — storeRef/builderRef review (NOT LGTM)
+
+Gate A was green on `feat/nixcluster-store-builder-ref` as-is (build/vet/lint=0/
+unit+envtest). Before the review, a missing regression test for the §H two-key
+SSH rule on the *converge* path was added (`TestRenderConvergeKeepsClusterKey`,
+commit defa6e2) — it passes, so the new builderRef combination does not shadow
+the cluster key. `/branch-review` then returned NOT LGTM with four blocking
+findings, all about the contract the two new fields advertise.
+
+### N1 (must-fix) — `StoreRef` doc comment promises persistence the code never delivers
+- Symptom: the field comment (and therefore the CRD description users read via
+  `kubectl explain`) says storeRef makes converge "build artifacts persist across
+  runs". Nothing pushes into the store on a store-only configuration.
+- Evidence: the only push site is `nixrender.go:482`, gated on
+  `in.sshSecretName != ""`, which `resolveInfra` sets only inside the
+  `builderName != ""` branch (`nixworkload.go:123-151`). With storeRef alone the
+  store is a read-only substituter. ADR-0006 says exactly that. Even with
+  builderRef, the pod pushes only `Run`/`Prebuild` paths — the member NixOS
+  toplevels are built by `nixos-rebuild --target-host` at converge runtime and
+  never enter the store; the real cache is the builder's own persistent `/nix`
+  (and only when the NixBuilder has `spec.storage`).
+- Root cause: field comments describe an intended mechanism, not the implemented one.
+- Fix: rewrite both comments to the real contract, regenerate the CRD, and pin
+  the behaviour with a render test (store-only ⇒ no `nix copy --to`).
+- Status: fixed (commit 4b61717)
+
+### N2 (must-fix) — an unready/typo'd storeRef or builderRef reports members as Failed
+- Symptom: a missing NixStore/NixBuilder stalls the converge NixCronJob
+  (`PhaseDegraded`), which `coarseMemberStatus` maps to `MemberStatusFailed` and
+  the cluster reports `Ready=False, reason=Converging, "converge in progress"` —
+  implying an apply was attempted and broke nodes. The only accurate message
+  (`NixStore "x" not found`) stays on the child.
+- Evidence: `nixcronjob_controller.go:95-101`, `nixworkload.go:255-259`,
+  `nixcluster_controller.go:477-482,500-509,554-565`.
+- Root cause: the new fields introduce an infra-stall state the cluster status
+  mapping does not distinguish from a failed apply.
+- Fix: propagate the child's Stalled/InfraNotReady reason+message onto the
+  NixCluster conditions and stop mapping that state to `Failed`. Cluster phase
+  becomes `Blocked`; members keep their last known status; the mirrored condition
+  clears when the reference resolves.
+- Status: fixed (commit 0bb2b9f)
+
+### N3 (must-fix) — `builderRef` removes the local build fallback silently
+- Symptom: resolving a builder emits `max-jobs = 0` (all builds remote) and an
+  unqualified NixBuilder is advertised as `x86_64-linux,aarch64-linux`
+  regardless of what the builder pod can actually build. Pointing an aarch64
+  cluster at an x86_64-only builder turns a slow converge into a failing one.
+- Evidence: `nixrender.go:59-61`, `nixrender.go:130-147`.
+- Root cause: pre-existing default, newly reachable from NixCluster.
+- Fix: state the requirement in the `BuilderRef` comment and pin the behaviour
+  with a `buildNixConfig` test. Changing the default advertised system set would
+  alter the already-shipped workload path — logged as out of scope here.
+- Status: open
+
+### N4 (must-fix) — `docs/design/cluster-crd.md` no longer matches the code
+- Symptom: the normative spec example omits the two new fields, the converge
+  child field-mapping enumerates every NixSpec field except the new ones, and the
+  doc still says `kind: Cluster` / `api/v1alpha1/cluster_types.go` (stale since
+  the rename in d7cd482).
+- Fix: update the spec example, the child mapping, and the stale kind/path, plus
+  a table stating what storeRef/builderRef really do.
+- Status: fixed (commit ac26131)
+
+### N5 (should-fix) — store-only push claimed in two more docs; no NixCluster example
+- `docs/design/examples.yaml:64` and `examples/README.md` assert the same
+  store-only push N1 disproves; there is no NixCluster manifest anywhere, so the
+  new knobs have no discoverable usage example.
+- Fix: corrected both claims; added `examples/nixcluster.yaml`.
+- Status: fixed (commit ac26131)
+
+### N6 (noted, not actioned) — `NixSpec.LocalStore` is unreachable from a NixCluster
+- The review flagged that a converge pod still materialises every member closure
+  in an unbounded emptyDir `/nix` even with a builder, and that `LocalStore` (which
+  would bound it) has no NixCluster field. Adding a new API surface is beyond this
+  PR; recorded so the decision is explicit rather than silent.
+- Status: open (deferred — needs a design decision, not a fix)
+
+## 2026-07-28 — night run iteration 2 — Gate B — re-review after the N1–N5 fixes
+
+Gate A green (lint 0, full suite green, no manifest drift). Gate C had passed on
+defa6e2 (20/20 specs, 694s). The re-review confirmed N1/N2/N4/N5 fixed in
+substance but found that the N2 fix introduced defects of its own and that the
+same two defects live in the NixosConfiguration neighbour.
+
+### B1 (must-fix) — `convergeStall` matches ANY Stalled, not just InfraNotReady
+- Symptom: NixCronJob sets `Stalled` for `GitError` too (`nixcronjob_controller.go:84`),
+  so a broken git ref now yields phase `Blocked` and members `Applied`, and the
+  mirrored condition can never be cleared because `isMirroredStall` only
+  recognises `InfraNotReady` — the setting and clearing branches disagree.
+- Fix: narrow `convergeStall` to `reasonInfraNotReady`, making the pair symmetric.
+- Status: fixed (commit 3d8ee01)
+
+### B2 (must-fix) — a converge that fails every run reports Ready / all members Applied
+- Symptom: `observe()` calls `markReady` as soon as the batch CronJob exists,
+  regardless of whether its Jobs fail; `PhaseFailed` is never set for a
+  NixCronJob and `PhaseDegraded` only came from `markStalled`. After the N2 fix
+  the stall branch intercepts that, so `MemberStatusFailed`/`Degraded` became
+  unreachable: a permanently failing converge looks healthy.
+- Evidence: `nixcronjob_controller.go:211-229`, `nixworkload.go:255-259`,
+  `nixcluster_controller.go:501-502,529-530`.
+- Root cause: pre-existing hole (failures were never surfaced); the N2 fix
+  removed the one accidental path that showed anything.
+- Fix: NixCronJob already `Owns(&batchv1.Job{})` — enumerate owned Jobs, detect
+  `JobFailed`, record it in status, and map it to `Failed`/`Degraded`.
+- Status: fixed (commit 3d8ee01)
+
+### B3 (must-fix) — "members keep their last known status" was not what the code did
+- Symptom: on an infra stall the code returned `Applied` whenever
+  `LastSuccessfulTime != nil` — so a member that failed on the last run flipped
+  to `Applied` the moment someone typo'd `storeRef`.
+- Fix: carry the previous per-member status from `cluster.Status.NodeGroups`
+  (already read for sticky selection) and report exactly that.
+- Status: fixed (commit 3d8ee01)
+
+### B4 (must-fix) — the same false storeRef/builderRef claim in NixosConfiguration
+- Symptom: `nixosconfiguration_types.go:77-87` still said "build/substitute
+  caching (much faster day-2 convergence)" and "typically set together" — the
+  exact wording N1 was raised for, on the same `kubectl explain` surface.
+- Fix: restate both fields there too, regenerate the CRD.
+- Status: fixed (commit 3d8ee01)
+
+### B5 (must-fix) — the same N2 defect in NixosConfiguration
+- Symptom: `nixosconfiguration_controller.go:275-277` maps a Degraded day-two
+  cron to "Day-2 convergence run failed", so a typo'd storeRef claims a run
+  failed when no run happened.
+- Fix: treat an infra stall as a stall, surfacing the child's message.
+- Status: fixed (commit 3d8ee01)
+
+### B6 (must-fix) — `examples/nixcluster.yaml` could not be applied as written
+- Symptom: it referenced `store`/`linux-builder` while living in namespace
+  `infra`; those objects are in `apps` in the sibling examples and refs are
+  strictly same-namespace. It also pointed at an x86_64-only builder while its
+  own comment warns that a builder must cover the members' systems.
+- Fix: same namespace as the rest of the examples, and spell out the arch match.
+- Status: fixed (commit 3d8ee01)
+
+### B7 (must-fix) — the builder/arch foot-gun was closed by prose only
+- Symptom: N3 was "fixed" with a field comment and a test that pins the trap
+  rather than preventing it. NIO already knows each member's architecture
+  (`Machine.Status.HardwareFacts.CPU.Architecture`) and the builder's declared
+  `spec.systems`.
+- Fix: a conservative preflight in the NixCluster reconcile — when a referenced
+  NixBuilder declares an explicit system list and a selected Machine reports an
+  architecture that list cannot build, report `Blocked` with the mismatch instead
+  of letting converge burn its activeDeadline. Missing facts or an unqualified
+  builder never block (nothing is proven).
+- Status: fixed (commit 3d8ee01)

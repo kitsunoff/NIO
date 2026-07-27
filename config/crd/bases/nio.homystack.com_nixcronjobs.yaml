@@ -9213,6 +9213,14 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastFailedTime:
+                description: |-
+                  LastFailedTime is when the most recent run of this cron failed. A CronJob
+                  keeps scheduling regardless of whether its runs succeed, so this is what
+                  distinguishes "scheduled and working" from "scheduled and failing every
+                  time" — consumers (e.g. NixCluster) map it to a failure status.
+                format: date-time
+                type: string
               lastPolledTime:
                 description: LastPolledTime is when Ref was last resolved.
                 format: date-time

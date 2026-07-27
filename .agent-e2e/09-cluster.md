@@ -41,16 +41,16 @@ key + age key) → reflect per-node status.
 ## Tier 2 — NIO-side, on Kind (no real hosts, no converge run)
 
 Verify selection, stability, node-file generation, and cron shape without running
-converge. Create `Machine` objects (no real SSH needed if the Cluster is created
+converge. Create `Machine` objects (no real SSH needed if the NixCluster is created
 paused / the cron never scheduled, or assert before first run).
 
 ### S1 — Deterministic + stable selection
 
 1. Create 5 Machines `m-01..m-05` labeled `role=worker`.
-2. Apply a Cluster with a `workers` nodeGroup, `selector role=worker`, `count: 3`.
+2. Apply a NixCluster with a `workers` nodeGroup, `selector role=worker`, `count: 3`.
 3. Assert `status.nodeGroups[workers].members` = the **3 lowest names**
    (`m-01,m-02,m-03`), in sorted order.
-4. Reconcile again (touch the Cluster) → **identical** member list/order (stable).
+4. Reconcile again (touch the NixCluster) → **identical** member list/order (stable).
 5. Add `m-00` (sorts first) → members stay `m-01,m-02,m-03` (**sticky**: an
    already-selected member is not evicted for a lower name).
 6. Delete `m-02` → it is replaced by the next sorted candidate (`m-04`), others
@@ -99,7 +99,7 @@ cleanly when absent.
 
 1. Two Colima NixOS VMs; two Machines (`role=server`, `role=agent`) pointing at
    them; cluster SSH key Secret; age key Secret; committed sops in the repo.
-2. Apply a Cluster (control-plane count 1 server, workers 1 agent).
+2. Apply a NixCluster (control-plane count 1 server, workers 1 agent).
 3. Assert the converge `NixCronJob` fires (triggerOnChange), the run **succeeds**,
    and `status.nodeGroups[*].members[*].status == Applied` (**per-node**).
 4. Assert on the VMs: server is up (`nixos-version`; k3s server running), agent
@@ -120,9 +120,9 @@ cleanly when absent.
 
 ### S9 — Deletion
 
-1. Delete the Cluster → the converge `NixCronJob` (and generated state) is
+1. Delete the NixCluster → the converge `NixCronJob` (and generated state) is
    removed; finalizer cleared. (Node teardown / decommission on the VMs is
-   deferred — document current behavior: deleting the Cluster stops converging,
+   deferred — document current behavior: deleting the NixCluster stops converging,
    it does not wipe the nodes unless a decommission path is added.)
 
 ## Assertions cheat-sheet
