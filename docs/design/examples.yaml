@@ -60,8 +60,10 @@ spec:
             requests: { cpu: "4", memory: 8Gi }
 ---
 # ═════════════════════════════ WORKLOADS ════════════════════════════════════
-# 1. NixDeployment — minimal prod: point at repo/branch/app + a store. Builds
-#    locally (no builderRef), pushes to the store, runners substitute + exec.
+# 1. NixDeployment — minimal prod: point at repo/branch/app + a store. With no
+#    builderRef the pod builds locally and the store is a SUBSTITUTER only:
+#    nothing is pushed into it (a push needs a builder). Add builderRef to
+#    delegate the build and have the pod copy the result into the store.
 apiVersion: nio.homystack.com/v1alpha1
 kind: NixDeployment
 metadata:

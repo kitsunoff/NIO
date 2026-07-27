@@ -126,7 +126,7 @@ NIO-generated node files omit `nixosConfiguration` → inherit the default; thei
 
 ```yaml
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: { name: prod, namespace: infra }
 spec:
   source:                         # downstream flake-parts repo (the cluster)
@@ -135,6 +135,8 @@ spec:
     credentialsRef: { name: git-creds }     # optional (private)
   sshKeyRef:  { name: cluster-ssh }          # cluster-wide SSH key (mounted into converge)
   ageKeyRef:  { name: cluster-age }          # sops age key (input; mounted)
+  storeRef:   { name: cache-store }          # optional; substituter for the converge pod
+  builderRef: { name: builder }              # optional; delegates the converge build
   dayTwoSchedule: "*/30 * * * *"             # converge cadence (default)
   nodeGroups:
     - name: control-plane
@@ -191,6 +193,8 @@ Reconcile(cluster):
      nix.run             = ".#cluster-<cluster>"
      nix.args            = [ "converge" ]
      nix.additionalFiles = the rendered node files (inline)      # import-tree picks them up
+     nix.storeRef        = spec.storeRef                          # optional, pass-through
+     nix.builderRef      = spec.builderRef                        # optional, pass-through
      mounts              = sshKeyRef, ageKeyRef                   # into the converge pod
      cronJobTemplate     = { schedule: dayTwoSchedule, concurrencyPolicy: Forbid,
                              activeDeadlineSeconds: <generous> }
@@ -236,10 +240,30 @@ machine-uniqueness enforcement.
 - nixcluster (separate repo, `kitsunoff/nixcluster`): `cluster-modules/converge.nix`
   (+ `core.nix` imports it); `defaultNixosConfiguration` in core + member default;
   per-member JSON output from `converge`; augment steps in `k3s`/`sops`/`cozystack`.
-- NIO: `api/v1alpha1/cluster_types.go` (+ deepcopy/CRD); `internal/controller/
-  cluster_controller.go` (select + render node files + ensure converge cron +
+- NIO: `api/v1alpha1/nixcluster_types.go` (+ deepcopy/CRD); `internal/controller/
+  nixcluster_controller.go` (select + render node files + ensure converge cron +
   status); reuse `NixSpec.additionalFiles` for node-file delivery; RBAC for
   `nixcronjobs` + `machines`.
+
+## Build acceleration (`storeRef` / `builderRef`)
+
+Both are optional and independent of selection; they only change how the converge
+pod builds.
+
+| Field | What it actually does |
+| --- | --- |
+| `storeRef` | Adds the NixStore as a **substituter** for the converge pod, and supplies the SSH identity used to reach the builder. Nothing is pushed into the store unless a builder is also set, and then only the paths the pod builds directly. |
+| `builderRef` | Delegates the build to the NixBuilder (`max-jobs = 0`, so there is **no local fallback**). The member closures are realized on the builder and survive in **its** `/nix` — give that NixBuilder `spec.storage`, or the cache dies with the pod. |
+
+Consequences worth stating plainly:
+
+- A `NixBuilder` without `spec.systems` is advertised for both common Linux
+  architectures whether or not it can build them; pointing an aarch64 cluster at
+  an x86_64-only builder turns a slow converge into a failing one.
+- A missing or not-yet-ready store/builder **stalls** the converge child. The
+  cluster mirrors that child's `Stalled` condition (reason `InfraNotReady`, with
+  the message naming the reference), reports phase `Blocked`, and leaves members
+  at their last known status — a stalled converge applied nothing.
 
 ## Testing
 

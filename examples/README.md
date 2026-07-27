@@ -18,6 +18,10 @@ kubectl apply -f examples/nixdeployment.yaml
 | `nixjob.yaml`            | `NixJob`         |
 | `nixcronjob.yaml`        | `NixCronJob`     |
 | `nixstatefulset.yaml`    | `NixStatefulSet` |
+| `nixcluster.yaml`        | `NixCluster`     |
 
 Replace `gitRepo` / `ref` / `run` with your own flake. Every workload references
-the `NixStore` so its pods substitute already-built paths instead of rebuilding.
+the `NixStore`, so its pods **substitute** already-built paths from it instead of
+rebuilding them. A store is not a cache the pods fill: paths are pushed into it
+only when a `builderRef` is set as well, and then only the paths the pod builds
+directly.
