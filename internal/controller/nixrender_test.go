@@ -655,6 +655,22 @@ func TestRenderInjectFilesConfigMapAndSecret(t *testing.T) {
 		}
 	}
 	assertShellParses(t, script)
+
+	// The inject-files container runs `nix shell nixpkgs#gitMinimal`, which needs
+	// NIX_CONFIG to enable the nix-command experimental feature; without it the
+	// container fails immediately ("experimental Nix feature 'nix-command' is
+	// disabled"). Regression guard for that bug.
+	var nixCfg string
+	for _, e := range inject.Env {
+		if e.Name == "NIX_CONFIG" {
+			nixCfg = e.Value
+		}
+	}
+	if nixCfg == "" {
+		t.Errorf("inject-files must set NIX_CONFIG (got env %v)", inject.Env)
+	} else if !strings.Contains(nixCfg, "nix-command") {
+		t.Errorf("inject-files NIX_CONFIG must enable nix-command, got %q", nixCfg)
+	}
 }
 
 func TestRenderInjectFilesInline(t *testing.T) {

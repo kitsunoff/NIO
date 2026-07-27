@@ -245,7 +245,7 @@ func validateAdditionalFiles(files []niov1alpha1.NixFile) error {
 // configMapRef/secretRef, and inline content via the operator-owned nixfiles
 // ConfigMap (inlineCMName, key file-<index>) so inline never bloats the pod
 // spec. Returns ok=false when there are no files.
-func additionalFilesInjection(files []niov1alpha1.NixFile, image, inlineCMName string) (corev1.Container, []corev1.Volume, bool) {
+func additionalFilesInjection(files []niov1alpha1.NixFile, image, inlineCMName, nixConfig string) (corev1.Container, []corev1.Volume, bool) {
 	if len(files) == 0 {
 		return corev1.Container{}, nil, false
 	}
@@ -302,8 +302,14 @@ func additionalFilesInjection(files []niov1alpha1.NixFile, image, inlineCMName s
 	b.WriteByte('\n')
 
 	return corev1.Container{
-		Name:         initInjectFiles,
-		Image:        image,
+		Name:  initInjectFiles,
+		Image: image,
+		// Runs `nix shell nixpkgs#gitMinimal`, so it needs NIX_CONFIG to enable
+		// the nix-command experimental feature (and the substituters that fetch
+		// gitMinimal) — exactly like the fetch-source init. Without it the
+		// container fails immediately with "experimental Nix feature 'nix-command'
+		// is disabled".
+		Env:          []corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}},
 		Command:      []string{"nix", "shell", "nixpkgs#gitMinimal", "--command", "sh", "-c", b.String()},
 		VolumeMounts: mounts,
 	}, vols, true
@@ -534,7 +540,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 
 	// inject-files (optional): write AdditionalFiles into the checkout and
 	// force-stage them, after fetch-source's clone and before the build.
-	if inject, injVols, ok := additionalFilesInjection(nix.AdditionalFiles, image, additionalFilesConfigMapName(in.name)); ok {
+	if inject, injVols, ok := additionalFilesInjection(nix.AdditionalFiles, image, additionalFilesConfigMapName(in.name), nixConfig); ok {
 		for _, v := range injVols {
 			tmpl.Spec.Volumes = upsertVolume(tmpl.Spec.Volumes, v)
 		}
