@@ -39,6 +39,11 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,format=short
+            # The raw tag, `v`-prefix included. The semver forms below strip it
+            # (`v1.0.0` -> `1.0.0`), and the release's install.yaml pins the image
+            # by ref name — so without this the release references a tag that was
+            # never published.
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
