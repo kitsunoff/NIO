@@ -452,6 +452,80 @@ func TestCoarseMemberStatus_FailedRunIsFailed(t *testing.T) {
 	}
 }
 
+// The cluster phase and the member status must never disagree. A child can sit in
+// Progressing or Suspended while its last finished run was a failure (observe()
+// bails out with Progressing whenever the projected CronJob cannot be read), and
+// reading only the phase there reported "cluster converged" with every member
+// Failed.
+func TestClusterPhaseAgreesWithMemberStatusOnAFailedRun(t *testing.T) {
+	failedAt := metav1.Now()
+	succeededAt := metav1.NewTime(failedAt.Add(-time.Hour))
+
+	for _, phase := range []string{
+		niov1alpha1.PhaseProgressing,
+		niov1alpha1.PhaseSuspended,
+		niov1alpha1.PhaseReady,
+	} {
+		t.Run(phase, func(t *testing.T) {
+			cron := &niov1alpha1.NixCronJob{}
+			cron.Status.Phase = phase
+			cron.Status.LastFailedTime = &failedAt
+			// Monotonic by design, so an older success survives the failure.
+			cron.Status.LastSuccessfulTime = &succeededAt
+
+			gotPhase := clusterPhase(cron, true, 3)
+			gotMember := coarseMemberStatus(cron, true, niov1alpha1.MemberStatusApplied)
+
+			if gotPhase != niov1alpha1.NixClusterPhaseDegraded {
+				t.Errorf("cluster phase = %q, want %q", gotPhase, niov1alpha1.NixClusterPhaseDegraded)
+			}
+			if gotMember != niov1alpha1.MemberStatusFailed {
+				t.Errorf("member status = %q, want %q", gotMember, niov1alpha1.MemberStatusFailed)
+			}
+		})
+	}
+}
+
+// A builder mismatch usually becomes provable AFTER the converge cron exists:
+// hardware facts arrive on a later discovery pass, and members get added to
+// long-running clusters. Refusing to update the cron is not enough — the existing
+// one keeps firing converges that cannot succeed.
+func TestSuspendConvergeCronJob(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := niov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	cluster := &niov1alpha1.NixCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+	}
+	cron := &niov1alpha1.NixCronJob{
+		ObjectMeta: metav1.ObjectMeta{Name: convergeCronName("prod"), Namespace: "infra"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, cron).Build()
+	r := &NixClusterReconciler{Client: c, Scheme: scheme}
+
+	if err := r.suspendConvergeCronJob(context.Background(), cluster); err != nil {
+		t.Fatalf("suspendConvergeCronJob: %v", err)
+	}
+	var got niov1alpha1.NixCronJob
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Name: convergeCronName("prod"), Namespace: "infra"}, &got); err != nil {
+		t.Fatalf("get cron: %v", err)
+	}
+	if !got.Spec.Nix.Suspend {
+		t.Error("the converge cron must be suspended while the cluster is provably misconfigured")
+	}
+
+	// Idempotent, and a missing cron is not an error (nothing to stop yet).
+	if err := r.suspendConvergeCronJob(context.Background(), cluster); err != nil {
+		t.Errorf("suspending twice must be a no-op, got %v", err)
+	}
+	absent := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "infra"}}
+	if err := r.suspendConvergeCronJob(context.Background(), absent); err != nil {
+		t.Errorf("no cron yet must not be an error, got %v", err)
+	}
+}
+
 // latestRunFailed is the shared "is the most recent finished run a failure?"
 // predicate; both the cron's own phase and the cluster's member status use it.
 func TestLatestRunFailed(t *testing.T) {

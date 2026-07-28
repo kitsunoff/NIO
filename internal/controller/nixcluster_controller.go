@@ -188,8 +188,14 @@ func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Delegating builds sets max-jobs = 0, so a builder that cannot produce a
 	// member's system fails the converge with an opaque nix error an hour later.
-	// Refuse up front when the mismatch is provable.
+	// Refuse when the mismatch is provable — and suspend the converge child, since
+	// the usual ordering is that the cron already exists by the time the member's
+	// architecture is known (facts arrive after the first reconcile, and members
+	// get added to long-running clusters).
 	if err := r.checkBuilderCoversMembers(ctx, &cluster, byName, groupStatuses); err != nil {
+		if serr := r.suspendConvergeCronJob(ctx, &cluster); serr != nil {
+			log.Error(serr, "failed to suspend the converge cron on a builder mismatch")
+		}
 		return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseBlocked, reasonBuilderSystemMismatch, err)
 	}
 
@@ -480,6 +486,26 @@ func (r *NixClusterReconciler) ensureConvergeCronJob(
 	return err
 }
 
+// suspendConvergeCronJob pauses an existing converge child. Used when the cluster
+// is provably misconfigured: leaving the cron running would fire a converge that
+// cannot succeed on every tick while the cluster reports Blocked. A no-op when no
+// cron exists yet, and reversible — the next successful reconcile rewrites the
+// spec from `desiredConvergeCronJob`, which does not set Suspend.
+func (r *NixClusterReconciler) suspendConvergeCronJob(
+	ctx context.Context, cluster *niov1alpha1.NixCluster,
+) error {
+	var cron niov1alpha1.NixCronJob
+	key := client.ObjectKey{Namespace: cluster.Namespace, Name: convergeCronName(cluster.Name)}
+	if err := r.Get(ctx, key, &cron); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if cron.Spec.Nix.Suspend {
+		return nil
+	}
+	cron.Spec.Nix.Suspend = true
+	return r.Update(ctx, &cron)
+}
+
 // nixSystemForArch maps a Machine's reported architecture onto the nix system
 // string a NixBuilder advertises. Only the two architectures NIO actually
 // supports are mapped: anything else returns "" and proves nothing, so the
@@ -516,6 +542,14 @@ func (r *NixClusterReconciler) checkBuilderCoversMembers(
 	var builder niov1alpha1.NixBuilder
 	key := client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.BuilderRef.Name}
 	if err := r.Get(ctx, key, &builder); err != nil {
+		// A builder that does not exist yet is not a mismatch — the converge child
+		// stalls with InfraNotReady and the cluster mirrors that. Any other error
+		// (RBAC, API outage) equally proves nothing, but is worth saying out loud
+		// instead of looking like a clean check.
+		if !apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).V(1).Info("builder preflight skipped: NixBuilder unreadable",
+				"builder", key.Name, "error", err.Error())
+		}
 		return nil
 	}
 	if len(builder.Spec.Systems) == 0 {
@@ -609,6 +643,13 @@ func clusterPhase(cron *niov1alpha1.NixCronJob, haveCron bool, totalMembers int)
 	// the cluster itself is broken.
 	if convergeStall(cron, haveCron) != nil {
 		return niov1alpha1.NixClusterPhaseBlocked
+	}
+	// Same predicate as coarseMemberStatus, and for the same reason: the run
+	// outcome outranks the child's phase, which can be Progressing or Suspended
+	// while the last finished run was a failure. Reading only the phase here would
+	// let the cluster report Ready while every member reports Failed.
+	if failed, _ := latestRunFailed(cron.Status.LastFailedTime, cron.Status.LastSuccessfulTime); failed {
+		return niov1alpha1.NixClusterPhaseDegraded
 	}
 	switch cron.Status.Phase {
 	case niov1alpha1.PhaseFailed, niov1alpha1.PhaseDegraded:

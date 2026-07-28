@@ -371,3 +371,81 @@ doc now documents the preflight, the new reason, and how a failing converge is
 reported. Left as noted follow-ups: `r.fail` requeues with error backoff for a
 configuration mistake that cannot self-heal without a spec edit (consistent with
 every other `fail` call site, so changing it is a separate decision).
+
+## 2026-07-28 — night run iteration 4 — Gate B — the round-3 fixes' own defects
+
+Gate A green; Gate C passed again on the round-3 code (20/20 specs, 635s). The
+fourth review round found five defects, all created by the round-3 fixes and all
+in the status-reporting/preflight surface this branch owns.
+
+### D1 (must-fix) — the architecture scan created a self-retriggering reconcile loop
+- Symptom: `scanArchitecture` stamped `LastHardwareScanTime` on every successful
+  discovery, so every reconcile became a real status write. A status write on a
+  watched object re-enqueues it (`For(&Machine{})` carries no predicate), so the
+  Machine controller re-ran continuously — SSHing into and running a remote shell
+  on every reachable node each turn, and re-enqueueing every NixCluster (which
+  watches Machines) to re-render node files. P9 in this log already measured that
+  flood: ~36 passes/minute where the code intends one per 60s.
+- Fix: write only when the value changed, and skip the scan entirely unless the
+  last scan is older than `HardwareScanInterval` (12h — an architecture does not
+  change without a reinstall).
+- Status: fixed (commit HEAD)
+
+### D2 (must-fix) — any output was stored as the architecture
+- Symptom: `RunCommand` merges stderr into stdout, so one line of login/sshd
+  chatter made the stored "architecture" `mesg: ttyname failed…\nx86_64`. That
+  publishes garbage in status AND silently disables the builder preflight, since
+  `nixSystemForArch` does not recognise it — the exact outcome D1's round was
+  meant to close. The doc comment claimed implausible answers were ignored.
+- Fix: take the last line that actually looks like an architecture token; record
+  nothing when there is none.
+- Status: fixed (commit HEAD)
+
+### D3 (must-fix) — a failing day-two run reported the machine as never configured
+- Symptom: both new NixosConfiguration branches routed into `setDegraded`, which
+  hardcoded `applied=false`. A one-minute network blip, or a typo'd storeRef, then
+  reported `Applied=False` on a host that demonstrably carries a configuration —
+  contradicting the normative rule in nixosconfiguration-v1alpha2.md.
+- Fix: `setDegraded` takes the real applied value; a full-disk install that never
+  succeeded still passes `false` explicitly.
+- Status: fixed (commit HEAD)
+
+### D4 (must-fix) — clusterPhase and coarseMemberStatus could contradict each other
+- Symptom: only the member status consulted `latestRunFailed`. A child sitting in
+  Progressing or Suspended with a failure newer than its last success (reachable:
+  `observe` returns Progressing whenever the projected CronJob cannot be read)
+  made the cluster report `Ready`/"cluster converged" while every member reported
+  `Failed`.
+- Fix: `clusterPhase` applies the same predicate, ahead of the phase switch.
+- Status: fixed (commit HEAD)
+
+### D5 (must-fix) — the builder preflight never stopped a converge already scheduled
+- Symptom: the check ran just before `ensureConvergeCronJob`, so it only
+  prevented creating or updating the child. The common ordering is the opposite:
+  hardware facts arrive after the first reconcile created the cron, and members
+  get added to long-running clusters. The existing cron kept firing converges
+  that could not succeed while the cluster displayed `Blocked`.
+- Fix: on a provable mismatch, suspend the converge child (`nix.suspend`, already
+  honoured by the NixCronJob) before reporting Blocked. Reversible: the next
+  successful reconcile rewrites the spec without Suspend.
+- Status: fixed (commit HEAD)
+
+Also addressed from the same round: the preflight now logs when a NixBuilder is
+unreadable for a reason other than NotFound, instead of looking like a clean
+check. The Russian design drafts moved to a gitignored `.notes/` directory, so
+`docs/design/` is free for the English documentation E4 writes.
+
+### D6 (open, follow-up) — pre-existing issues recorded rather than fixed here
+The review also raised, and I am deliberately not fixing on this branch:
+- `MachineReconciler` flips `Reconciling` True→False every pass and writes status
+  twice, with no predicate on its watch — a self-retrigger with no rate limiting.
+  D1 no longer feeds it, but the flip-flop itself predates this work.
+- A running one-off `-manual` Job never appears in `ActiveJobs`, so
+  `MemberStatusApplying` is unreachable on the cluster's default path.
+- `Owns(&batchv1.Job{})` does not enqueue the NixCronJob when a *scheduled* Job
+  fails, so the new failure signal lands at the next poll rather than immediately.
+- A failing converge reports only a timestamp; naming the failed Job and its
+  reason would point at the pod to inspect.
+- `r.fail` requeues with error backoff for configuration mistakes that cannot
+  self-heal without a spec edit.
+- Status: open (follow-up, not gating this branch)

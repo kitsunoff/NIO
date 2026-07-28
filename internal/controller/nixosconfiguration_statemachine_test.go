@@ -329,6 +329,73 @@ func TestReconcile_DayTwoStalledOnInfra_DoesNotClaimTheRunFailed(t *testing.T) {
 	if !strings.Contains(ready.Message, stallMsg) {
 		t.Errorf("Ready message must name the unresolved reference, got %q", ready.Message)
 	}
+	// Nothing was applied yet on this config, so Applied is legitimately False —
+	// see the sibling test for the case that matters.
+	if applied := meta.FindStatusCondition(got.Status.Conditions, niov1alpha1.ConditionApplied); applied != nil &&
+		applied.Status == metav1.ConditionTrue {
+		t.Error("Applied must not be True before anything was applied")
+	}
+}
+
+// Applied describes the MACHINE, not the latest run: a host that already carries
+// a configuration keeps Applied=True while convergence is broken. Otherwise a
+// one-minute network blip — or a typo in storeRef — reports a working machine as
+// never configured.
+func TestReconcile_DayTwoFailure_KeepsAppliedTrue(t *testing.T) {
+	r, c := smReconciler(t, smConfig(), smMachine())
+	smReconcile(t, r, "web")
+
+	var cron niov1alpha1.NixCronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+		t.Fatalf("day-2 cron not created: %v", err)
+	}
+
+	// A converge succeeded once — the machine is configured.
+	succeeded := metav1.NewTime(time.Now().Add(-time.Hour))
+	cron.Status.Phase = niov1alpha1.PhaseReady
+	cron.Status.RolledOutRevision = smRev
+	cron.Status.LastSuccessfulTime = &succeeded
+	if err := c.Status().Update(context.Background(), &cron); err != nil {
+		t.Fatalf("seed cron success: %v", err)
+	}
+	smReconcile(t, r, "web")
+
+	for name, seed := range map[string]func(){
+		"failed run": func() {
+			cron.Status.Phase = niov1alpha1.PhaseDegraded
+			failed := metav1.Now()
+			cron.Status.LastFailedTime = &failed
+		},
+		"infra stall": func() {
+			cron.Status.Phase = niov1alpha1.PhaseDegraded
+			meta.SetStatusCondition(&cron.Status.Conditions, metav1.Condition{
+				Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+				Reason: reasonInfraNotReady, Message: `NixStore "cache-store" not found`,
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := c.Get(context.Background(),
+				types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+				t.Fatalf("get cron: %v", err)
+			}
+			seed()
+			if err := c.Status().Update(context.Background(), &cron); err != nil {
+				t.Fatalf("seed cron status: %v", err)
+			}
+
+			smReconcile(t, r, "web")
+
+			got := getConfig(t, c, "web")
+			if got.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
+				t.Errorf("phase = %q, want Degraded", got.Status.Phase)
+			}
+			applied := meta.FindStatusCondition(got.Status.Conditions, niov1alpha1.ConditionApplied)
+			if applied == nil || applied.Status != metav1.ConditionTrue {
+				t.Errorf("Applied = %+v, want True — a previous converge did apply a configuration", applied)
+			}
+		})
+	}
 }
 
 // TestReconcile_FullInstall_FailureBoundedByRetries checks a failing install is

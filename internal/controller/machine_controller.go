@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -223,14 +224,36 @@ func (r *MachineReconciler) reconcile(ctx context.Context, machine *niov1alpha1.
 	return ctrl.Result{RequeueAfter: DiscoveryInterval}, nil
 }
 
+// HardwareScanInterval is how often the architecture is re-read from a node. A
+// machine's architecture does not change without a reinstall, so this is
+// deliberately far longer than DiscoveryInterval: the scan costs an SSH session
+// on every node it runs on.
+const HardwareScanInterval = 12 * time.Hour
+
+// archPattern is what a plausible `uname -m` answer looks like. Anything else is
+// noise (a login banner, an sshd warning) and is not recorded — the scanned value
+// is published in status and read by the NixCluster builder preflight, so a
+// garbage value would silently disable that check.
+var archPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
 // scanArchitecture records the machine's CPU architecture from `uname -m`.
 //
-// Best-effort by design: it runs on an already-proven connection and a failure
-// (or an unrecognisable answer) leaves the previously collected facts untouched
-// rather than reporting a machine as broken. Discoverability is what the Machine
+// Best-effort by design: it runs on an already-proven connection, and a failure
+// or an implausible answer leaves the previously collected facts untouched rather
+// than reporting a machine as broken. Discoverability is what the Machine
 // controller is responsible for; this is an extra fact gathered on the way.
+//
+// It writes only when the value actually changed. Stamping a timestamp on every
+// pass would make each reconcile a real status write, and a status write on a
+// watched object re-enqueues it — a self-sustaining reconcile loop that also
+// SSHes into every node in the fleet on each turn.
 func (r *MachineReconciler) scanArchitecture(ctx context.Context, machine *niov1alpha1.Machine) {
 	log := logf.FromContext(ctx)
+
+	if scanned := machine.Status.LastHardwareScanTime; scanned != nil &&
+		time.Since(scanned.Time) < HardwareScanInterval {
+		return
+	}
 
 	sshConfig, err := r.buildSSHConfig(ctx, machine)
 	if err != nil {
@@ -245,11 +268,24 @@ func (r *MachineReconciler) scanArchitecture(ctx context.Context, machine *niov1
 		log.V(1).Info("architecture scan failed", "host", machine.Spec.Host, "error", err)
 		return
 	}
-	arch := strings.TrimSpace(out)
+
+	// RunCommand merges stderr into stdout, so the answer is the last plausible
+	// line rather than the whole output.
+	arch := ""
+	for _, line := range strings.Split(out, "\n") {
+		if candidate := strings.TrimSpace(line); archPattern.MatchString(candidate) {
+			arch = candidate
+		}
+	}
 	if arch == "" {
+		log.V(1).Info("architecture scan returned no plausible value",
+			"host", machine.Spec.Host, "output", out)
 		return
 	}
 
+	if machine.Status.HardwareFacts != nil && machine.Status.HardwareFacts.Architecture == arch {
+		return
+	}
 	if machine.Status.HardwareFacts == nil {
 		machine.Status.HardwareFacts = &niov1alpha1.HardwareFacts{}
 	}

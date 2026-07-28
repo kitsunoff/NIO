@@ -32,10 +32,10 @@ go.work
 # Agent scratch: worktrees and session state, never part of the repo
 .claude/
 
-# Internal run logs and narrative drafts: local only, never published
+# Local-only working notes: Russian-language design drafts, session handoffs and
+# agent run logs. Kept on disk, never published — see .notes/README for what is
+# in there. Ignoring the directory (rather than individual doc paths) leaves
+# docs/design/ free for English documentation.
+/.notes/
 /.agent-e2e/NIGHT-TODO.md
 /.agent-e2e/NIGHT-REPORT.md
-/SESSION-HANDOFF.md
-/docs/design/nio-go-rewrite.md
-/docs/design/architecture.md
-/docs/design/nixcluster-deep-dive.md
