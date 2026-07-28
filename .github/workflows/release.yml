@@ -41,6 +41,19 @@ jobs:
             echo '```'
           } > dist/notes.md
 
+      # A release whose install.yaml pins an image tag that does not exist is not a
+      # release. Fail here rather than let someone discover it with kubectl.
+      - name: Verify install.yaml pins an image that exists
+        run: |
+          set -euo pipefail
+          image="$(grep --only-matching --extended-regexp 'ghcr\.io/[^[:space:]]+' dist/install.yaml | sort --unique)"
+          echo "install.yaml pins: $image"
+          test "$(printf '%s\n' "$image" | wc -l)" -eq 1
+          docker buildx imagetools inspect "$image" > /tmp/manifest.txt
+          cat /tmp/manifest.txt
+          grep --quiet 'linux/amd64' /tmp/manifest.txt
+          grep --quiet 'linux/arm64' /tmp/manifest.txt
+
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
