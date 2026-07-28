@@ -228,7 +228,8 @@ func (r *NixosConfigurationReconciler) reconcileInstall(ctx context.Context, con
 			if config.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
 				r.Recorder.Event(config, corev1.EventTypeWarning, "InstallFailed", msg)
 			}
-			r.setDegraded(config, msg)
+			// A full-disk install that never succeeded left nothing on the machine.
+			r.setDegraded(config, msg, false)
 			return false, ctrl.Result{}, nil
 		}
 		// Under the cap: count this failure and delete-and-recreate the child.
@@ -259,6 +260,12 @@ func (r *NixosConfigurationReconciler) reconcileDayTwo(ctx context.Context, conf
 
 	gitSynced := meta.FindStatusCondition(cron.Status.Conditions, niov1alpha1.ConditionGitSynced)
 
+	// Applied is a fact about the MACHINE, not about the latest run: a completed
+	// full-disk install, or any successful day-two run, means a configuration is
+	// on the host. It must survive a stalled or failing converge — otherwise a
+	// one-minute network blip reports a working machine as never configured.
+	applied := config.Status.FullDiskInstallCompleted || cron.Status.LastSuccessfulTime != nil
+
 	switch {
 	case cron.Status.Phase == niov1alpha1.PhaseReady && cron.Status.LastSuccessfulTime != nil:
 		config.Status.LastAppliedTime = cron.Status.LastSuccessfulTime
@@ -272,18 +279,21 @@ func (r *NixosConfigurationReconciler) reconcileDayTwo(ctx context.Context, conf
 		}
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 
+	// A day-two cron stalled on a missing NixStore/NixBuilder never ran, so
+	// claiming the run failed is wrong — and the reference name it is waiting on
+	// is the only useful thing to report.
+	case convergeStall(cron, true) != nil:
+		r.setDegraded(config, "Day-2 convergence is stalled: "+convergeStall(cron, true).Message, applied)
+		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
+
 	case cron.Status.Phase == niov1alpha1.PhaseDegraded || cron.Status.Phase == niov1alpha1.PhaseFailed:
-		r.setDegraded(config, "Day-2 convergence run failed")
+		r.setDegraded(config, "Day-2 convergence run failed", applied)
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
 
 	default:
 		if cron.Status.LastSuccessfulTime != nil {
 			config.Status.LastAppliedTime = cron.Status.LastSuccessfulTime
 		}
-		// Applied = install-success OR day-2 lastSuccessfulTime: a completed
-		// full-disk install already put a configuration on the machine, so
-		// Applied stays True even while day-2 is still Converging.
-		applied := config.Status.FullDiskInstallCompleted || cron.Status.LastSuccessfulTime != nil
 		r.setPhase(config, niov1alpha1.NixosConfigPhaseConverging, niov1alpha1.ReasonConverging,
 			"Day-2 convergence in progress", applied, gitSynced)
 		return ctrl.Result{RequeueAfter: RequeueInterval}, nil
@@ -778,8 +788,13 @@ func (r *NixosConfigurationReconciler) setBlocked(config *niov1alpha1.NixosConfi
 }
 
 // setDegraded is a convenience for the Degraded phase.
-func (r *NixosConfigurationReconciler) setDegraded(config *niov1alpha1.NixosConfiguration, msg string) {
-	r.setPhase(config, niov1alpha1.NixosConfigPhaseDegraded, niov1alpha1.ReasonApplyFailed, msg, false, nil)
+// setDegraded reports a Degraded phase. `applied` is passed through rather than
+// assumed false: a machine that already carries a configuration keeps
+// Applied=True while convergence is broken.
+func (r *NixosConfigurationReconciler) setDegraded(
+	config *niov1alpha1.NixosConfiguration, msg string, applied bool,
+) {
+	r.setPhase(config, niov1alpha1.NixosConfigPhaseDegraded, niov1alpha1.ReasonApplyFailed, msg, applied, nil)
 }
 
 // findConfigsForMachine enqueues configs referencing a changed Machine.

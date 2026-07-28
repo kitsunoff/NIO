@@ -126,7 +126,7 @@ NIO-generated node files omit `nixosConfiguration` → inherit the default; thei
 
 ```yaml
 apiVersion: nio.homystack.com/v1alpha1
-kind: Cluster
+kind: NixCluster
 metadata: { name: prod, namespace: infra }
 spec:
   source:                         # downstream flake-parts repo (the cluster)
@@ -135,6 +135,8 @@ spec:
     credentialsRef: { name: git-creds }     # optional (private)
   sshKeyRef:  { name: cluster-ssh }          # cluster-wide SSH key (mounted into converge)
   ageKeyRef:  { name: cluster-age }          # sops age key (input; mounted)
+  storeRef:   { name: cache-store }          # optional; substituter for the converge pod
+  builderRef: { name: builder }              # optional; delegates the converge build
   dayTwoSchedule: "*/30 * * * *"             # converge cadence (default)
   nodeGroups:
     - name: control-plane
@@ -157,7 +159,7 @@ status:
       desired: 3
       selected: 3
   convergeJobRef: prod-converge
-  conditions: [ … ]                                  # Ready / Stalled / GitSynced
+  conditions: [ … ]                                  # Ready / Stalled / GitSynced / Underprovisioned
 ```
 
 Cluster is **namespaced** (same namespace as its Machines). `values` is a
@@ -191,6 +193,8 @@ Reconcile(cluster):
      nix.run             = ".#cluster-<cluster>"
      nix.args            = [ "converge" ]
      nix.additionalFiles = the rendered node files (inline)      # import-tree picks them up
+     nix.storeRef        = spec.storeRef                          # optional, pass-through
+     nix.builderRef      = spec.builderRef                        # optional, pass-through
      mounts              = sshKeyRef, ageKeyRef                   # into the converge pod
      cronJobTemplate     = { schedule: dayTwoSchedule, concurrencyPolicy: Forbid,
                              activeDeadlineSeconds: <generous> }
@@ -236,10 +240,54 @@ machine-uniqueness enforcement.
 - nixcluster (separate repo, `kitsunoff/nixcluster`): `cluster-modules/converge.nix`
   (+ `core.nix` imports it); `defaultNixosConfiguration` in core + member default;
   per-member JSON output from `converge`; augment steps in `k3s`/`sops`/`cozystack`.
-- NIO: `api/v1alpha1/cluster_types.go` (+ deepcopy/CRD); `internal/controller/
-  cluster_controller.go` (select + render node files + ensure converge cron +
+- NIO: `api/v1alpha1/nixcluster_types.go` (+ deepcopy/CRD); `internal/controller/
+  nixcluster_controller.go` (select + render node files + ensure converge cron +
   status); reuse `NixSpec.additionalFiles` for node-file delivery; RBAC for
   `nixcronjobs` + `machines`.
+
+## Build acceleration (`storeRef` / `builderRef`)
+
+Both are optional and independent of selection; they only change how the converge
+pod builds.
+
+| Field | What it actually does |
+| --- | --- |
+| `storeRef` | Adds the NixStore as a **substituter** for the converge pod, and supplies the SSH identity used to reach the builder. Nothing is pushed into the store unless a builder is also set, and then only the paths the pod builds directly. |
+| `builderRef` | Delegates the build to the NixBuilder (`max-jobs = 0`, so there is **no local fallback**). The member closures are realized on the builder and survive in **its** `/nix` — give that NixBuilder `spec.storage`, or the cache dies with the pod. |
+
+Consequences worth stating plainly:
+
+- A `NixBuilder` without `spec.systems` is advertised for both common Linux
+  architectures whether or not it can build them. Where the mismatch is
+  **provable** — the builder declares an explicit `spec.systems` and a selected
+  Machine has reported an architecture it does not cover — the reconcile refuses
+  up front: phase `Blocked`, `Stalled` with reason `BuilderSystemMismatch` naming
+  the member and the system it needs. Nothing is blocked on a guess: an
+  unqualified builder, a builder that does not exist yet, or a Machine whose
+  facts have not been collected all pass the check silently and fail (or not) at
+  converge time as before. The member architecture comes from
+  `Machine.status.hardwareFacts.architecture`, collected by the Machine
+  controller from `uname -m` on each successful discovery.
+- A missing or not-yet-ready store/builder **stalls** the converge child. The
+  cluster mirrors that child's `Stalled` condition (reason `InfraNotReady`, with
+  the message naming the reference), reports phase `Blocked`, and leaves members
+  at their last known status — a stalled converge applied nothing. The mirrored
+  condition is dropped as soon as a reconcile completes.
+
+## Reporting a failing converge
+
+A `CronJob` keeps scheduling regardless of whether its runs succeed, so the
+converge child's health comes from the runs, not from the schedule:
+
+- The NixCronJob scans the Jobs it owns — both the ones its CronJob scheduled and
+  the one-off Jobs fired by `triggerOnChange` — and records `lastFailedTime` and
+  `lastSuccessfulTime` from the same population. Both are monotonic, so a Job
+  pruned by a TTL or a history limit never resurrects a stale verdict.
+- While the most recent finished run is a failure, the child is `Degraded` with
+  reason `RunFailed`; the cluster maps that to phase `Degraded` and members
+  `Failed`.
+- A run happening at all clears any `Stalled` condition, so a live failure is
+  never hidden behind an out-of-date stall message.
 
 ## Testing
 

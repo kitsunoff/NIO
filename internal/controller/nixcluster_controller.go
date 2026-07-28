@@ -93,6 +93,7 @@ type NixClusterReconciler struct {
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixcronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=machines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixbuilders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -126,12 +127,15 @@ func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		byName[machineList.Items[i].Name] = &machineList.Items[i]
 	}
 
-	// Previous per-group members (for sticky selection).
+	// Previous per-group members (for sticky selection) and their last reported
+	// status (the honest answer when a converge never ran).
 	prev := make(map[string][]string, len(cluster.Status.NodeGroups))
+	prevStatus := make(map[string]string)
 	for _, g := range cluster.Status.NodeGroups {
 		names := make([]string, 0, len(g.Members))
 		for _, m := range g.Members {
 			names = append(names, m.Name)
+			prevStatus[m.Name] = m.Status
 		}
 		prev[g.Name] = names
 	}
@@ -182,6 +186,19 @@ func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseBlocked, niov1alpha1.ReasonInvalidNodeFile, err)
 	}
 
+	// Delegating builds sets max-jobs = 0, so a builder that cannot produce a
+	// member's system fails the converge with an opaque nix error an hour later.
+	// Refuse when the mismatch is provable — and suspend the converge child, since
+	// the usual ordering is that the cron already exists by the time the member's
+	// architecture is known (facts arrive after the first reconcile, and members
+	// get added to long-running clusters).
+	if err := r.checkBuilderCoversMembers(ctx, &cluster, byName, groupStatuses); err != nil {
+		if serr := r.suspendConvergeCronJob(ctx, &cluster); serr != nil {
+			log.Error(serr, "failed to suspend the converge cron on a builder mismatch")
+		}
+		return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseBlocked, reasonBuilderSystemMismatch, err)
+	}
+
 	if err := r.ensureConvergeCronJob(ctx, &cluster, nodeFiles); err != nil {
 		return r.fail(ctx, &cluster, niov1alpha1.NixClusterPhaseDegraded, niov1alpha1.ReasonFailed, err)
 	}
@@ -190,10 +207,10 @@ func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// (parsing per-member JSON is best-effort and deferred; O11 in the design).
 	var cron niov1alpha1.NixCronJob
 	haveCron := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: convergeCronName(cluster.Name)}, &cron) == nil
-	memberStatus := coarseMemberStatus(&cron, haveCron)
 	for gi := range groupStatuses {
 		for mi := range groupStatuses[gi].Members {
-			groupStatuses[gi].Members[mi].Status = memberStatus
+			member := &groupStatuses[gi].Members[mi]
+			member.Status = coarseMemberStatus(&cron, haveCron, prevStatus[member.Name])
 		}
 	}
 
@@ -434,6 +451,12 @@ func desiredConvergeCronJob(cluster *niov1alpha1.NixCluster, files []niov1alpha1
 				Args:            []string{"converge"},
 				AdditionalFiles: files,
 				TriggerOnChange: ptr(true),
+				// Optional store/builder acceleration: when the NixCluster
+				// references a NixStore/NixBuilder, the converge pod builds
+				// against the shared store instead of rebuilding the member
+				// closure in an ephemeral in-pod /nix on every run.
+				StoreRef:   cluster.Spec.StoreRef,
+				BuilderRef: cluster.Spec.BuilderRef,
 			},
 			CronJobTemplate: batchv1.CronJobSpec{
 				Schedule:          schedule,
@@ -463,10 +486,135 @@ func (r *NixClusterReconciler) ensureConvergeCronJob(
 	return err
 }
 
+// suspendConvergeCronJob pauses an existing converge child. Used when the cluster
+// is provably misconfigured: leaving the cron running would fire a converge that
+// cannot succeed on every tick while the cluster reports Blocked. A no-op when no
+// cron exists yet, and reversible — the next successful reconcile rewrites the
+// spec from `desiredConvergeCronJob`, which does not set Suspend.
+func (r *NixClusterReconciler) suspendConvergeCronJob(
+	ctx context.Context, cluster *niov1alpha1.NixCluster,
+) error {
+	var cron niov1alpha1.NixCronJob
+	key := client.ObjectKey{Namespace: cluster.Namespace, Name: convergeCronName(cluster.Name)}
+	if err := r.Get(ctx, key, &cron); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if cron.Spec.Nix.Suspend {
+		return nil
+	}
+	cron.Spec.Nix.Suspend = true
+	return r.Update(ctx, &cron)
+}
+
+// nixSystemForArch maps a Machine's reported architecture onto the nix system
+// string a NixBuilder advertises. Only the two architectures NIO actually
+// supports are mapped: anything else returns "" and proves nothing, so the
+// preflight stays silent rather than guessing.
+func nixSystemForArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "x86_64", "amd64":
+		return "x86_64-linux"
+	case "aarch64", "arm64":
+		return "aarch64-linux"
+	default:
+		return ""
+	}
+}
+
+// checkBuilderCoversMembers refuses a cluster whose builderRef provably cannot
+// build a selected member's architecture. Deliberately conservative — it only
+// reports a mismatch when every input is known:
+//
+//   - no builderRef, or the builder cannot be read: nothing to check here (the
+//     child stalls with InfraNotReady and the cluster mirrors that);
+//   - a NixBuilder with no spec.systems advertises both common Linux arches, so
+//     no claim is falsifiable;
+//   - a Machine that has not reported its architecture yet is skipped.
+func (r *NixClusterReconciler) checkBuilderCoversMembers(
+	ctx context.Context,
+	cluster *niov1alpha1.NixCluster,
+	byName map[string]*niov1alpha1.Machine,
+	groups []niov1alpha1.NodeGroupStatus,
+) error {
+	if cluster.Spec.BuilderRef == nil {
+		return nil
+	}
+	var builder niov1alpha1.NixBuilder
+	key := client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.BuilderRef.Name}
+	if err := r.Get(ctx, key, &builder); err != nil {
+		// A builder that does not exist yet is not a mismatch — the converge child
+		// stalls with InfraNotReady and the cluster mirrors that. Any other error
+		// (RBAC, API outage) equally proves nothing, but is worth saying out loud
+		// instead of looking like a clean check.
+		if !apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).V(1).Info("builder preflight skipped: NixBuilder unreadable",
+				"builder", key.Name, "error", err.Error())
+		}
+		return nil
+	}
+	if len(builder.Spec.Systems) == 0 {
+		return nil
+	}
+	supported := make(map[string]bool, len(builder.Spec.Systems))
+	for _, system := range builder.Spec.Systems {
+		supported[system] = true
+	}
+
+	var mismatches []string
+	for gi := range groups {
+		for _, member := range groups[gi].Members {
+			machine := byName[member.Name]
+			if machine == nil || machine.Status.HardwareFacts == nil {
+				continue
+			}
+			system := nixSystemForArch(machine.Status.HardwareFacts.Architecture)
+			if system == "" || supported[system] {
+				continue
+			}
+			mismatches = append(mismatches, fmt.Sprintf("%s needs %s", member.Name, system))
+		}
+	}
+	if len(mismatches) == 0 {
+		return nil
+	}
+	return fmt.Errorf("NixBuilder %q builds only [%s], but %s; converge delegates every build (max-jobs = 0) so there is no local fallback",
+		builder.Name, strings.Join(builder.Spec.Systems, " "), strings.Join(mismatches, ", "))
+}
+
+// convergeStall returns the converge cron's Stalled condition when it is stalled
+// on an unresolvable NixStore/NixBuilder reference. Deliberately narrow: the
+// child also stalls on git errors, which are a different failure with a
+// different meaning, and the clearing side (isMirroredStall) must recognise
+// exactly the same set of conditions this returns.
+func convergeStall(cron *niov1alpha1.NixCronJob, haveCron bool) *metav1.Condition {
+	if !haveCron {
+		return nil
+	}
+	cond := meta.FindStatusCondition(cron.Status.Conditions, niov1alpha1.ConditionStalled)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != reasonInfraNotReady {
+		return nil
+	}
+	return cond
+}
+
 // coarseMemberStatus derives a job-level per-node status from the converge cron.
-func coarseMemberStatus(cron *niov1alpha1.NixCronJob, haveCron bool) string {
+// prevStatus is what this member reported on the previous reconcile, used when
+// the current converge state says nothing new about the member.
+func coarseMemberStatus(cron *niov1alpha1.NixCronJob, haveCron bool, prevStatus string) string {
 	if !haveCron {
 		return niov1alpha1.MemberStatusPending
+	}
+	// A stalled converge applied nothing, so the member's status is unchanged —
+	// literally whatever it was before, not a guess derived from the cron.
+	if convergeStall(cron, haveCron) != nil {
+		if prevStatus != "" {
+			return prevStatus
+		}
+		return niov1alpha1.MemberStatusPending
+	}
+	// A cron whose most recent finished run failed did try to apply, and failed.
+	if failed, _ := latestRunFailed(cron.Status.LastFailedTime, cron.Status.LastSuccessfulTime); failed {
+		return niov1alpha1.MemberStatusFailed
 	}
 	switch cron.Status.Phase {
 	case niov1alpha1.PhaseFailed, niov1alpha1.PhaseDegraded:
@@ -490,6 +638,18 @@ func clusterPhase(cron *niov1alpha1.NixCronJob, haveCron bool, totalMembers int)
 	}
 	if !haveCron {
 		return niov1alpha1.NixClusterPhaseConverging
+	}
+	// Waiting on a dependency we cannot resolve is Blocked; Degraded would claim
+	// the cluster itself is broken.
+	if convergeStall(cron, haveCron) != nil {
+		return niov1alpha1.NixClusterPhaseBlocked
+	}
+	// Same predicate as coarseMemberStatus, and for the same reason: the run
+	// outcome outranks the child's phase, which can be Progressing or Suspended
+	// while the last finished run was a failure. Reading only the phase here would
+	// let the cluster report Ready while every member reports Failed.
+	if failed, _ := latestRunFailed(cron.Status.LastFailedTime, cron.Status.LastSuccessfulTime); failed {
+		return niov1alpha1.NixClusterPhaseDegraded
 	}
 	switch cron.Status.Phase {
 	case niov1alpha1.PhaseFailed, niov1alpha1.PhaseDegraded:
@@ -537,6 +697,11 @@ func (r *NixClusterReconciler) setConditions(
 		Reason: gitReason, ObservedGeneration: gen, Message: gitMsg,
 	})
 
+	// The converge child holds the only accurate diagnosis when it is stalled on
+	// an unresolvable storeRef/builderRef — mirror it onto the cluster so
+	// `kubectl describe` names the broken reference.
+	stall := convergeStall(cron, haveCron)
+
 	ready := cluster.Status.Phase == niov1alpha1.NixClusterPhaseReady
 	if ready {
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -552,11 +717,32 @@ func (r *NixClusterReconciler) setConditions(
 			reason = niov1alpha1.ReasonWaiting
 			msg = "no Machines selected for any nodeGroup"
 		}
+		if stall != nil {
+			reason = stall.Reason
+			msg = "converge is stalled: " + stall.Message
+		}
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type: niov1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: reason, ObservedGeneration: gen, Message: msg,
 		})
 	}
+
+	if stall != nil {
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+			Reason: stall.Reason, ObservedGeneration: gen,
+			Message: "converge is stalled: " + stall.Message,
+		})
+		return
+	}
+
+	// Reaching here means the reconcile got all the way through: selection,
+	// node-file rendering, the builder preflight and the converge child all
+	// succeeded. Every Stalled condition is therefore obsolete, whether we
+	// mirrored it from the child or set it ourselves in `fail` — a persisting
+	// failure re-sets it on the next failing reconcile, which returns long before
+	// this point.
+	meta.RemoveStatusCondition(&cluster.Status.Conditions, niov1alpha1.ConditionStalled)
 }
 
 // fail records a Degraded/Blocked + Stalled status and returns the error.

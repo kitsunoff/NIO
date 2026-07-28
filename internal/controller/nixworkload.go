@@ -45,7 +45,12 @@ const (
 	reasonProgressing    = "Progressing"
 	reasonReady          = "Ready"
 	reasonReplicaFailure = "ReplicaFailure"
-	reasonInitFailing    = "InitBuildFailing"
+	// reasonRunFailed marks a scheduled workload whose most recent run failed.
+	reasonRunFailed = "RunFailed"
+	// reasonBuilderSystemMismatch marks a cluster whose referenced NixBuilder
+	// provably cannot build a selected member's architecture.
+	reasonBuilderSystemMismatch = "BuilderSystemMismatch"
+	reasonInitFailing           = "InitBuildFailing"
 )
 
 // infraDeps carries the resolved store/builder wiring for pod rendering, plus a

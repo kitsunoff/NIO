@@ -43,15 +43,25 @@ const (
 	cronKind    = "nixcronjobs.nio.homystack.com"
 )
 
-// kcget runs `kubectl -n nio-clusters get ...` and returns trimmed stdout, or ""
-// on error (ideal for Eventually/Consistently polling on -o jsonpath).
+// kcget runs `kubectl -n nio-clusters get ...` and returns trimmed stdout, for
+// Eventually/Consistently polling on -o jsonpath.
+//
+// A failed invocation is retried once and then reported as an error string rather
+// than as "". Collapsing a kubectl failure into an empty result makes a harness
+// hiccup indistinguishable from "the controller wrote no members", which inside a
+// Consistently fails the assertion with a diagnosis that is simply wrong.
 func kcget(args ...string) string {
 	full := append([]string{"get", "-n", clustersNamespace}, args...)
-	out, err := utils.Run(exec.Command("kubectl", full...))
-	if err != nil {
-		return ""
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		out, err := utils.Run(exec.Command("kubectl", full...))
+		if err == nil {
+			return strings.TrimSpace(out)
+		}
+		lastErr = err
+		time.Sleep(time.Second)
 	}
-	return strings.TrimSpace(out)
+	return fmt.Sprintf("<kubectl failed: %v>", lastErr)
 }
 
 // kcdelete deletes resources in nio-clusters, ignoring not-found, bounded by a

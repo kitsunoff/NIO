@@ -575,6 +575,16 @@ func (in *NixClusterSpec) DeepCopyInto(out *NixClusterSpec) {
 		*out = new(SecretReference)
 		**out = **in
 	}
+	if in.StoreRef != nil {
+		in, out := &in.StoreRef, &out.StoreRef
+		*out = new(LocalObjectReference)
+		**out = **in
+	}
+	if in.BuilderRef != nil {
+		in, out := &in.BuilderRef, &out.BuilderRef
+		*out = new(LocalObjectReference)
+		**out = **in
+	}
 	if in.NodeGroups != nil {
 		in, out := &in.NodeGroups, &out.NodeGroups
 		*out = make([]NodeGroup, len(*in))
@@ -709,6 +719,10 @@ func (in *NixCronJobStatus) DeepCopyInto(out *NixCronJobStatus) {
 	}
 	if in.LastSuccessfulTime != nil {
 		in, out := &in.LastSuccessfulTime, &out.LastSuccessfulTime
+		*out = (*in).DeepCopy()
+	}
+	if in.LastFailedTime != nil {
+		in, out := &in.LastFailedTime, &out.LastFailedTime
 		*out = (*in).DeepCopy()
 	}
 	if in.ActiveJobs != nil {

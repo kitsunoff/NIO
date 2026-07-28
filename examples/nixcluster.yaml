@@ -1,0 +1,55 @@
+# A whole cluster: nodeGroups select Machines by label, and each group's opaque
+# `values` become that member's attrset in the generated node file. NIO renders
+# one node file per selected Machine and owns a single converge NixCronJob.
+#
+# Like the other examples this lives in namespace `apps` — storeRef/builderRef,
+# sshKeyRef and ageKeyRef are all resolved in the NixCluster's OWN namespace, so
+# the store and builder from nixstore.yaml/nixbuilder.yaml must sit here too.
+#
+# storeRef/builderRef are optional build acceleration:
+#   - builderRef is what makes day-two converges fast (the member closures are
+#     realized on the builder and stay in its /nix — so that NixBuilder needs
+#     `spec.storage`). It must be able to build the members' architecture:
+#     nixbuilder.yaml declares `systems: ["x86_64-linux"]`, so this example only
+#     fits an x86_64 fleet. For arm nodes, add "aarch64-linux" there — delegation
+#     sets max-jobs = 0, so there is no local fallback and a mismatch fails the
+#     converge instead of merely slowing it down.
+#   - storeRef adds the store as a substituter and supplies the SSH identity used
+#     to reach the builder.
+apiVersion: nio.homystack.com/v1alpha1
+kind: NixCluster
+metadata:
+  name: prod
+  namespace: apps
+spec:
+  source:
+    gitRepo: https://github.com/acme/prod-cluster
+    ref: main
+  # Cluster-wide SSH key: converge uses it to reach every member.
+  sshKeyRef:
+    name: cluster-ssh
+  # sops age key, mounted into the converge pod so committed secrets decrypt.
+  ageKeyRef:
+    name: cluster-age
+  storeRef:
+    name: store
+  builderRef:
+    name: linux-builder
+  dayTwoSchedule: "*/30 * * * *"
+  nodeGroups:
+    - name: control-plane
+      selector:
+        matchLabels:
+          role: server
+      # Optional: pick a stable, sticky subset of the matching Machines.
+      count: 3
+      values:
+        k3s:
+          role: server
+    - name: workers
+      selector:
+        matchLabels:
+          role: worker
+      values:
+        k3s:
+          role: agent
