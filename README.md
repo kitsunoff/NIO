@@ -66,15 +66,24 @@ Or build one consolidated manifest with an image pinned:
 
 ```sh
 make build-installer IMG=ghcr.io/kitsunoff/nio:main
-kubectl apply --filename dist/install.yaml
+kubectl apply --server-side --filename dist/install.yaml
 ```
 
-The image is published multi-arch (`linux/amd64`, `linux/arm64`) on every push to
-`main` as `ghcr.io/kitsunoff/nio:main` and `:sha-<short>`.
+Or straight from the release:
 
-> [!NOTE]
-> There is deliberately **no tagged release yet** — see
-> [Known limitations](#known-limitations).
+```sh
+kubectl apply --server-side \
+  --filename https://github.com/kitsunoff/NIO/releases/latest/download/install.yaml
+```
+
+> [!IMPORTANT]
+> `--server-side` is required, not a preference. These CRD schemas are larger than
+> the 256 KB limit on the annotation a client-side apply writes, so a plain
+> `kubectl apply` fails with `metadata.annotations: Too long`.
+
+The image is published multi-arch (`linux/amd64`, `linux/arm64`) on every push to
+`main` as `ghcr.io/kitsunoff/nio:main` and `:sha-<short>`; a tagged release publishes
+`:v1.0.0`, `:1.0.0` and `:1.0`.
 
 ## Converge one host
 
@@ -282,11 +291,11 @@ Resolved design decisions live in
 
 ## Known limitations
 
-- **No tagged release yet.** `govulncheck` reports 10 advisories reachable from
-  NIO's own code. Fixing them needs a dependency bump, which forces a newer
-  toolchain, which forces a newer golangci-lint, which surfaces 51 findings from
-  linters this project already enables. Announcing a 1.0 in that state would be
-  worse than announcing it late, so the `Security` workflow reports the findings on
+- **`v1.0.0` ships with 10 advisories reachable from NIO's own code**, disclosed in
+  the release notes rather than left to be discovered. Fixing them needs a
+  dependency bump, which forces a newer toolchain, which forces a newer
+  golangci-lint, which surfaces 51 findings from linters this project already
+  enables — tracked for `v1.0.1`. The `Security` workflow reports the findings on
   every run and is deliberately non-blocking until that chain lands.
 - **Per-member converge status is coarse.** It is derived from the run's outcome; the
   per-member JSON that converge emits is not parsed yet.
