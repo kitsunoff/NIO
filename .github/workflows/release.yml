@@ -37,8 +37,12 @@ jobs:
             echo "## Install"
             echo
             echo '```sh'
-            echo "kubectl apply --filename https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml"
+            echo "kubectl apply --server-side --filename https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml"
             echo '```'
+            echo
+            echo '`--server-side` is required, not a preference: these CRD schemas are'
+            echo 'larger than the 256 KB limit on the annotation client-side apply writes,'
+            echo 'so a plain `kubectl apply` fails with "metadata.annotations: Too long".'
           } > dist/notes.md
 
       # A release whose install.yaml pins an image tag that does not exist is not a
