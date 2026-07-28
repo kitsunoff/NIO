@@ -389,7 +389,7 @@ in the status-reporting/preflight surface this branch owns.
 - Fix: write only when the value changed, and skip the scan entirely unless the
   last scan is older than `HardwareScanInterval` (12h — an architecture does not
   change without a reinstall).
-- Status: fixed (commit HEAD)
+- Status: fixed (commit a7ae355)
 
 ### D2 (must-fix) — any output was stored as the architecture
 - Symptom: `RunCommand` merges stderr into stdout, so one line of login/sshd
@@ -399,7 +399,7 @@ in the status-reporting/preflight surface this branch owns.
   meant to close. The doc comment claimed implausible answers were ignored.
 - Fix: take the last line that actually looks like an architecture token; record
   nothing when there is none.
-- Status: fixed (commit HEAD)
+- Status: fixed (commit a7ae355)
 
 ### D3 (must-fix) — a failing day-two run reported the machine as never configured
 - Symptom: both new NixosConfiguration branches routed into `setDegraded`, which
@@ -408,7 +408,7 @@ in the status-reporting/preflight surface this branch owns.
   contradicting the normative rule in nixosconfiguration-v1alpha2.md.
 - Fix: `setDegraded` takes the real applied value; a full-disk install that never
   succeeded still passes `false` explicitly.
-- Status: fixed (commit HEAD)
+- Status: fixed (commit a7ae355)
 
 ### D4 (must-fix) — clusterPhase and coarseMemberStatus could contradict each other
 - Symptom: only the member status consulted `latestRunFailed`. A child sitting in
@@ -417,7 +417,7 @@ in the status-reporting/preflight surface this branch owns.
   made the cluster report `Ready`/"cluster converged" while every member reported
   `Failed`.
 - Fix: `clusterPhase` applies the same predicate, ahead of the phase switch.
-- Status: fixed (commit HEAD)
+- Status: fixed (commit a7ae355)
 
 ### D5 (must-fix) — the builder preflight never stopped a converge already scheduled
 - Symptom: the check ran just before `ensureConvergeCronJob`, so it only
@@ -428,7 +428,7 @@ in the status-reporting/preflight surface this branch owns.
 - Fix: on a provable mismatch, suspend the converge child (`nix.suspend`, already
   honoured by the NixCronJob) before reporting Blocked. Reversible: the next
   successful reconcile rewrites the spec without Suspend.
-- Status: fixed (commit HEAD)
+- Status: fixed (commit a7ae355)
 
 Also addressed from the same round: the preflight now logs when a NixBuilder is
 unreadable for a reason other than NotFound, instead of looking like a clean
