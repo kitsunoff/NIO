@@ -484,7 +484,7 @@ test/e2e/nixcluster_test.go:176
   3-hour-old cluster where `kubectl create clusterrolebinding` already existed —
   the P8 pattern again.
 - Fix: `kcget` retries once and reports the error instead of masking it as empty,
-  so a harness hiccup names itself (commit e0f2c1a). Gate C run #7, on a fresh
+  so a harness hiccup names itself (commit 9d90d70). Gate C run #7, on a fresh
   cluster: `Ran 20 of 20 Specs ... SUCCESS! -- 20 Passed | 0 Failed` in 583s.
 - Lesson for this environment (already true of P8): a FAILED `make test-e2e` leaves
   the Kind cluster behind, so the next run must start by deleting it.
