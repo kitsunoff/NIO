@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Pre-commit hook: refuse to commit secret material.
+#
+# Install with:
+#   ln -sf ../../hack/pre-commit .git/hooks/pre-commit
+#
+# This repository published a real private SSH key once. The hook is the cheap
+# local half of the defence; the CI job is the half that cannot be skipped.
+#
+# gitleaks comes from nixpkgs for the duration of the run, so nothing has to be
+# installed globally. If nix is unavailable the hook says so and lets the commit
+# through rather than blocking work — CI still enforces it.
+set -euo pipefail
+
+if ! command -v nix >/dev/null 2>&1; then
+  echo "pre-commit: nix not found, skipping the secret scan (CI still enforces it)" >&2
+  exit 0
+fi
+
+echo "pre-commit: scanning staged changes for secrets..." >&2
+if ! nix shell nixpkgs#gitleaks --command \
+  gitleaks protect --staged --no-banner --redact --config .gitleaks.toml; then
+  cat >&2 <<'EOF'
+
+pre-commit: gitleaks found secret material in the staged changes.
+
+Nothing was committed. If this is a false positive, add a narrow allowlist entry
+to .gitleaks.toml — narrow, because a broad allowlist is how the next real key
+gets through.
+EOF
+  exit 1
+fi

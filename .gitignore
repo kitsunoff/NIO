@@ -37,5 +37,4 @@ go.work
 # in there. Ignoring the directory (rather than individual doc paths) leaves
 # docs/design/ free for English documentation.
 /.notes/
-/.agent-e2e/NIGHT-TODO.md
-/.agent-e2e/NIGHT-REPORT.md
+/.agent-e2e/
