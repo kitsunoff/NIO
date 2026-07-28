@@ -1,0 +1,39 @@
+# gitleaks configuration.
+#
+# The default ruleset, plus allowlists for the things this repository legitimately
+# commits. Kept deliberately narrow: an allowlist that is too broad is how the next
+# real key gets through.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "openssh-private-key"
+description = "OpenSSH private key material"
+regex = '''-----BEGIN OPENSSH PRIVATE KEY-----'''
+keywords = ["BEGIN OPENSSH PRIVATE KEY"]
+
+  # Unit tests deliberately feed malformed key material to assert it is rejected.
+  # These are literals like "…PRIVATE KEY-----\ninvalid\n…", not keys.
+  [rules.allowlist]
+  regexTarget = "match"
+  regexes = [
+    '''-----BEGIN OPENSSH PRIVATE KEY-----\\n(invalid|test-key-content)''',
+  ]
+  paths = [
+    '''internal/ssh/client_test\.go''',
+    '''internal/applyjob/runner_test\.go''',
+  ]
+
+[allowlist]
+description = "Committed material that is encrypted or public by design"
+paths = [
+  # sops-encrypted files: the ciphertext is meant to be in git, and the age
+  # private key is not (verified absent from history).
+  '''.*\.sops\.ya?ml$''',
+  '''secrets/.*\.ya?ml$''',
+  # Public keys.
+  '''.*\.pub$''',
+  # Lock files carry hashes, not secrets.
+  '''flake\.lock$''',
+  '''go\.sum$''',
+]
