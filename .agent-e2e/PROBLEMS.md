@@ -449,3 +449,34 @@ The review also raised, and I am deliberately not fixing on this branch:
 - `r.fail` requeues with error backoff for configuration mistakes that cannot
   self-heal without a spec edit.
 - Status: open (follow-up, not gating this branch)
+
+## 2026-07-28 — night run iteration 5 — Gate C — S1 sticky-selection spec read an empty member list
+
+Gate C runs #1–#4 on this branch all passed 20/20. Run #5, on the round-4 code,
+failed one spec:
+
+```text
+NixCluster (tier-2) [It] selects a deterministic, stable, sticky subset (S1)
+[FAILED] Failed after 16.107s.
+Expected <string>:  to equal <string>: m-01 m-02 m-03
+test/e2e/nixcluster_test.go:176
+```
+
+- Symptom: the `Consistently` guarding "adding a lower-sorting Machine m-00 does
+  not evict an existing member" read an EMPTY member list once. Consistently fails
+  on a single non-matching poll, and an empty `status.nodeGroups[].members` means
+  that read saw no members at all — not a wrong subset.
+- Evidence: the two preceding assertions on the same object passed (the initial
+  selection and the stability re-touch), so selection worked; the value went from
+  `m-01 m-02 m-03` to empty and the spec aborted.
+- What it is NOT: the selection algorithm. `TestSelectGroupMembers` covers exactly
+  this sticky case (S1.5, "adding a lower name does not evict an existing member")
+  at unit level and is green, and the round-4 diff does not touch selection —
+  it touches the Machine architecture scan, the day-two Applied condition,
+  clusterPhase's use of the run outcome, and suspending the converge child.
+- Working hypothesis: a transient empty read rather than a logic regression, but
+  that is a hypothesis, not a diagnosis.
+- Next: re-run Gate C. A pass points at a flake in the spec's use of Consistently
+  right after a `kubectl apply`; a second failure at the same assertion makes it
+  real and worth controller logs.
+- Status: open (under investigation)
