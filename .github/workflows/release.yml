@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Assemble and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The release must be installable from its own artifacts, so install.yaml is
+      # built with the released image pinned — not with the Makefile's dev default.
+      - name: Build install.yaml with the released image pinned
+        run: |
+          make build-installer IMG=ghcr.io/${{ github.repository_owner }}/nio:${{ github.ref_name }}
+          mkdir -p dist
+          cat config/crd/bases/*.yaml > dist/crds.yaml
+
+      - name: Assemble release notes
+        run: |
+          {
+            cat docs/release-notes/${{ github.ref_name }}.md 2>/dev/null || true
+            echo
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "kubectl apply --filename https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml"
+            echo '```'
+          } > dist/notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file dist/notes.md \
+            --generate-notes \
+            dist/install.yaml dist/crds.yaml
