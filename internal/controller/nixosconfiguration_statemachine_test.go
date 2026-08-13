@@ -36,18 +36,18 @@ import (
 )
 
 const (
-	smName = "web"
+	smName = testNameWeb
 	smRev  = "cafef00d"
 )
 
 // smConfig builds a NixosConfiguration for the state-machine tests.
 func smConfig() *niov1alpha1.NixosConfiguration {
 	return &niov1alpha1.NixosConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: smName, Namespace: testNamespaceDefault},
 		Spec: niov1alpha1.NixosConfigurationSpec{
-			MachineRef: niov1alpha1.MachineReference{Name: "node-01"},
+			MachineRef: niov1alpha1.MachineReference{Name: testMachineNode01},
 			GitRepo:    "https://github.com/example/nixos.git",
-			Ref:        "main",
+			Ref:        defaultGitRef,
 			Flake:      "#web",
 		},
 	}
@@ -56,10 +56,10 @@ func smConfig() *niov1alpha1.NixosConfiguration {
 // smMachine builds a discoverable Machine with an SSH key.
 func smMachine() *niov1alpha1.Machine {
 	return &niov1alpha1.Machine{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testMachineNode01, Namespace: testNamespaceDefault},
 		Spec: niov1alpha1.MachineSpec{
-			Host:            "10.0.0.5",
-			SSHUser:         "root",
+			Host:            testMachineHost,
+			SSHUser:         testSSHUserRoot,
 			SSHKeySecretRef: &niov1alpha1.SecretReference{Name: "node-01-ssh"},
 		},
 		Status: niov1alpha1.MachineStatus{Discoverable: true},
@@ -102,7 +102,7 @@ func smReconcile(t *testing.T, r *NixosConfigurationReconciler, name string) {
 func smReconcileResult(t *testing.T, r *NixosConfigurationReconciler, name string) ctrl.Result {
 	t.Helper()
 	res, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
+		NamespacedName: types.NamespacedName{Name: name, Namespace: testNamespaceDefault},
 	})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -113,7 +113,7 @@ func smReconcileResult(t *testing.T, r *NixosConfigurationReconciler, name strin
 func getConfig(t *testing.T, c client.Client, name string) *niov1alpha1.NixosConfiguration {
 	t.Helper()
 	var cfg niov1alpha1.NixosConfiguration
-	if err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "default"}, &cfg); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: testNamespaceDefault}, &cfg); err != nil {
 		t.Fatalf("get config: %v", err)
 	}
 	return &cfg
@@ -126,9 +126,9 @@ func TestReconcile_NonInstall_ConvergingThenReady(t *testing.T) {
 	r, c := smReconciler(t, smConfig(), smMachine())
 
 	// First reconcile: finalizer added, day-2 cron created, Converging.
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	cfg := getConfig(t, c, "web")
+	cfg := getConfig(t, c, smName)
 	if !containsFinalizer(cfg.Finalizers, niov1alpha1.FinalizerName) {
 		t.Errorf("finalizer not added: %v", cfg.Finalizers)
 	}
@@ -137,13 +137,13 @@ func TestReconcile_NonInstall_ConvergingThenReady(t *testing.T) {
 	}
 
 	var cron niov1alpha1.NixCronJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebDayTwo, Namespace: testNamespaceDefault}, &cron); err != nil {
 		t.Fatalf("day-2 cron not created: %v", err)
 	}
 	if len(cron.OwnerReferences) != 1 || cron.OwnerReferences[0].Name != smName {
 		t.Errorf("day-2 cron ownerRef = %v, want controller ref to web", cron.OwnerReferences)
 	}
-	if cfg.Status.DayTwoCronJobRef != "web-day2" {
+	if cfg.Status.DayTwoCronJobRef != testNameWebDayTwo {
 		t.Errorf("DayTwoCronJobRef = %q", cfg.Status.DayTwoCronJobRef)
 	}
 
@@ -157,9 +157,9 @@ func TestReconcile_NonInstall_ConvergingThenReady(t *testing.T) {
 	}
 
 	// Second reconcile: Ready + machine writeback.
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	cfg = getConfig(t, c, "web")
+	cfg = getConfig(t, c, smName)
 	if cfg.Status.Phase != niov1alpha1.NixosConfigPhaseReady {
 		t.Errorf("phase = %q, want Ready", cfg.Status.Phase)
 	}
@@ -168,7 +168,7 @@ func TestReconcile_NonInstall_ConvergingThenReady(t *testing.T) {
 	}
 
 	var machine niov1alpha1.Machine
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "node-01", Namespace: "default"}, &machine); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testMachineNode01, Namespace: testNamespaceDefault}, &machine); err != nil {
 		t.Fatalf("get machine: %v", err)
 	}
 	if !machine.Status.HasConfiguration {
@@ -190,14 +190,14 @@ func TestReconcile_FullInstall_Path(t *testing.T) {
 	cfg.Spec.FullInstall = true
 	r, c := smReconciler(t, cfg, smMachine())
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseInstalling {
 		t.Errorf("phase = %q, want Installing", got.Status.Phase)
 	}
 	var install niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err != nil {
 		t.Fatalf("install NixJob not created: %v", err)
 	}
 	if len(install.OwnerReferences) != 1 || install.OwnerReferences[0].Name != smName {
@@ -210,19 +210,19 @@ func TestReconcile_FullInstall_Path(t *testing.T) {
 		t.Fatalf("seed install status: %v", err)
 	}
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	got = getConfig(t, c, "web")
+	got = getConfig(t, c, smName)
 	if !got.Status.FullDiskInstallCompleted {
 		t.Error("FullDiskInstallCompleted not set after install success")
 	}
 	// Install child deleted.
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err == nil {
 		t.Error("install NixJob should have been deleted after success")
 	}
 	// Day-2 cron created; phase Converging.
 	var cron niov1alpha1.NixCronJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebDayTwo, Namespace: testNamespaceDefault}, &cron); err != nil {
 		t.Fatalf("day-2 cron not created after install: %v", err)
 	}
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseConverging {
@@ -245,10 +245,10 @@ func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.
 	r, c := smReconciler(t, cfg, smMachine())
 
 	// First reconcile: install child created, phase Installing.
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	var install niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err != nil {
 		t.Fatalf("install NixJob not created: %v", err)
 	}
 
@@ -260,10 +260,10 @@ func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.
 
 	// Reconcile that observes success. markFullDiskInstallCompleted must persist
 	// completion durably before deleting the child.
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	// Completion is durably persisted (re-Get from the API, not the in-memory copy).
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	if !got.Status.FullDiskInstallCompleted {
 		t.Fatal("FullDiskInstallCompleted must be persisted after install success")
 	}
@@ -272,7 +272,7 @@ func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.
 	}
 
 	// The install child is deleted.
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err == nil {
 		t.Fatal("install NixJob should be deleted after success")
 	}
 
@@ -281,9 +281,9 @@ func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.
 	// (!FullDiskInstallCompleted) keeps reconcileInstall/ensureInstallNixJob from
 	// re-entering, so a second run of nixos-anywhere can never wipe the machine.
 	for i := 0; i < 3; i++ {
-		smReconcile(t, r, "web")
+		smReconcile(t, r, smName)
 		var recreated niov1alpha1.NixJob
-		if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &recreated); err == nil {
+		if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &recreated); err == nil {
 			t.Fatalf("install NixJob must NOT be recreated after success (follow-up reconcile %d)", i+1)
 		}
 	}
@@ -295,13 +295,13 @@ func TestReconcile_FullInstall_SuccessPersistsBeforeDeleteNoRecreate(t *testing.
 // the one useful fact — which reference it is waiting for.
 func TestReconcile_DayTwoStalledOnInfra_DoesNotClaimTheRunFailed(t *testing.T) {
 	cfg := smConfig()
-	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: "cache-store"}
+	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: testNameCacheStore}
 	r, c := smReconciler(t, cfg, smMachine())
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	var cron niov1alpha1.NixCronJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebDayTwo, Namespace: testNamespaceDefault}, &cron); err != nil {
 		t.Fatalf("day-2 cron not created: %v", err)
 	}
 
@@ -316,9 +316,9 @@ func TestReconcile_DayTwoStalledOnInfra_DoesNotClaimTheRunFailed(t *testing.T) {
 		t.Fatalf("seed cron status: %v", err)
 	}
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	ready := meta.FindStatusCondition(got.Status.Conditions, niov1alpha1.ConditionReady)
 	if ready == nil {
 		t.Fatal("Ready condition missing")
@@ -343,10 +343,10 @@ func TestReconcile_DayTwoStalledOnInfra_DoesNotClaimTheRunFailed(t *testing.T) {
 // never configured.
 func TestReconcile_DayTwoFailure_KeepsAppliedTrue(t *testing.T) {
 	r, c := smReconciler(t, smConfig(), smMachine())
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	var cron niov1alpha1.NixCronJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebDayTwo, Namespace: testNamespaceDefault}, &cron); err != nil {
 		t.Fatalf("day-2 cron not created: %v", err)
 	}
 
@@ -358,7 +358,7 @@ func TestReconcile_DayTwoFailure_KeepsAppliedTrue(t *testing.T) {
 	if err := c.Status().Update(context.Background(), &cron); err != nil {
 		t.Fatalf("seed cron success: %v", err)
 	}
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	for name, seed := range map[string]func(){
 		"failed run": func() {
@@ -376,7 +376,7 @@ func TestReconcile_DayTwoFailure_KeepsAppliedTrue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := c.Get(context.Background(),
-				types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err != nil {
+				types.NamespacedName{Name: testNameWebDayTwo, Namespace: testNamespaceDefault}, &cron); err != nil {
 				t.Fatalf("get cron: %v", err)
 			}
 			seed()
@@ -384,9 +384,9 @@ func TestReconcile_DayTwoFailure_KeepsAppliedTrue(t *testing.T) {
 				t.Fatalf("seed cron status: %v", err)
 			}
 
-			smReconcile(t, r, "web")
+			smReconcile(t, r, smName)
 
-			got := getConfig(t, c, "web")
+			got := getConfig(t, c, smName)
 			if got.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
 				t.Errorf("phase = %q, want Degraded", got.Status.Phase)
 			}
@@ -406,9 +406,9 @@ func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {
 	r, c := smReconciler(t, cfg, smMachine())
 
 	for attempt := 1; attempt <= MaxInstallRetries+1; attempt++ {
-		smReconcile(t, r, "web")
+		smReconcile(t, r, smName)
 		var install niov1alpha1.NixJob
-		err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install)
+		err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install)
 		if err != nil {
 			// Recreated on the next reconcile; skip seeding this round.
 			continue
@@ -418,10 +418,10 @@ func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {
 			t.Fatalf("seed install failure: %v", err)
 		}
 		// Trigger the failure handling.
-		smReconcile(t, r, "web")
+		smReconcile(t, r, smName)
 	}
 
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
 		t.Errorf("phase = %q, want Degraded after exhausting install retries (retries=%d)", got.Status.Phase, got.Status.InstallRetries)
 	}
@@ -436,7 +436,7 @@ func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {
 		// Keep the failing install child present and Failed so the failure branch
 		// is exercised on every extra reconcile.
 		var install niov1alpha1.NixJob
-		if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err == nil {
+		if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err == nil {
 			if install.Status.Failed == 0 {
 				install.Status.Failed = 1
 				if err := c.Status().Update(context.Background(), &install); err != nil {
@@ -444,13 +444,13 @@ func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {
 				}
 			}
 		}
-		res := smReconcileResult(t, r, "web")
+		res := smReconcileResult(t, r, smName)
 		if res.RequeueAfter != 0 {
 			t.Errorf("terminal Degraded must not requeue, got %+v", res)
 		}
 	}
 
-	got = getConfig(t, c, "web")
+	got = getConfig(t, c, smName)
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseDegraded {
 		t.Errorf("phase = %q, want Degraded after extra reconciles", got.Status.Phase)
 	}
@@ -459,7 +459,7 @@ func TestReconcile_FullInstall_FailureBoundedByRetries(t *testing.T) {
 	}
 	// The failing install child must NOT be deleted/recreated once terminal.
 	var install niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err != nil {
 		t.Errorf("install child should remain (not churned) once terminal-Degraded: %v", err)
 	}
 }
@@ -473,11 +473,11 @@ func TestReconcile_FullInstall_AppliedTrueWhileConverging(t *testing.T) {
 	r, c := smReconciler(t, cfg, smMachine())
 
 	// First reconcile: install child created, phase Installing.
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	// Simulate the install completing.
 	var install niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-install", Namespace: "default"}, &install); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebInstall, Namespace: testNamespaceDefault}, &install); err != nil {
 		t.Fatalf("install NixJob not created: %v", err)
 	}
 	install.Status.Succeeded = 1
@@ -486,9 +486,9 @@ func TestReconcile_FullInstall_AppliedTrueWhileConverging(t *testing.T) {
 	}
 
 	// Second reconcile: install success recorded, day-2 cron created, Converging.
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	if !got.Status.FullDiskInstallCompleted {
 		t.Fatal("FullDiskInstallCompleted not set after install success")
 	}
@@ -512,15 +512,15 @@ func TestReconcile_MachineNotDiscoverable_Blocked(t *testing.T) {
 	m.Status.Discoverable = false
 	r, c := smReconciler(t, smConfig(), m)
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseBlocked {
 		t.Errorf("phase = %q, want Blocked", got.Status.Phase)
 	}
 	// No children created.
 	var cron niov1alpha1.NixCronJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-day2", Namespace: "default"}, &cron); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebDayTwo, Namespace: testNamespaceDefault}, &cron); err == nil {
 		t.Error("day-2 cron must not be created for a non-discoverable machine")
 	}
 }
@@ -546,7 +546,7 @@ func TestReconcile_Uniqueness_SecondConfigBlocked(t *testing.T) {
 	}
 	// The second config must not create its own day-2 cron.
 	var cron niov1alpha1.NixCronJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-second-day2", Namespace: "default"}, &cron); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-second-day2", Namespace: testNamespaceDefault}, &cron); err == nil {
 		t.Error("blocked (non-owning) config must not create a day-2 cron")
 	}
 
@@ -569,11 +569,11 @@ func TestReconcile_Deletion_WithOnRemove_OrphanJob(t *testing.T) {
 
 	r, c := smReconciler(t, cfg, smMachine())
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	// Orphan decommission NixJob created, with NO ownerRef.
 	var job niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-onremove", Namespace: "default"}, &job); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebOnRemove, Namespace: testNamespaceDefault}, &job); err != nil {
 		t.Fatalf("decommission NixJob not created: %v", err)
 	}
 	if len(job.OwnerReferences) != 0 {
@@ -587,7 +587,7 @@ func TestReconcile_Deletion_WithOnRemove_OrphanJob(t *testing.T) {
 	}
 
 	// Config still present (finalizer held), phase Removing.
-	got := getConfig(t, c, "web")
+	got := getConfig(t, c, smName)
 	if got.Status.Phase != niov1alpha1.NixosConfigPhaseRemoving {
 		t.Errorf("phase = %q, want Removing", got.Status.Phase)
 	}
@@ -598,10 +598,10 @@ func TestReconcile_Deletion_WithOnRemove_OrphanJob(t *testing.T) {
 		t.Fatalf("seed decommission success: %v", err)
 	}
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	var after niov1alpha1.NixosConfiguration
-	err := c.Get(context.Background(), types.NamespacedName{Name: "web", Namespace: "default"}, &after)
+	err := c.Get(context.Background(), types.NamespacedName{Name: smName, Namespace: testNamespaceDefault}, &after)
 	if err == nil {
 		t.Errorf("config should be gone after finalizer removal, still present with finalizers %v", after.Finalizers)
 	}
@@ -609,7 +609,7 @@ func TestReconcile_Deletion_WithOnRemove_OrphanJob(t *testing.T) {
 	// The orphan decommission NixJob CR must be deleted before the finalizer is
 	// removed, otherwise it (and its owned onremove ConfigMap) leaks forever.
 	var leaked niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-onremove", Namespace: "default"}, &leaked); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebOnRemove, Namespace: testNamespaceDefault}, &leaked); err == nil {
 		t.Error("orphan decommission NixJob should be deleted on success, but it still exists")
 	}
 }
@@ -624,14 +624,14 @@ func TestReconcile_Deletion_WithoutOnRemove_ImmediateFinalize(t *testing.T) {
 
 	r, c := smReconciler(t, cfg, smMachine())
 
-	smReconcile(t, r, "web")
+	smReconcile(t, r, smName)
 
 	var after niov1alpha1.NixosConfiguration
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web", Namespace: "default"}, &after); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: smName, Namespace: testNamespaceDefault}, &after); err == nil {
 		t.Errorf("config should be gone (finalizer removed immediately), still present: %v", after.Finalizers)
 	}
 	var job niov1alpha1.NixJob
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "web-onremove", Namespace: "default"}, &job); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: testNameWebOnRemove, Namespace: testNamespaceDefault}, &job); err == nil {
 		t.Error("no decommission job should be created without onRemoveFlake")
 	}
 }
