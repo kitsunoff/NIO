@@ -1,0 +1,147 @@
+name: pages
+
+# Builds the Docusaurus site in docs-site/ and publishes it to GitHub Pages at
+# https://kitsunoff.github.io/NIO/.
+#
+# This is the ONLY workflow in this repository that may call
+# actions/deploy-pages. GitHub Pages has a single deployment per repository, so
+# a second deploying workflow would clobber whatever this one published. See the
+# comment on the upload step for how the Helm chart repository shares it.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/pages.yml'
+  # Lets this workflow be run by hand from any branch — which is also how it is
+  # verified before the branch is merged, since the push trigger only fires on
+  # main.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Docusaurus is configured with onBrokenLinks/onBrokenAnchors/
+      # onDuplicateRoutes set to 'throw', so a broken internal link fails this
+      # step. That is deliberate: the reference pages are hand-written and this
+      # is what stops them rotting silently. Do not downgrade it to a warning.
+      - name: Build the site
+        run: npm run build
+
+      # The exclusion gates, enforced against the BUILT tree rather than the
+      # sources, because that is what actually gets published. Each grep must
+      # find nothing. The Cyrillic check is verified against a canary first, so
+      # a silently non-matching pattern cannot pass this step by accident.
+      - name: Check nothing excluded reached the build
+        # Python rather than grep, so the check behaves identically wherever it
+        # runs: `grep -P` is a GNU extension and is absent on BSD/macOS greps,
+        # where the Cyrillic class would otherwise silently fail to compile.
+        # A file that cannot be decoded as UTF-8 is reported, never quietly
+        # counted as clean.
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          build = pathlib.Path("build")
+          files = [p for p in build.rglob("*") if p.is_file()]
+          if not files:
+              sys.exit("FAIL: build/ is empty; the gate would pass vacuously")
+          print(f"scanning {len(files)} files under {build}/")
+
+          CHECKS = [
+              ("Cyrillic",          re.compile(r'[Ѐ-ӿ]')),
+              ("private addresses", re.compile(r'192\.168\.')),
+              ("stand identifiers", re.compile(r'homelab|nio-c[0-9]|nio-m5')),
+              ("internal paths",    re.compile(r'/Users/[a-z]+|\.agent-e2e|SESSION-HANDOFF|nio-go-rewrite')),
+          ]
+
+          # Positive control: prove each pattern detects what it claims to,
+          # so a pattern that silently stopped matching cannot pass this gate.
+          canary = ("канарейка 192.168.105.10 homelab nio-c1 "
+                    "/Users/someone .agent-e2e SESSION-HANDOFF nio-go-rewrite")
+          for label, rx in CHECKS:
+              if not rx.search(canary):
+                  sys.exit(f"FAIL: the {label!r} pattern does not match its canary; the gate is invalid")
+          print("positive control: all patterns match a canary containing every violation class")
+
+          failed = False
+          undecodable = []
+          for label, rx in CHECKS:
+              hits = []
+              for p in files:
+                  try:
+                      text = p.read_text(encoding="utf-8")
+                  except UnicodeDecodeError:
+                      undecodable.append(str(p))
+                      continue
+                  if rx.search(text):
+                      hits.append(str(p))
+              if hits:
+                  failed = True
+                  print(f"FAIL {label}: {len(hits)} file(s)")
+                  for h in hits[:20]:
+                      print("   ", h)
+              else:
+                  print(f"ok   no {label}")
+
+          for u in sorted(set(undecodable)):
+              print(f"note: not valid UTF-8, scanned as binary: {u}")
+
+          sys.exit(1 if failed else 0)
+          PY
+
+      # Everything under docs-site/static/ is copied verbatim into build/, so a
+      # file at docs-site/static/charts/index.yaml is served at
+      # /NIO/charts/index.yaml and `helm repo add nio
+      # https://kitsunoff.github.io/NIO/charts` resolves against this same
+      # deployment.
+      #
+      # The Helm chart workstream is expected to drop its generated index.yaml
+      # and packaged .tgz files into docs-site/static/charts/ so that THIS
+      # workflow publishes them. It must NOT add a second Pages workflow of its
+      # own: GitHub Pages has one deployment per repository and the two would
+      # overwrite each other.
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
