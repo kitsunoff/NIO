@@ -340,7 +340,7 @@ func (r *MachineReconciler) buildSSHConfig(ctx context.Context, machine *niov1al
 
 	// Default user to root if not specified
 	if config.User == "" {
-		config.User = "root"
+		config.User = defaultSSHUser
 	}
 
 	// Try to get SSH key from secret

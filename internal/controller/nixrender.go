@@ -58,7 +58,7 @@ const (
 	// defaultNixSystems is what an unqualified NixBuilder advertises. It covers
 	// both common Linux arches so the builder matches the runner pods' system
 	// regardless of node architecture (the in-cluster builder is that arch).
-	defaultNixSystems = "x86_64-linux,aarch64-linux"
+	defaultNixSystems = nixSystemX8664Linux + "," + nixSystemAarch64Linux
 
 	// cacheNixosPublicKey is the well-known public key for cache.nixos.org.
 	cacheNixosPublicKey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
@@ -123,7 +123,7 @@ func buildNixConfig(store *storeInfo, builder *builderInfo) string {
 	trustedKeys = append(trustedKeys, cacheNixosPublicKey)
 
 	lines := []string{
-		"experimental-features = nix-command flakes",
+		nixConfigExperimentalFeatures,
 		"substituters = " + strings.Join(substituters, " "),
 		"trusted-public-keys = " + strings.Join(trustedKeys, " "),
 	}
@@ -167,7 +167,7 @@ func shellQuote(s string) string {
 // runCommand builds the app container's `nix run <Run> -- <Args...>` command,
 // with any extra nix flags before the installable.
 func runCommand(run string, args, nixFlags []string) []string {
-	cmd := []string{"nix", "run"}
+	cmd := []string{nixBinary, nixCmdRun}
 	cmd = append(cmd, nixFlags...)
 	cmd = append(cmd, run)
 	if len(args) > 0 {
@@ -179,7 +179,8 @@ func runCommand(run string, args, nixFlags []string) []string {
 
 // buildCommand builds the instantiate init's `nix build <Run> <Prebuild...>`.
 func buildCommand(run string, prebuild, nixFlags []string) []string {
-	cmd := []string{"nix", "build"}
+	cmd := make([]string, 0, 2+len(nixFlags)+1+len(prebuild))
+	cmd = append(cmd, nixBinary, "build")
 	cmd = append(cmd, nixFlags...)
 	cmd = append(cmd, run)
 	cmd = append(cmd, prebuild...)
@@ -309,8 +310,8 @@ func additionalFilesInjection(files []niov1alpha1.NixFile, image, inlineCMName, 
 		// gitMinimal) — exactly like the fetch-source init. Without it the
 		// container fails immediately with "experimental Nix feature 'nix-command'
 		// is disabled".
-		Env:          []corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}},
-		Command:      []string{"nix", "shell", "nixpkgs#gitMinimal", "--command", "sh", "-c", b.String()},
+		Env:          []corev1.EnvVar{{Name: envNixConfig, Value: nixConfig}},
+		Command:      []string{nixBinary, "shell", "nixpkgs#gitMinimal", "--command", "sh", "-c", b.String()},
 		VolumeMounts: mounts,
 	}, vols, true
 }
@@ -456,18 +457,18 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 		buildMounts = append(buildMounts, nixAndWorkspace...)
 		buildMounts = append(buildMounts, corev1.VolumeMount{Name: sshVolumeName, MountPath: sshKeyMountPath, ReadOnly: true})
 		sshOpts = []corev1.EnvVar{{
-			Name:  "NIX_SSHOPTS",
+			Name:  envNixSSHOpts,
 			Value: "-i " + sshPrivateKeyPath + " " + sshHostKeyOpts,
 		}}
 	}
-	instantiateEnv := append([]corev1.EnvVar{{Name: "NIX_CONFIG", Value: nixConfig}}, sshOpts...)
+	instantiateEnv := append([]corev1.EnvVar{{Name: envNixConfig, Value: nixConfig}}, sshOpts...)
 
 	// Any command that SSHes out needs openssh on PATH (the nix image has none):
 	// a remote builder dispatch, or a target host whose NIX_SSHOPTS the caller
 	// (e.g. the NixosConfiguration orchestrator) injected onto the app container.
 	// Broad, convenient rule: NIX_SSHOPTS present ⇒ wrap in openssh.
 	appNeedsSSH := in.sshSecretName != "" ||
-		hasEnvVar(findOrNewContainer(tmpl.Spec.Containers, appName).Env, "NIX_SSHOPTS")
+		hasEnvVar(findOrNewContainer(tmpl.Spec.Containers, appName).Env, envNixSSHOpts)
 	wrapSSH := func(cmd []string, needsSSH bool) []string {
 		if !needsSSH {
 			return cmd
@@ -482,7 +483,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	if in.sshSecretName != "" && in.store != nil && in.store.pushURL != "" {
 		installables := append([]string{nix.Run}, nix.Prebuild...)
 		build := shellJoin(buildCommand(nix.Run, nix.Prebuild, nix.NixFlags))
-		push := shellJoin(append([]string{"nix", "copy", "--to", in.store.pushURL}, installables...))
+		push := shellJoin(append([]string{nixBinary, "copy", "--to", in.store.pushURL}, installables...))
 		instantiateCmd = []string{"sh", "-c", "exec nix shell nixpkgs#openssh --command sh -c " + shellQuote(build+" && "+push)}
 	}
 
@@ -490,7 +491,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	// nixpkgs#gitMinimal`, so it needs NIX_CONFIG too (to enable nix-command and
 	// to substitute git from the store/cache rather than build it).
 	fetchEnv := []corev1.EnvVar{
-		{Name: "NIX_CONFIG", Value: nixConfig},
+		{Name: envNixConfig, Value: nixConfig},
 		{Name: "NIO_REVISION", Value: in.resolvedRevision},
 	}
 	if flux {
@@ -564,7 +565,7 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	app.WorkingDir = workDir
 	app.Command = wrapSSH(runCommand(nix.Run, nix.Args, nix.NixFlags), appNeedsSSH)
 	app.Args = nil
-	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_CONFIG", Value: nixConfig})
+	app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: envNixConfig, Value: nixConfig})
 	// App-container NIX_SSHOPTS carries the identity for whatever the app itself
 	// SSHes to (a target host for `nixos-rebuild --target-host`). The builder key
 	// now travels in the builders= machine-spec, so we must NOT stamp -i K_infra
@@ -574,8 +575,8 @@ func renderPodTemplate(in renderInput, base corev1.PodTemplateSpec) corev1.PodTe
 	//   - builder present but caller set nothing → host-key opts only, no identity,
 	//     so the app's build dispatch uses the builders= key.
 	//   - neither → nothing.
-	if !hasEnvVar(app.Env, "NIX_SSHOPTS") && in.sshSecretName != "" {
-		app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: sshHostKeyOpts})
+	if !hasEnvVar(app.Env, envNixSSHOpts) && in.sshSecretName != "" {
+		app.Env = upsertEnv(app.Env, corev1.EnvVar{Name: envNixSSHOpts, Value: sshHostKeyOpts})
 	}
 	app.VolumeMounts = upsertMounts(app.VolumeMounts, buildMounts...)
 	tmpl.Spec.Containers = setContainer(tmpl.Spec.Containers, app)

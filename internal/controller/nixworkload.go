@@ -310,7 +310,8 @@ func observePodInit(ctx context.Context, c client.Client, ns, kind, name, revisi
 			if t := ics.State.Terminated; t != nil && t.ExitCode != 0 {
 				state.failing = true
 			}
-			if w := ics.State.Waiting; w != nil && (w.Reason == "CrashLoopBackOff" || w.Reason == "Error") {
+			if w := ics.State.Waiting; w != nil &&
+				(w.Reason == containerReasonCrashLoopBackOff || w.Reason == containerReasonError) {
 				state.failing = true
 			}
 			if ics.State.Running != nil || (ics.State.Waiting != nil && !state.failing) {

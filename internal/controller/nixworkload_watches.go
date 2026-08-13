@@ -91,7 +91,7 @@ func enqueueByIndex(c client.Client, listProto client.ObjectList, index string) 
 }
 
 // fluxSourceKinds are the Flux source kinds a workload may reference.
-var fluxSourceKinds = []string{"GitRepository", "OCIRepository", "Bucket"}
+var fluxSourceKinds = []string{kindGitRepository, kindOCIRepository, kindBucket}
 
 // addFluxSourceWatches adds a Watches for each installed Flux source CRD, mapping
 // a source change to the workloads that reference it. Kinds whose CRD is not

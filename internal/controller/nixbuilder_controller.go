@@ -165,7 +165,7 @@ func (r *NixBuilderReconciler) ensureService(ctx context.Context, builder *niov1
 		svc.Spec.ClusterIP = corev1.ClusterIPNone
 		svc.Spec.Selector = labels
 		svc.Spec.Ports = []corev1.ServicePort{
-			{Name: "ssh", Port: int32(NixBuilderSSHPort), TargetPort: intstr.FromInt(NixBuilderSSHPort)},
+			{Name: portNameSSH, Port: int32(NixBuilderSSHPort), TargetPort: intstr.FromInt(NixBuilderSSHPort)},
 		}
 		return controllerutil.SetControllerReference(builder, svc, r.Scheme)
 	})
@@ -204,7 +204,7 @@ func (r *NixBuilderReconciler) desiredStatefulSet(builder *niov1alpha1.NixBuilde
 	}
 
 	env := []corev1.EnvVar{
-		{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},
+		{Name: envNixConfig, Value: nixConfigExperimentalFeatures},
 	}
 	if builder.Spec.MaxJobs != nil {
 		env = append(env, corev1.EnvVar{Name: "NIX_MAX_JOBS", Value: fmt.Sprintf("%d", *builder.Spec.MaxJobs)})
@@ -225,12 +225,12 @@ func (r *NixBuilderReconciler) desiredStatefulSet(builder *niov1alpha1.NixBuilde
 	}
 
 	worker := corev1.Container{
-		Name:  "builder",
+		Name:  builderContainerName,
 		Image: image,
 		// Accept remote builds over sshd; runner pods holding the shared key push
 		// results into the NixStore themselves (ADR-0008).
 		Command:      []string{"sh", "-c", builderStartScript(hasStore)},
-		Ports:        []corev1.ContainerPort{{Name: "ssh", ContainerPort: int32(NixBuilderSSHPort)}},
+		Ports:        []corev1.ContainerPort{{Name: portNameSSH, ContainerPort: int32(NixBuilderSSHPort)}},
 		Env:          env,
 		VolumeMounts: workerMounts,
 	}
