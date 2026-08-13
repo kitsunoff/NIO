@@ -132,7 +132,7 @@ var _ = Describe("NixosConfiguration Controller", func() {
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    "unreachable-host.example.com",
-					SSHUser: testDefaultSSHUser,
+					SSHUser: defaultSSHUser,
 				},
 				Status: niov1alpha1.MachineStatus{
 					Discoverable: false,

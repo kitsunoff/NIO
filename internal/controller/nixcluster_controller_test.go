@@ -286,7 +286,7 @@ func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 	if cron.Spec.Nix.Run != ".#cluster-prod" {
 		t.Errorf("run = %q, want .#cluster-prod", cron.Spec.Nix.Run)
 	}
-	if !reflect.DeepEqual(cron.Spec.Nix.Args, []string{testClusterConvergeArg}) {
+	if !reflect.DeepEqual(cron.Spec.Nix.Args, []string{clusterConvergeArg}) {
 		t.Errorf("args = %v, want [converge]", cron.Spec.Nix.Args)
 	}
 	if cron.Spec.Nix.TriggerOnChange == nil || !*cron.Spec.Nix.TriggerOnChange {
@@ -321,7 +321,7 @@ func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 	}
 	assertMount(t, app.VolumeMounts, clusterSSHVolumeName, clusterSSHMountPath)
 	assertMount(t, app.VolumeMounts, clusterAgeVolumeName, clusterAgeMountPath)
-	assertEnv(t, app.Env, testEnvNixSSHOpts)
+	assertEnv(t, app.Env, envNixSSHOpts)
 	assertEnv(t, app.Env, "SOPS_AGE_KEY_FILE")
 }
 
@@ -630,11 +630,11 @@ func TestSetConditions_ClearsAnyStalledOnceTheReconcileSucceeds(t *testing.T) {
 // a provable mismatch.
 func TestNixSystemForArch(t *testing.T) {
 	for in, want := range map[string]string{
-		"x86_64":  testNixSystemX8664Linux,
-		"amd64":   testNixSystemX8664Linux,
-		"AArch64": testNixSystemAarch64Linux,
-		"arm64":   testNixSystemAarch64Linux,
-		" x86_64": testNixSystemX8664Linux,
+		"x86_64":  nixSystemX8664Linux,
+		"amd64":   nixSystemX8664Linux,
+		"AArch64": nixSystemAarch64Linux,
+		"arm64":   nixSystemAarch64Linux,
+		" x86_64": nixSystemX8664Linux,
 		"riscv64": "",
 		"":        "",
 	} {
@@ -683,13 +683,13 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 	}{{
 		name:       "provable mismatch is refused",
 		builderRef: testNameBuilder,
-		objects:    []client.Object{builder(testNameBuilder, testNixSystemX8664Linux)},
+		objects:    []client.Object{builder(testNameBuilder, nixSystemX8664Linux)},
 		machine:    machineWithArch("aarch64"),
 		wantErr:    true,
 	}, {
 		name:       "builder covers the member",
 		builderRef: testNameBuilder,
-		objects:    []client.Object{builder(testNameBuilder, testNixSystemX8664Linux, testNixSystemAarch64Linux)},
+		objects:    []client.Object{builder(testNameBuilder, nixSystemX8664Linux, nixSystemAarch64Linux)},
 		machine:    machineWithArch("aarch64"),
 	}, {
 		name:       "unqualified builder proves nothing",
@@ -699,7 +699,7 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 	}, {
 		name:       "machine has not reported its architecture",
 		builderRef: testNameBuilder,
-		objects:    []client.Object{builder(testNameBuilder, testNixSystemX8664Linux)},
+		objects:    []client.Object{builder(testNameBuilder, nixSystemX8664Linux)},
 		machine:    machineWithArch(""),
 	}, {
 		name:       "builder does not exist yet (the child stalls instead)",
@@ -729,7 +729,7 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected refusal: %v", err)
 			}
-			if tc.wantErr && !strings.Contains(err.Error(), testNixSystemAarch64Linux) {
+			if tc.wantErr && !strings.Contains(err.Error(), nixSystemAarch64Linux) {
 				t.Errorf("the error must name the system the member needs: %v", err)
 			}
 		})
@@ -958,7 +958,7 @@ var _ = Describe("NixCluster Controller", func() {
 			var cron niov1alpha1.NixCronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-converge", Namespace: ns}, &cron)).To(Succeed())
 			Expect(cron.Spec.Nix.Run).To(Equal(".#cluster-" + name))
-			Expect(cron.Spec.Nix.Args).To(Equal([]string{testClusterConvergeArg}))
+			Expect(cron.Spec.Nix.Args).To(Equal([]string{clusterConvergeArg}))
 			Expect(cron.Spec.CronJobTemplate.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
 			Expect(cron.Spec.Nix.AdditionalFiles).To(HaveLen(1))
 			Expect(cron.Spec.Nix.AdditionalFiles[0].Path).To(Equal("modules/nodes/node-01.nix"))

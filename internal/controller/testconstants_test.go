@@ -81,13 +81,6 @@ const (
 	// is an object name.
 	testSecretNameToken = "token"
 
-	// --- Container names --------------------------------------------------
-
-	// testStoreContainerName is the name of the container inside the NixStore
-	// StatefulSet. Same spelling as testNameStore, different meaning: this one
-	// is a container name, not the NixStore object's name.
-	testStoreContainerName = "store"
-
 	// --- Machines ---------------------------------------------------------
 
 	// testMachineM00..testMachineM08 are Machine names for the NixCluster
@@ -107,10 +100,8 @@ const (
 	// testMachineHostFQDN is the Machine's spec.host in the machine-controller
 	// fixtures, which exercise a DNS name rather than an address.
 	testMachineHostFQDN = "test-host.example.com"
-	// testDefaultSSHUser is the Machine's spec.sshUser.
-	testDefaultSSHUser = "root"
 	// testTargetHost is the user@host argument nixos-rebuild/nixos-anywhere
-	// receive; it is testDefaultSSHUser at testMachineHost.
+	// receive; it is the production defaultSSHUser at testMachineHost.
 	testTargetHost = "root@10.0.0.5"
 
 	// --- Labels -----------------------------------------------------------
@@ -150,28 +141,16 @@ const (
 
 	// --- Nix --------------------------------------------------------------
 
-	testNixSystemX8664Linux   = "x86_64-linux"
-	testNixSystemAarch64Linux = "aarch64-linux"
 	// testRunServer and testRunX are spec.nix.run installables.
 	testRunServer = ".#server"
 	testRunX      = ".#x"
-	// testNixBinary and testNixCmdRun are the leading words of the command the app
-	// container is expected to run.
-	testNixBinary = "nix"
-	testNixCmdRun = "run"
-	// Command-line arguments in expected argv slices.
-	//
-	// "--flake" is spelled the same by two independent programs, so it keeps
-	// TWO constants: nixos-anywhere drives the install child, nixos-rebuild
-	// drives the day-2 child. They agree today and are free to diverge.
-	testArgPort               = "--port"
-	testArgPortValue          = "8080"
-	testAnywhereFlagFlake     = "--flake"
-	testAnywhereFlagSSHOption = "--ssh-option"
-	testRebuildFlagFlake      = "--flake"
-	testRebuildFlagTargetHost = "--target-host"
-	testRebuildArgSwitch      = "switch"
-	testClusterConvergeArg    = "converge"
+	// Command-line arguments in expected argv slices that have no production
+	// counterpart. The nix binary name, its subcommands, the nixos-anywhere and
+	// nixos-rebuild flags and the cluster converge argument all come from the
+	// production constants in constants.go, so that an expectation can never
+	// drift away from the argv the controller actually builds.
+	testArgPort      = "--port"
+	testArgPortValue = "8080"
 	// testImageNixosNix is the container image the fixtures set on spec.nix.image.
 	testImageNixosNix = "nixos/nix"
 	// testBuilderEndpoint is a resolved NixBuilder ssh-ng endpoint.
@@ -181,9 +160,10 @@ const (
 	testBuildersLinePrefix = "builders = ssh-ng://root@b.svc "
 
 	// --- Environment variables --------------------------------------------
+	//
+	// NIX_CONFIG and NIX_SSHOPTS come from the production envNixConfig and
+	// envNixSSHOpts constants; only the git-repo variable is test-only.
 
-	testEnvNixConfig  = "NIX_CONFIG"
-	testEnvNixSSHOpts = "NIX_SSHOPTS"
 	testEnvNioGitRepo = "NIO_GIT_REPO"
 
 	// --- Secret data keys -------------------------------------------------
@@ -196,16 +176,8 @@ const (
 	// the password.
 	testSecretKeyPassword = "password"
 
-	// --- API kinds --------------------------------------------------------
-
-	// testKindGitRepository is the Flux source kind referenced by
-	// spec.source.fluxSourceRef.
-	testKindGitRepository = "GitRepository"
-
 	// --- Status reasons ---------------------------------------------------
 
-	// testContainerReasonError is a terminated-container Reason on a Pod status.
-	testContainerReasonError = "Error"
 	// testReasonBackoffLimitExceeded is a batch/v1 Job condition Reason.
 	testReasonBackoffLimitExceeded = "BackoffLimitExceeded"
 

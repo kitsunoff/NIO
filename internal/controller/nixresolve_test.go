@@ -217,7 +217,7 @@ func TestResolveRevisionCredentialsSecretMissing(t *testing.T) {
 func TestResolveRevisionFlux(t *testing.T) {
 	src := &unstructured.Unstructured{}
 	src.SetAPIVersion("source.toolkit.fluxcd.io/v1")
-	src.SetKind(testKindGitRepository)
+	src.SetKind(kindGitRepository)
 	src.SetName(testFluxSourceWeb)
 	src.SetNamespace(testNamespaceApps)
 	_ = unstructured.SetNestedMap(src.Object, map[string]any{
@@ -230,7 +230,7 @@ func TestResolveRevisionFlux(t *testing.T) {
 	c := scheme.Build()
 
 	res, err := resolveRevision(context.Background(), c, fakeGit{err: errors.New("git must not be called")}, testNamespaceApps,
-		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: testKindGitRepository, Name: testFluxSourceWeb}})
+		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: kindGitRepository, Name: testFluxSourceWeb}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,13 +245,13 @@ func TestResolveRevisionFlux(t *testing.T) {
 func TestResolveRevisionFluxMissingArtifact(t *testing.T) {
 	src := &unstructured.Unstructured{}
 	src.SetAPIVersion("source.toolkit.fluxcd.io/v1")
-	src.SetKind(testKindGitRepository)
+	src.SetKind(kindGitRepository)
 	src.SetName(testFluxSourceWeb)
 	src.SetNamespace(testNamespaceApps)
 
 	c := fake.NewClientBuilder().WithRuntimeObjects(src).Build()
 	_, err := resolveRevision(context.Background(), c, fakeGit{}, testNamespaceApps,
-		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: testKindGitRepository, Name: testFluxSourceWeb}})
+		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: kindGitRepository, Name: testFluxSourceWeb}})
 	if err == nil {
 		t.Error("expected error when Flux source has no artifact yet")
 	}

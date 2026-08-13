@@ -59,7 +59,7 @@ func smMachine() *niov1alpha1.Machine {
 		ObjectMeta: metav1.ObjectMeta{Name: testMachineNode01, Namespace: testNamespaceDefault},
 		Spec: niov1alpha1.MachineSpec{
 			Host:            testMachineHost,
-			SSHUser:         testDefaultSSHUser,
+			SSHUser:         defaultSSHUser,
 			SSHKeySecretRef: &niov1alpha1.SecretReference{Name: "node-01-ssh"},
 		},
 		Status: niov1alpha1.MachineStatus{Discoverable: true},
