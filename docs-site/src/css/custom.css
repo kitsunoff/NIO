@@ -1,0 +1,46 @@
+/* NIO documentation theme.
+   Nix blue as the primary, tuned for AA contrast in both colour schemes. */
+
+:root {
+  --ifm-color-primary: #3b5ea8;
+  --ifm-color-primary-dark: #355594;
+  --ifm-color-primary-darker: #32508b;
+  --ifm-color-primary-darkest: #294273;
+  --ifm-color-primary-light: #4467bc;
+  --ifm-color-primary-lighter: #4d6dc0;
+  --ifm-color-primary-lightest: #6883cb;
+  --ifm-code-font-size: 92%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #8fb0e8;
+  --ifm-color-primary-dark: #7099e1;
+  --ifm-color-primary-darker: #618ddd;
+  --ifm-color-primary-darkest: #3569cf;
+  --ifm-color-primary-light: #aec7ef;
+  --ifm-color-primary-lighter: #bdd1f2;
+  --ifm-color-primary-lightest: #e9f0fb;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* Reference pages are dense field tables; let them breathe and scroll rather
+   than forcing the page body to scroll sideways. */
+.markdown table {
+  display: table;
+  width: 100%;
+}
+
+.markdown > table,
+.markdown .table-wrapper {
+  overflow-x: auto;
+}
+
+.markdown table td:first-child code {
+  white-space: nowrap;
+}
+
+/* The "Verified against" footer line that ends every reference page. */
+.markdown p em:only-child {
+  color: var(--ifm-color-emphasis-700);
+}
