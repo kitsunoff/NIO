@@ -45,21 +45,21 @@ var _ = Describe("NixosConfiguration Controller", func() {
 			resourceName = fmt.Sprintf("test-config-%d", configTestCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating the NixosConfiguration without existing Machine")
 			resource := &niov1alpha1.NixosConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.NixosConfigurationSpec{
 					MachineRef: niov1alpha1.MachineReference{
 						Name: "non-existent-machine",
 					},
 					GitRepo: "https://github.com/example/nixos-config.git",
-					Ref:     "main",
+					Ref:     defaultGitRef,
 					Flake:   "#default",
 				},
 			}
@@ -121,18 +121,18 @@ var _ = Describe("NixosConfiguration Controller", func() {
 			machineName = fmt.Sprintf("test-machine-%d", configTestCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating a Machine that is not discoverable")
 			machine := &niov1alpha1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      machineName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    "unreachable-host.example.com",
-					SSHUser: "root",
+					SSHUser: testDefaultSSHUser,
 				},
 				Status: niov1alpha1.MachineStatus{
 					Discoverable: false,
@@ -144,14 +144,14 @@ var _ = Describe("NixosConfiguration Controller", func() {
 			resource := &niov1alpha1.NixosConfiguration{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.NixosConfigurationSpec{
 					MachineRef: niov1alpha1.MachineReference{
 						Name: machineName,
 					},
 					GitRepo: "https://github.com/example/nixos-config.git",
-					Ref:     "main",
+					Ref:     defaultGitRef,
 					Flake:   "#default",
 				},
 			}
@@ -171,7 +171,7 @@ var _ = Describe("NixosConfiguration Controller", func() {
 			}
 
 			machine := &niov1alpha1.Machine{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: machineName, Namespace: "default"}, machine)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: machineName, Namespace: testNamespaceDefault}, machine)
 			if err == nil {
 				if len(machine.Finalizers) > 0 {
 					machine.Finalizers = nil
@@ -225,7 +225,7 @@ var _ = Describe("NixosConfiguration resource not found", func() {
 		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Name:      "non-existent",
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			},
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -37,15 +37,15 @@ func TestEnqueueByCredentialsSecret(t *testing.T) {
 
 	credRef := func(name string) *niov1alpha1.SecretReference { return &niov1alpha1.SecretReference{Name: name} }
 	wantsSecret := &niov1alpha1.NixDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "apps"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameWeb, Namespace: testNamespaceApps},
 		Spec:       niov1alpha1.NixDeploymentSpec{Nix: niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{CredentialsRef: credRef("git-creds")}}},
 	}
 	otherSecret := &niov1alpha1.NixDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "apps"},
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: testNamespaceApps},
 		Spec:       niov1alpha1.NixDeploymentSpec{Nix: niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{CredentialsRef: credRef("other")}}},
 	}
 	otherNS := &niov1alpha1.NixDeployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "prod"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameWeb, Namespace: testNamespaceProd},
 		Spec:       niov1alpha1.NixDeploymentSpec{Nix: niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{CredentialsRef: credRef("git-creds")}}},
 	}
 
@@ -62,13 +62,13 @@ func TestEnqueueByCredentialsSecret(t *testing.T) {
 		Build()
 
 	mapFn := enqueueByIndex(c, &niov1alpha1.NixDeploymentList{}, IndexByCredentialsSecret)
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "git-creds", Namespace: "apps"}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "git-creds", Namespace: testNamespaceApps}}
 	reqs := mapFn(context.Background(), secret)
 
 	if len(reqs) != 1 {
 		t.Fatalf("expected exactly 1 request (same-namespace referencing workload), got %d: %v", len(reqs), reqs)
 	}
-	if reqs[0].Name != "web" || reqs[0].Namespace != "apps" {
+	if reqs[0].Name != testNameWeb || reqs[0].Namespace != testNamespaceApps {
 		t.Errorf("unexpected request %v", reqs[0])
 	}
 }

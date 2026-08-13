@@ -30,14 +30,14 @@ import (
 func testConfig() *niov1alpha1.NixosConfiguration {
 	inline := "{ networking.hostName = \"web\"; }"
 	return &niov1alpha1.NixosConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameWeb, Namespace: testNamespaceInfra},
 		Spec: niov1alpha1.NixosConfigurationSpec{
 			MachineRef:          niov1alpha1.MachineReference{Name: "web-machine"},
 			GitRepo:             "https://github.com/acme/nixcfg",
-			Ref:                 "main",
+			Ref:                 defaultGitRef,
 			Flake:               "#worker",
 			OnRemoveFlake:       "#decommission",
-			ConfigurationSubdir: "hosts/web",
+			ConfigurationSubdir: testDirHostsWeb,
 			AdditionalFiles: []niov1alpha1.AdditionalFile{
 				{Path: "local.nix", ValueType: niov1alpha1.AdditionalFileValueTypeInline, Inline: inline},
 			},
@@ -47,10 +47,10 @@ func testConfig() *niov1alpha1.NixosConfiguration {
 
 func testMachine() *niov1alpha1.Machine {
 	return &niov1alpha1.Machine{
-		ObjectMeta: metav1.ObjectMeta{Name: "web-machine", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web-machine", Namespace: testNamespaceInfra},
 		Spec: niov1alpha1.MachineSpec{
-			Host:            "10.0.0.5",
-			SSHUser:         "root",
+			Host:            testMachineHost,
+			SSHUser:         testDefaultSSHUser,
 			SSHKeySecretRef: &niov1alpha1.SecretReference{Name: "web-ssh"},
 		},
 	}
@@ -74,7 +74,7 @@ func assertTargetSSH(t *testing.T, pod corev1.PodTemplateSpec) {
 	app := pod.Spec.Containers[0]
 	var sshOpts string
 	for _, e := range app.Env {
-		if e.Name == "NIX_SSHOPTS" {
+		if e.Name == testEnvNixSSHOpts {
 			sshOpts = e.Value
 		}
 	}
@@ -97,7 +97,7 @@ func TestBuildInstallNixJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildInstallNixJob: %v", err)
 	}
-	if job.Name != "web-install" || job.Namespace != "infra" {
+	if job.Name != testNameWebInstall || job.Namespace != testNamespaceInfra {
 		t.Errorf("name/namespace = %s/%s", job.Name, job.Namespace)
 	}
 	nix := job.Spec.Nix
@@ -108,16 +108,16 @@ func TestBuildInstallNixJob(t *testing.T) {
 	// ignores NIX_SSHOPTS, so the install child must pass the identity + permissive
 	// host-key options explicitly via -i/--ssh-option, with the target host last.
 	wantArgs := []string{
-		"--flake", ".#worker",
+		testAnywhereFlagFlake, ".#worker",
 		"-i", targetSSHKeyPath,
-		"--ssh-option", "StrictHostKeyChecking=no",
-		"--ssh-option", "UserKnownHostsFile=/dev/null",
-		"root@10.0.0.5",
+		testAnywhereFlagSSHOption, "StrictHostKeyChecking=no",
+		testAnywhereFlagSSHOption, "UserKnownHostsFile=/dev/null",
+		testTargetHost,
 	}
 	if strings.Join(nix.Args, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Errorf("Args = %v, want %v", nix.Args, wantArgs)
 	}
-	if nix.Source.Dir != "hosts/web" || nix.Source.GitRepo != "https://github.com/acme/nixcfg" {
+	if nix.Source.Dir != testDirHostsWeb || nix.Source.GitRepo != "https://github.com/acme/nixcfg" {
 		t.Errorf("Source wrong: %+v", nix.Source)
 	}
 	if len(nix.AdditionalFiles) != 1 || nix.AdditionalFiles[0].Inline == nil {
@@ -134,7 +134,7 @@ func TestBuildDayTwoNixCronJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildDayTwoNixCronJob: %v", err)
 	}
-	if cron.Name != "web-day2" {
+	if cron.Name != testNameWebDayTwo {
 		t.Errorf("name = %q", cron.Name)
 	}
 	nix := cron.Spec.Nix
@@ -174,7 +174,7 @@ func TestBuildDecommissionNixJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildDecommissionNixJob: %v", err)
 	}
-	if job.Name != "web-onremove" {
+	if job.Name != testNameWebOnRemove {
 		t.Errorf("name = %q", job.Name)
 	}
 	if strings.Join(job.Spec.Nix.Args, " ") != "switch --flake .#decommission --target-host root@10.0.0.5" {
@@ -193,7 +193,7 @@ func TestChildSource_PinnedSHARoutesToRev(t *testing.T) {
 	shaCfg := testConfig()
 	shaCfg.Spec.Ref = commitSHA
 
-	branchCfg := testConfig() // Ref == "main"
+	branchCfg := testConfig() // Ref == defaultGitRef
 
 	install, err := buildInstallNixJob(shaCfg, testMachine())
 	if err != nil {
@@ -212,9 +212,9 @@ func TestChildSource_PinnedSHARoutesToRev(t *testing.T) {
 		name string
 		src  niov1alpha1.NixSource
 	}{
-		{"install", install.Spec.Nix.Source},
-		{"day2", cron.Spec.Nix.Source},
-		{"decommission", decom.Spec.Nix.Source},
+		{testChildInstall, install.Spec.Nix.Source},
+		{testChildDayTwo, cron.Spec.Nix.Source},
+		{testChildDecommission, decom.Spec.Nix.Source},
 	} {
 		if tc.src.Rev != commitSHA {
 			t.Errorf("%s: Source.Rev = %q, want pinned SHA %q", tc.name, tc.src.Rev, commitSHA)
@@ -228,7 +228,7 @@ func TestChildSource_PinnedSHARoutesToRev(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildInstallNixJob (branch): %v", err)
 	}
-	if src := binstall.Spec.Nix.Source; src.Ref != "main" || src.Rev != "" {
+	if src := binstall.Spec.Nix.Source; src.Ref != defaultGitRef || src.Rev != "" {
 		t.Errorf("branch ref: Source = {Ref:%q Rev:%q}, want {Ref:\"main\" Rev:\"\"}", src.Ref, src.Rev)
 	}
 }
@@ -239,8 +239,8 @@ func TestChildSource_PinnedSHARoutesToRev(t *testing.T) {
 // them unset.
 func TestBuildChild_StoreBuilderRefPassthrough(t *testing.T) {
 	cfg := testConfig()
-	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: "store"}
-	cfg.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: "builder"}
+	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: testNameStore}
+	cfg.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: testNameBuilder}
 
 	install, err := buildInstallNixJob(cfg, testMachine())
 	if err != nil {
@@ -259,14 +259,14 @@ func TestBuildChild_StoreBuilderRefPassthrough(t *testing.T) {
 		name string
 		nix  niov1alpha1.NixSpec
 	}{
-		{"install", install.Spec.Nix},
-		{"day2", cron.Spec.Nix},
-		{"decommission", decom.Spec.Nix},
+		{testChildInstall, install.Spec.Nix},
+		{testChildDayTwo, cron.Spec.Nix},
+		{testChildDecommission, decom.Spec.Nix},
 	} {
-		if tc.nix.StoreRef == nil || tc.nix.StoreRef.Name != "store" {
+		if tc.nix.StoreRef == nil || tc.nix.StoreRef.Name != testNameStore {
 			t.Errorf("%s: StoreRef = %+v, want {Name:\"store\"}", tc.name, tc.nix.StoreRef)
 		}
-		if tc.nix.BuilderRef == nil || tc.nix.BuilderRef.Name != "builder" {
+		if tc.nix.BuilderRef == nil || tc.nix.BuilderRef.Name != testNameBuilder {
 			t.Errorf("%s: BuilderRef = %+v, want {Name:\"builder\"}", tc.name, tc.nix.BuilderRef)
 		}
 	}
@@ -289,9 +289,9 @@ func TestBuildChild_StoreBuilderRefPassthrough(t *testing.T) {
 		name string
 		nix  niov1alpha1.NixSpec
 	}{
-		{"install", binstall.Spec.Nix},
-		{"day2", bcron.Spec.Nix},
-		{"decommission", bdecom.Spec.Nix},
+		{testChildInstall, binstall.Spec.Nix},
+		{testChildDayTwo, bcron.Spec.Nix},
+		{testChildDecommission, bdecom.Spec.Nix},
 	} {
 		if tc.nix.StoreRef != nil {
 			t.Errorf("%s: StoreRef = %+v, want nil when unset", tc.name, tc.nix.StoreRef)

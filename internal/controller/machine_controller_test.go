@@ -49,18 +49,18 @@ var _ = Describe("Machine Controller", func() {
 			secretName = fmt.Sprintf("test-ssh-key-%d", testCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating the SSH key secret")
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Type: corev1.SecretTypeSSHAuth,
 				Data: map[string][]byte{
-					"ssh-privatekey": []byte("fake-private-key"),
+					sshSecretPrivateKey: []byte("fake-private-key"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
@@ -69,11 +69,11 @@ var _ = Describe("Machine Controller", func() {
 			resource := &niov1alpha1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.MachineSpec{
-					Host:    "test-host.example.com",
-					SSHUser: "root",
+					Host:    testMachineHostFQDN,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -96,7 +96,7 @@ var _ = Describe("Machine Controller", func() {
 			}
 
 			secret := &corev1.Secret{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: testNamespaceDefault}, secret)
 			if err == nil {
 				By("Cleanup the SSH key secret")
 				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
@@ -142,18 +142,18 @@ var _ = Describe("Machine Controller", func() {
 			secretName = fmt.Sprintf("test-ssh-key-%d", testCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating the SSH key secret")
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Type: corev1.SecretTypeSSHAuth,
 				Data: map[string][]byte{
-					"ssh-privatekey": []byte("fake-private-key"),
+					sshSecretPrivateKey: []byte("fake-private-key"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
@@ -162,11 +162,11 @@ var _ = Describe("Machine Controller", func() {
 			resource := &niov1alpha1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.MachineSpec{
-					Host:    "test-host.example.com",
-					SSHUser: "root",
+					Host:    testMachineHostFQDN,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -188,7 +188,7 @@ var _ = Describe("Machine Controller", func() {
 			}
 
 			secret := &corev1.Secret{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: testNamespaceDefault}, secret)
 			if err == nil {
 				By("Cleanup the SSH key secret")
 				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
@@ -232,18 +232,18 @@ var _ = Describe("Machine Controller", func() {
 			resourceName = fmt.Sprintf("test-machine-%d", testCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating the custom resource for the Kind Machine without secret")
 			resource := &niov1alpha1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.MachineSpec{
-					Host:    "test-host.example.com",
-					SSHUser: "root",
+					Host:    testMachineHostFQDN,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: "non-existent-secret",
 					},
@@ -314,7 +314,7 @@ var _ = Describe("Machine resource not found", func() {
 		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Name:      "non-existent",
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -337,18 +337,18 @@ var _ = Describe("Machine state transitions", func() {
 			secretName = fmt.Sprintf("test-ssh-key-transition-%d", testCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating the SSH key secret")
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Type: corev1.SecretTypeSSHAuth,
 				Data: map[string][]byte{
-					"ssh-privatekey": []byte("fake-private-key"),
+					sshSecretPrivateKey: []byte("fake-private-key"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
@@ -357,11 +357,11 @@ var _ = Describe("Machine state transitions", func() {
 			resource := &niov1alpha1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.MachineSpec{
-					Host:    "test-host.example.com",
-					SSHUser: "root",
+					Host:    testMachineHostFQDN,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -382,7 +382,7 @@ var _ = Describe("Machine state transitions", func() {
 			}
 
 			secret := &corev1.Secret{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: testNamespaceDefault}, secret)
 			if err == nil {
 				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
 			}
@@ -624,18 +624,18 @@ var _ = Describe("Machine finalizer handling", func() {
 			secretName = fmt.Sprintf("test-ssh-key-finalizer-%d", testCounter)
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespaceDefault,
 			}
 
 			By("creating the SSH key secret")
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Type: corev1.SecretTypeSSHAuth,
 				Data: map[string][]byte{
-					"ssh-privatekey": []byte("fake-private-key"),
+					sshSecretPrivateKey: []byte("fake-private-key"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
@@ -644,11 +644,11 @@ var _ = Describe("Machine finalizer handling", func() {
 			resource := &niov1alpha1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 				},
 				Spec: niov1alpha1.MachineSpec{
-					Host:    "test-host.example.com",
-					SSHUser: "root",
+					Host:    testMachineHostFQDN,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -659,7 +659,7 @@ var _ = Describe("Machine finalizer handling", func() {
 
 		AfterEach(func() {
 			secret := &corev1.Secret{}
-			err := k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: testNamespaceDefault}, secret)
 			if err == nil {
 				Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
 			}

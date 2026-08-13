@@ -57,10 +57,10 @@ func TestEnsureSSHKeySecret(t *testing.T) {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("corev1 scheme: %v", err)
 	}
-	store := &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: "store", Namespace: "apps"}}
+	store := &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: testNameStore, Namespace: testNamespaceApps}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(store).Build()
 
-	pub1, err := ensureSSHKeySecret(context.Background(), c, scheme, store, "store")
+	pub1, err := ensureSSHKeySecret(context.Background(), c, scheme, store, testNameStore)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestEnsureSSHKeySecret(t *testing.T) {
 	}
 
 	// Idempotent: a second call returns the same key without regenerating.
-	pub2, err := ensureSSHKeySecret(context.Background(), c, scheme, store, "store")
+	pub2, err := ensureSSHKeySecret(context.Background(), c, scheme, store, testNameStore)
 	if err != nil {
 		t.Fatalf("ensure #2: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestEnsureSSHKeySecret(t *testing.T) {
 	}
 
 	var secret corev1.Secret
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "apps", Name: sshSecretName("store")}, &secret); err != nil {
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: testNamespaceApps, Name: sshSecretName(testNameStore)}, &secret); err != nil {
 		t.Fatalf("get secret: %v", err)
 	}
 	if _, ok := secret.Data[sshSecretPrivateKey]; !ok {

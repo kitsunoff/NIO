@@ -48,7 +48,7 @@ var _ = Describe("NixDeployment Controller", func() {
 	// createReadyStore creates a NixStore and forces its status to Ready.
 	createReadyStore := func(name string) {
 		store := &niov1alpha1.NixStore{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 			Spec: niov1alpha1.NixStoreSpec{
 				Storage: corev1.PersistentVolumeClaimSpec{
 					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -58,7 +58,7 @@ var _ = Describe("NixDeployment Controller", func() {
 		Expect(k8sClient.Create(ctx, store)).To(Succeed())
 		store.Status.Phase = niov1alpha1.PhaseReady
 		store.Status.SubstituterURL = fmt.Sprintf("http://%s.default.svc:5000", name)
-		store.Status.PublicKey = name + "-1:AAAA"
+		store.Status.PublicKey = name + testStorePublicKeySuffix
 		Expect(k8sClient.Status().Update(ctx, store)).To(Succeed())
 	}
 
@@ -70,17 +70,17 @@ var _ = Describe("NixDeployment Controller", func() {
 			counter++
 			name = fmt.Sprintf("nd-%d", counter)
 			storeName = fmt.Sprintf("nd-store-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			createReadyStore(storeName)
 
 			replicas := int32(2)
 			nd := &niov1alpha1.NixDeployment{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixDeploymentSpec{
 					Nix: niov1alpha1.NixSpec{
-						Source:   niov1alpha1.NixSource{GitRepo: "https://example.com/r", Rev: "abcdef1234567890"},
-						Run:      ".#server",
-						Args:     []string{"--port", "8080"},
+						Source:   niov1alpha1.NixSource{GitRepo: testRepoExampleR, Rev: testRevAbcdef1234567890},
+						Run:      testRunServer,
+						Args:     []string{testArgPort, testArgPortValue},
 						StoreRef: &niov1alpha1.LocalObjectReference{Name: storeName},
 					},
 					DeploymentTemplate: &appsv1.DeploymentSpec{Replicas: &replicas},
@@ -90,8 +90,8 @@ var _ = Describe("NixDeployment Controller", func() {
 		})
 
 		AfterEach(func() {
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixDeployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: storeName, Namespace: "default"}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixDeployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: storeName, Namespace: testNamespaceDefault}})
 		})
 
 		It("projects a Deployment with the rendered pod template and publishes status", func() {
@@ -105,12 +105,12 @@ var _ = Describe("NixDeployment Controller", func() {
 			Expect(dep.Spec.Template.Spec.InitContainers).To(HaveLen(3))
 			var app *corev1.Container
 			for i := range dep.Spec.Template.Spec.Containers {
-				if dep.Spec.Template.Spec.Containers[i].Name == "app" {
+				if dep.Spec.Template.Spec.Containers[i].Name == defaultAppContainer {
 					app = &dep.Spec.Template.Spec.Containers[i]
 				}
 			}
 			Expect(app).NotTo(BeNil())
-			Expect(app.Command).To(Equal([]string{"nix", "run", ".#server", "--", "--port", "8080"}))
+			Expect(app.Command).To(Equal([]string{testNixBinary, testNixCmdRun, testRunServer, "--", testArgPort, testArgPortValue}))
 
 			By("defaulting a surge-only strategy")
 			Expect(dep.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
@@ -123,7 +123,7 @@ var _ = Describe("NixDeployment Controller", func() {
 			By("publishing status: resolved revision, WorkloadRef, GitSynced, finalizer")
 			var got niov1alpha1.NixDeployment
 			Expect(k8sClient.Get(ctx, nn, &got)).To(Succeed())
-			Expect(got.Status.ResolvedRevision).To(Equal("abcdef1234567890"))
+			Expect(got.Status.ResolvedRevision).To(Equal(testRevAbcdef1234567890))
 			Expect(got.Status.WorkloadRef).To(Equal(name))
 			Expect(got.Finalizers).To(ContainElement(niov1alpha1.WorkloadFinalizer))
 			Expect(got.Status.Phase).To(Or(Equal(niov1alpha1.PhaseProgressing), Equal(niov1alpha1.PhaseBuilding)))
@@ -134,23 +134,23 @@ var _ = Describe("NixDeployment Controller", func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
-			rev := compositeRevision("abcdef1234567890", ".#server", []string{"--port", "8080"})
+			rev := compositeRevision(testRevAbcdef1234567890, testRunServer, []string{testArgPort, testArgPortValue})
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name + "-broken",
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 					Labels: map[string]string{
 						niov1alpha1.LabelWorkloadKind: kindNixDeployment,
 						niov1alpha1.LabelWorkloadName: name,
 						niov1alpha1.LabelRevision:     rev,
 					},
 				},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "busybox"}}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: defaultAppContainer, Image: "busybox"}}},
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
 				Name:  initInstantiate,
-				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: testContainerReasonError}},
 			}}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
@@ -175,12 +175,12 @@ var _ = Describe("NixDeployment Controller", func() {
 		BeforeEach(func() {
 			counter++
 			name = fmt.Sprintf("nd-noinfra-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			nd := &niov1alpha1.NixDeployment{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixDeploymentSpec{
 					Nix: niov1alpha1.NixSpec{
-						Source:   niov1alpha1.NixSource{Rev: "abcdef1"},
+						Source:   niov1alpha1.NixSource{Rev: testRevAbcdef1},
 						Run:      ".",
 						StoreRef: &niov1alpha1.LocalObjectReference{Name: "missing-store"},
 					},
@@ -190,7 +190,7 @@ var _ = Describe("NixDeployment Controller", func() {
 		})
 
 		AfterEach(func() {
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixDeployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixDeployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}})
 		})
 
 		It("stalls without creating the Deployment", func() {
@@ -214,11 +214,11 @@ var _ = Describe("NixDeployment Controller", func() {
 		It("sets Suspended and does not project", func() {
 			counter++
 			name := fmt.Sprintf("nd-susp-%d", counter)
-			nn := types.NamespacedName{Name: name, Namespace: "default"}
+			nn := types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			nd := &niov1alpha1.NixDeployment{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixDeploymentSpec{
-					Nix: niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{Rev: "abcdef1"}, Run: ".", Suspend: true},
+					Nix: niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{Rev: testRevAbcdef1}, Run: ".", Suspend: true},
 				},
 			}
 			Expect(k8sClient.Create(ctx, nd)).To(Succeed())

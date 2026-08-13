@@ -37,7 +37,7 @@ func TestParseLsRemote(t *testing.T) {
 		{
 			name: "branch head",
 			out:  "abc123def\trefs/heads/main\nzzz\trefs/heads/other\n",
-			ref:  "main", want: "abc123def",
+			ref:  defaultGitRef, want: "abc123def",
 		},
 		{
 			name: "peeled annotated tag wins",
@@ -52,7 +52,7 @@ func TestParseLsRemote(t *testing.T) {
 		{
 			name: "fallback first line",
 			out:  "ddd\tHEAD\n",
-			ref:  "main", want: "ddd",
+			ref:  defaultGitRef, want: "ddd",
 		},
 	}
 	for _, tt := range tests {
@@ -67,7 +67,7 @@ func TestParseLsRemote(t *testing.T) {
 		})
 	}
 
-	if _, err := parseLsRemote("", "main"); err == nil {
+	if _, err := parseLsRemote("", defaultGitRef); err == nil {
 		t.Error("expected error on empty output")
 	}
 }
@@ -85,8 +85,8 @@ func (f fakeGit) LsRemote(_ context.Context, _, _ string, _ *gitauth.Creds) (str
 func TestResolveRevisionPinnedRev(t *testing.T) {
 	// A pinned Rev must short-circuit without calling git.
 	git := fakeGit{err: errors.New("git must not be called")}
-	res, err := resolveRevision(context.Background(), nil, git, "default",
-		niov1alpha1.NixSource{Rev: "cafebabe", GitRepo: "r", Ref: "main"})
+	res, err := resolveRevision(context.Background(), nil, git, testNamespaceDefault,
+		niov1alpha1.NixSource{Rev: "cafebabe", GitRepo: "r", Ref: defaultGitRef})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,8 +97,8 @@ func TestResolveRevisionPinnedRev(t *testing.T) {
 
 func TestResolveRevisionLsRemote(t *testing.T) {
 	git := fakeGit{sha: "resolvedsha"}
-	res, err := resolveRevision(context.Background(), nil, git, "default",
-		niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"})
+	res, err := resolveRevision(context.Background(), nil, git, testNamespaceDefault,
+		niov1alpha1.NixSource{GitRepo: testRepoExampleR, Ref: defaultGitRef})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,19 +124,19 @@ func (f *recordingGit) LsRemote(_ context.Context, _, _ string, creds *gitauth.C
 
 func TestResolveRevisionWiresUsernamePassword(t *testing.T) {
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "gitcreds"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespaceApps, Name: "gitcreds"},
 		Data: map[string][]byte{
 			// Trailing newlines mimic file-sourced Secret values; they must be trimmed.
-			"username": []byte("bob\n"),
-			"password": []byte("s3cret\n"),
+			"username":            []byte("bob\n"),
+			testSecretKeyPassword: []byte("s3cret\n"),
 		},
 	}
 	c := fake.NewClientBuilder().WithRuntimeObjects(secret).Build()
 	rec := &recordingGit{sha: "sha1"}
-	res, err := resolveRevision(context.Background(), c, rec, "apps",
+	res, err := resolveRevision(context.Background(), c, rec, testNamespaceApps,
 		niov1alpha1.NixSource{
-			GitRepo:        "https://example.com/r",
-			Ref:            "main",
+			GitRepo:        testRepoExampleR,
+			Ref:            defaultGitRef,
 			CredentialsRef: &niov1alpha1.SecretReference{Name: "gitcreds"},
 		})
 	if err != nil {
@@ -155,23 +155,23 @@ func TestResolveRevisionWiresUsernamePassword(t *testing.T) {
 
 func TestResolveRevisionWiresTokenAndSSHKey(t *testing.T) {
 	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "token"},
-		Data:       map[string][]byte{"token": []byte("ghp_abc\n")},
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespaceApps, Name: testSecretNameToken},
+		Data:       map[string][]byte{testSecretKeyToken: []byte("ghp_abc\n")},
 	}
 	sshSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "sshkey"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespaceApps, Name: "sshkey"},
 		Data: map[string][]byte{
-			"ssh-privatekey": []byte("PRIVATE"),
-			"known_hosts":    []byte("host ssh-ed25519 AAAA"),
+			sshSecretPrivateKey: []byte("PRIVATE"),
+			"known_hosts":       []byte("host ssh-ed25519 AAAA"),
 		},
 	}
 	c := fake.NewClientBuilder().WithRuntimeObjects(tokenSecret, sshSecret).Build()
 
 	// Token-only secret populates the password (git-over-HTTPS token auth).
 	rec := &recordingGit{sha: "s"}
-	if _, err := resolveRevision(context.Background(), c, rec, "apps",
-		niov1alpha1.NixSource{GitRepo: "https://x/r", Ref: "main",
-			CredentialsRef: &niov1alpha1.SecretReference{Name: "token"}}); err != nil {
+	if _, err := resolveRevision(context.Background(), c, rec, testNamespaceApps,
+		niov1alpha1.NixSource{GitRepo: testRepoX, Ref: defaultGitRef,
+			CredentialsRef: &niov1alpha1.SecretReference{Name: testSecretNameToken}}); err != nil {
 		t.Fatalf("token: %v", err)
 	}
 	if rec.seen == nil || rec.seen.Password != "ghp_abc" {
@@ -180,8 +180,8 @@ func TestResolveRevisionWiresTokenAndSSHKey(t *testing.T) {
 
 	// SSH key + known_hosts are forwarded byte-exact.
 	rec2 := &recordingGit{sha: "s"}
-	if _, err := resolveRevision(context.Background(), c, rec2, "apps",
-		niov1alpha1.NixSource{GitRepo: "git@x:r.git", Ref: "main",
+	if _, err := resolveRevision(context.Background(), c, rec2, testNamespaceApps,
+		niov1alpha1.NixSource{GitRepo: "git@x:r.git", Ref: defaultGitRef,
 			CredentialsRef: &niov1alpha1.SecretReference{Name: "sshkey"}}); err != nil {
 		t.Fatalf("ssh: %v", err)
 	}
@@ -195,8 +195,8 @@ func TestResolveRevisionNoCredentialsRefPassesNil(t *testing.T) {
 	// Without a CredentialsRef the resolver must not touch the client and must
 	// pass nil creds (public-repo path). A nil client proves it is untouched.
 	rec := &recordingGit{sha: "s"}
-	if _, err := resolveRevision(context.Background(), nil, rec, "apps",
-		niov1alpha1.NixSource{GitRepo: "https://x/r", Ref: "main"}); err != nil {
+	if _, err := resolveRevision(context.Background(), nil, rec, testNamespaceApps,
+		niov1alpha1.NixSource{GitRepo: testRepoX, Ref: defaultGitRef}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rec.seen != nil {
@@ -206,8 +206,8 @@ func TestResolveRevisionNoCredentialsRefPassesNil(t *testing.T) {
 
 func TestResolveRevisionCredentialsSecretMissing(t *testing.T) {
 	c := fake.NewClientBuilder().Build()
-	_, err := resolveRevision(context.Background(), c, &recordingGit{sha: "s"}, "apps",
-		niov1alpha1.NixSource{GitRepo: "https://x/r", Ref: "main",
+	_, err := resolveRevision(context.Background(), c, &recordingGit{sha: "s"}, testNamespaceApps,
+		niov1alpha1.NixSource{GitRepo: testRepoX, Ref: defaultGitRef,
 			CredentialsRef: &niov1alpha1.SecretReference{Name: "missing"}})
 	if err == nil {
 		t.Error("expected error when credentialsRef points at a missing secret")
@@ -217,9 +217,9 @@ func TestResolveRevisionCredentialsSecretMissing(t *testing.T) {
 func TestResolveRevisionFlux(t *testing.T) {
 	src := &unstructured.Unstructured{}
 	src.SetAPIVersion("source.toolkit.fluxcd.io/v1")
-	src.SetKind("GitRepository")
-	src.SetName("web")
-	src.SetNamespace("apps")
+	src.SetKind(testKindGitRepository)
+	src.SetName(testFluxSourceWeb)
+	src.SetNamespace(testNamespaceApps)
 	_ = unstructured.SetNestedMap(src.Object, map[string]any{
 		"revision": "main@sha1:0123456789abcdef",
 		"url":      "http://source-controller.flux-system.svc/g/apps/web/0123.tar.gz",
@@ -229,8 +229,8 @@ func TestResolveRevisionFlux(t *testing.T) {
 	scheme.WithRuntimeObjects(src)
 	c := scheme.Build()
 
-	res, err := resolveRevision(context.Background(), c, fakeGit{err: errors.New("git must not be called")}, "apps",
-		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: "GitRepository", Name: "web"}})
+	res, err := resolveRevision(context.Background(), c, fakeGit{err: errors.New("git must not be called")}, testNamespaceApps,
+		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: testKindGitRepository, Name: testFluxSourceWeb}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,13 +245,13 @@ func TestResolveRevisionFlux(t *testing.T) {
 func TestResolveRevisionFluxMissingArtifact(t *testing.T) {
 	src := &unstructured.Unstructured{}
 	src.SetAPIVersion("source.toolkit.fluxcd.io/v1")
-	src.SetKind("GitRepository")
-	src.SetName("web")
-	src.SetNamespace("apps")
+	src.SetKind(testKindGitRepository)
+	src.SetName(testFluxSourceWeb)
+	src.SetNamespace(testNamespaceApps)
 
 	c := fake.NewClientBuilder().WithRuntimeObjects(src).Build()
-	_, err := resolveRevision(context.Background(), c, fakeGit{}, "apps",
-		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: "GitRepository", Name: "web"}})
+	_, err := resolveRevision(context.Background(), c, fakeGit{}, testNamespaceApps,
+		niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: testKindGitRepository, Name: testFluxSourceWeb}})
 	if err == nil {
 		t.Error("expected error when Flux source has no artifact yet")
 	}

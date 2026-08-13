@@ -58,57 +58,57 @@ func TestSelectGroupMembers(t *testing.T) {
 	}{
 		{
 			name:       "count unset selects all matching",
-			candidates: []string{"m-01", "m-02", "m-03"},
+			candidates: []string{testMachineM01, testMachineM02, testMachineM03},
 			count:      nil,
-			want:       []string{"m-01", "m-02", "m-03"},
+			want:       []string{testMachineM01, testMachineM02, testMachineM03},
 		},
 		{
 			name:       "S1.3 deterministic initial: 5 machines count 3 -> 3 lowest",
-			candidates: []string{"m-01", "m-02", "m-03", "m-04", "m-05"},
+			candidates: []string{testMachineM01, testMachineM02, testMachineM03, testMachineM04, testMachineM05},
 			count:      i32(3),
-			want:       []string{"m-01", "m-02", "m-03"},
+			want:       []string{testMachineM01, testMachineM02, testMachineM03},
 		},
 		{
 			name:       "S1.4 stable: identical inputs -> identical members",
-			candidates: []string{"m-01", "m-02", "m-03", "m-04", "m-05"},
-			prev:       []string{"m-01", "m-02", "m-03"},
+			candidates: []string{testMachineM01, testMachineM02, testMachineM03, testMachineM04, testMachineM05},
+			prev:       []string{testMachineM01, testMachineM02, testMachineM03},
 			count:      i32(3),
-			want:       []string{"m-01", "m-02", "m-03"},
+			want:       []string{testMachineM01, testMachineM02, testMachineM03},
 		},
 		{
 			name:       "S1.5 sticky: adding a lower name does not evict an existing member",
-			candidates: []string{"m-00", "m-01", "m-02", "m-03", "m-04", "m-05"},
-			prev:       []string{"m-01", "m-02", "m-03"},
+			candidates: []string{testMachineM00, testMachineM01, testMachineM02, testMachineM03, testMachineM04, testMachineM05},
+			prev:       []string{testMachineM01, testMachineM02, testMachineM03},
 			count:      i32(3),
-			want:       []string{"m-01", "m-02", "m-03"},
+			want:       []string{testMachineM01, testMachineM02, testMachineM03},
 		},
 		{
 			name:       "S1.6 vacancy filled by next sorted candidate above current members",
-			candidates: []string{"m-00", "m-01", "m-03", "m-04", "m-05"}, // m-02 deleted, m-00 present
-			prev:       []string{"m-01", "m-02", "m-03"},
+			candidates: []string{testMachineM00, testMachineM01, testMachineM03, testMachineM04, testMachineM05}, // m-02 deleted, m-00 present
+			prev:       []string{testMachineM01, testMachineM02, testMachineM03},
 			count:      i32(3),
-			want:       []string{"m-01", "m-03", "m-04"},
+			want:       []string{testMachineM01, testMachineM03, testMachineM04},
 		},
 		{
 			name:       "S5 under-provisioned: count 3, only 2 available",
-			candidates: []string{"m-01", "m-02"},
+			candidates: []string{testMachineM01, testMachineM02},
 			count:      i32(3),
-			want:       []string{"m-01", "m-02"},
+			want:       []string{testMachineM01, testMachineM02},
 			wantUnder:  true,
 		},
 		{
 			name:       "over count (count reduced) drops highest-name extras",
-			candidates: []string{"m-01", "m-02", "m-03"},
-			prev:       []string{"m-01", "m-02", "m-03"},
+			candidates: []string{testMachineM01, testMachineM02, testMachineM03},
+			prev:       []string{testMachineM01, testMachineM02, testMachineM03},
 			count:      i32(2),
-			want:       []string{"m-01", "m-02"},
+			want:       []string{testMachineM01, testMachineM02},
 		},
 		{
 			name:       "vacancy fallback to lowest-first when nothing above max is free",
-			candidates: []string{"m-00", "m-01", "m-08"},
-			prev:       []string{"m-08"},
+			candidates: []string{testMachineM00, testMachineM01, testMachineM08},
+			prev:       []string{testMachineM08},
 			count:      i32(2),
-			want:       []string{"m-00", "m-08"},
+			want:       []string{testMachineM00, testMachineM08},
 		},
 	}
 
@@ -131,7 +131,7 @@ func TestSelectGroupMembers(t *testing.T) {
 
 func TestRenderMemberNodeFile_Content(t *testing.T) {
 	values := &apiextensionsv1.JSON{Raw: []byte(`{"k3s":{"role":"server"}}`)}
-	nf, err := renderMemberNodeFile("prod", "node-01", "10.0.0.5", values)
+	nf, err := renderMemberNodeFile(testNameProd, testMachineNode01, testMachineHost, values)
 	if err != nil {
 		t.Fatalf("renderMemberNodeFile: %v", err)
 	}
@@ -176,17 +176,17 @@ func TestRenderMemberNodeFile_Escaping(t *testing.T) {
 		{
 			name:   "antiquotation in a JSON value",
 			values: `{"script":"echo '${VAR}'"}`,
-			host:   "10.0.0.5",
+			host:   testMachineHost,
 		},
 		{
 			name:   "getEnv injection payload in values",
 			values: `{"x":"'${builtins.getEnv \"HOME\"}"}`,
-			host:   "10.0.0.5",
+			host:   testMachineHost,
 		},
 		{
 			name:   "backslash, quote and single quotes in values",
 			values: `{"a":"b\\c\"d''e"}`,
-			host:   "10.0.0.5",
+			host:   testMachineHost,
 		},
 		{
 			name:   "antiquotation injection via host",
@@ -203,7 +203,7 @@ func TestRenderMemberNodeFile_Escaping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			values := &apiextensionsv1.JSON{Raw: []byte(tc.values)}
-			nf, err := renderMemberNodeFile("prod", "node-01", tc.host, values)
+			nf, err := renderMemberNodeFile(testNameProd, testMachineNode01, tc.host, values)
 			if err != nil {
 				t.Fatalf("renderMemberNodeFile: %v", err)
 			}
@@ -238,7 +238,7 @@ func assertEveryAntiquotationEscaped(t *testing.T, s string) {
 }
 
 func TestRenderMemberNodeFile_NilValues(t *testing.T) {
-	nf, err := renderMemberNodeFile("prod", "node-01", "10.0.0.5", nil)
+	nf, err := renderMemberNodeFile(testNameProd, testMachineNode01, testMachineHost, nil)
 	if err != nil {
 		t.Fatalf("renderMemberNodeFile: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestRenderMemberNodeFile_HostileName(t *testing.T) {
 		"",
 	}
 	for _, name := range hostile {
-		if _, err := renderMemberNodeFile("prod", name, "10.0.0.5", nil); err == nil {
+		if _, err := renderMemberNodeFile(testNameProd, name, testMachineHost, nil); err == nil {
 			t.Errorf("renderMemberNodeFile(%q) = nil error, want rejection", name)
 		}
 	}
@@ -269,10 +269,10 @@ func TestRenderMemberNodeFile_HostileName(t *testing.T) {
 
 func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 	cluster := &niov1alpha1.NixCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 		Spec: niov1alpha1.NixClusterSpec{
-			Source:    niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
-			SSHKeyRef: &niov1alpha1.SecretReference{Name: "cluster-ssh"},
+			Source:    niov1alpha1.NixSource{GitRepo: testRepoExampleProd, Ref: defaultGitRef},
+			SSHKeyRef: &niov1alpha1.SecretReference{Name: testSecretNameClusterSSH},
 			AgeKeyRef: &niov1alpha1.SecretReference{Name: "cluster-age"},
 		},
 	}
@@ -286,7 +286,7 @@ func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 	if cron.Spec.Nix.Run != ".#cluster-prod" {
 		t.Errorf("run = %q, want .#cluster-prod", cron.Spec.Nix.Run)
 	}
-	if !reflect.DeepEqual(cron.Spec.Nix.Args, []string{"converge"}) {
+	if !reflect.DeepEqual(cron.Spec.Nix.Args, []string{testClusterConvergeArg}) {
 		t.Errorf("args = %v, want [converge]", cron.Spec.Nix.Args)
 	}
 	if cron.Spec.Nix.TriggerOnChange == nil || !*cron.Spec.Nix.TriggerOnChange {
@@ -307,7 +307,7 @@ func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 	}
 
 	pod := cron.Spec.CronJobTemplate.JobTemplate.Spec.Template
-	assertVolume(t, pod.Spec.Volumes, clusterSSHVolumeName, "cluster-ssh")
+	assertVolume(t, pod.Spec.Volumes, clusterSSHVolumeName, testSecretNameClusterSSH)
 	assertVolume(t, pod.Spec.Volumes, clusterAgeVolumeName, "cluster-age")
 
 	var app *corev1.Container
@@ -321,14 +321,14 @@ func TestDesiredConvergeCronJob_Shape(t *testing.T) {
 	}
 	assertMount(t, app.VolumeMounts, clusterSSHVolumeName, clusterSSHMountPath)
 	assertMount(t, app.VolumeMounts, clusterAgeVolumeName, clusterAgeMountPath)
-	assertEnv(t, app.Env, "NIX_SSHOPTS")
+	assertEnv(t, app.Env, testEnvNixSSHOpts)
 	assertEnv(t, app.Env, "SOPS_AGE_KEY_FILE")
 }
 
 func TestDesiredConvergeCronJob_CustomSchedule(t *testing.T) {
 	const customSchedule = "0 * * * *"
 	cluster := &niov1alpha1.NixCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 		Spec:       niov1alpha1.NixClusterSpec{DayTwoSchedule: customSchedule},
 	}
 	cron := desiredConvergeCronJob(cluster, nil)
@@ -342,18 +342,18 @@ func TestDesiredConvergeCronJob_CustomSchedule(t *testing.T) {
 // store instead of rebuilding the whole closure in an ephemeral in-pod /nix.
 func TestDesiredConvergeCronJob_StoreBuilderRef(t *testing.T) {
 	cluster := &niov1alpha1.NixCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 		Spec: niov1alpha1.NixClusterSpec{
-			Source:     niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
-			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "cache-store"},
-			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "builder"},
+			Source:     niov1alpha1.NixSource{GitRepo: testRepoExampleProd, Ref: defaultGitRef},
+			StoreRef:   &niov1alpha1.LocalObjectReference{Name: testNameCacheStore},
+			BuilderRef: &niov1alpha1.LocalObjectReference{Name: testNameBuilder},
 		},
 	}
 	cron := desiredConvergeCronJob(cluster, nil)
-	if cron.Spec.Nix.StoreRef == nil || cron.Spec.Nix.StoreRef.Name != "cache-store" {
+	if cron.Spec.Nix.StoreRef == nil || cron.Spec.Nix.StoreRef.Name != testNameCacheStore {
 		t.Errorf("converge NixSpec.StoreRef = %v, want {cache-store}", cron.Spec.Nix.StoreRef)
 	}
-	if cron.Spec.Nix.BuilderRef == nil || cron.Spec.Nix.BuilderRef.Name != "builder" {
+	if cron.Spec.Nix.BuilderRef == nil || cron.Spec.Nix.BuilderRef.Name != testNameBuilder {
 		t.Errorf("converge NixSpec.BuilderRef = %v, want {builder}", cron.Spec.Nix.BuilderRef)
 	}
 }
@@ -362,8 +362,8 @@ func TestDesiredConvergeCronJob_StoreBuilderRef(t *testing.T) {
 // is the default — no store/builder acceleration required).
 func TestDesiredConvergeCronJob_NoStoreBuilderByDefault(t *testing.T) {
 	cluster := &niov1alpha1.NixCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
-		Spec:       niov1alpha1.NixClusterSpec{Source: niov1alpha1.NixSource{GitRepo: "https://example.com/prod"}},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
+		Spec:       niov1alpha1.NixClusterSpec{Source: niov1alpha1.NixSource{GitRepo: testRepoExampleProd}},
 	}
 	cron := desiredConvergeCronJob(cluster, nil)
 	if cron.Spec.Nix.StoreRef != nil || cron.Spec.Nix.BuilderRef != nil {
@@ -496,10 +496,10 @@ func TestSuspendConvergeCronJob(t *testing.T) {
 		t.Fatalf("AddToScheme: %v", err)
 	}
 	cluster := &niov1alpha1.NixCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 	}
 	cron := &niov1alpha1.NixCronJob{
-		ObjectMeta: metav1.ObjectMeta{Name: convergeCronName("prod"), Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: convergeCronName(testNameProd), Namespace: testNamespaceInfra},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, cron).Build()
 	r := &NixClusterReconciler{Client: c, Scheme: scheme}
@@ -509,7 +509,7 @@ func TestSuspendConvergeCronJob(t *testing.T) {
 	}
 	var got niov1alpha1.NixCronJob
 	if err := c.Get(context.Background(),
-		types.NamespacedName{Name: convergeCronName("prod"), Namespace: "infra"}, &got); err != nil {
+		types.NamespacedName{Name: convergeCronName(testNameProd), Namespace: testNamespaceInfra}, &got); err != nil {
 		t.Fatalf("get cron: %v", err)
 	}
 	if !got.Spec.Nix.Suspend {
@@ -520,7 +520,7 @@ func TestSuspendConvergeCronJob(t *testing.T) {
 	if err := r.suspendConvergeCronJob(context.Background(), cluster); err != nil {
 		t.Errorf("suspending twice must be a no-op, got %v", err)
 	}
-	absent := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "infra"}}
+	absent := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: testNamespaceInfra}}
 	if err := r.suspendConvergeCronJob(context.Background(), absent); err != nil {
 		t.Errorf("no cron yet must not be an error, got %v", err)
 	}
@@ -569,7 +569,7 @@ func TestClusterPhase_InfraStallIsBlocked(t *testing.T) {
 // "converge in progress".
 func TestSetConditions_PropagatesInfraStallMessage(t *testing.T) {
 	const msg = `NixStore "cache-store" not found`
-	cluster := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"}}
+	cluster := &niov1alpha1.NixCluster{ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra}}
 	cron := stalledConvergeCron(msg)
 	cluster.Status.Phase = clusterPhase(cron, true, 2)
 
@@ -605,7 +605,7 @@ func TestSetConditions_ClearsAnyStalledOnceTheReconcileSucceeds(t *testing.T) {
 	} {
 		t.Run(reason, func(t *testing.T) {
 			cluster := &niov1alpha1.NixCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+				ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 			}
 			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 				Type: niov1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
@@ -630,11 +630,11 @@ func TestSetConditions_ClearsAnyStalledOnceTheReconcileSucceeds(t *testing.T) {
 // a provable mismatch.
 func TestNixSystemForArch(t *testing.T) {
 	for in, want := range map[string]string{
-		"x86_64":  "x86_64-linux",
-		"amd64":   "x86_64-linux",
-		"AArch64": "aarch64-linux",
-		"arm64":   "aarch64-linux",
-		" x86_64": "x86_64-linux",
+		"x86_64":  testNixSystemX8664Linux,
+		"amd64":   testNixSystemX8664Linux,
+		"AArch64": testNixSystemAarch64Linux,
+		"arm64":   testNixSystemAarch64Linux,
+		" x86_64": testNixSystemX8664Linux,
 		"riscv64": "",
 		"":        "",
 	} {
@@ -647,7 +647,7 @@ func TestNixSystemForArch(t *testing.T) {
 // machineWithArch returns a Machine reporting the given architecture (empty means
 // hardware facts were never collected).
 func machineWithArch(arch string) *niov1alpha1.Machine {
-	m := &niov1alpha1.Machine{ObjectMeta: metav1.ObjectMeta{Name: "node-01", Namespace: "infra"}}
+	m := &niov1alpha1.Machine{ObjectMeta: metav1.ObjectMeta{Name: testMachineNode01, Namespace: testNamespaceInfra}}
 	if arch != "" {
 		m.Status.HardwareFacts = &niov1alpha1.HardwareFacts{Architecture: arch}
 	}
@@ -665,13 +665,13 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 
 	builder := func(name string, systems ...string) *niov1alpha1.NixBuilder {
 		return &niov1alpha1.NixBuilder{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "infra"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceInfra},
 			Spec:       niov1alpha1.NixBuilderSpec{Systems: systems},
 		}
 	}
 	groups := []niov1alpha1.NodeGroupStatus{{
 		Name:    "control-plane",
-		Members: []niov1alpha1.MemberStatus{{Name: "node-01"}},
+		Members: []niov1alpha1.MemberStatus{{Name: testMachineNode01}},
 	}}
 
 	tests := []struct {
@@ -682,28 +682,28 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 		wantErr    bool
 	}{{
 		name:       "provable mismatch is refused",
-		builderRef: "builder",
-		objects:    []client.Object{builder("builder", "x86_64-linux")},
+		builderRef: testNameBuilder,
+		objects:    []client.Object{builder(testNameBuilder, testNixSystemX8664Linux)},
 		machine:    machineWithArch("aarch64"),
 		wantErr:    true,
 	}, {
 		name:       "builder covers the member",
-		builderRef: "builder",
-		objects:    []client.Object{builder("builder", "x86_64-linux", "aarch64-linux")},
+		builderRef: testNameBuilder,
+		objects:    []client.Object{builder(testNameBuilder, testNixSystemX8664Linux, testNixSystemAarch64Linux)},
 		machine:    machineWithArch("aarch64"),
 	}, {
 		name:       "unqualified builder proves nothing",
-		builderRef: "builder",
-		objects:    []client.Object{builder("builder")},
+		builderRef: testNameBuilder,
+		objects:    []client.Object{builder(testNameBuilder)},
 		machine:    machineWithArch("aarch64"),
 	}, {
 		name:       "machine has not reported its architecture",
-		builderRef: "builder",
-		objects:    []client.Object{builder("builder", "x86_64-linux")},
+		builderRef: testNameBuilder,
+		objects:    []client.Object{builder(testNameBuilder, testNixSystemX8664Linux)},
 		machine:    machineWithArch(""),
 	}, {
 		name:       "builder does not exist yet (the child stalls instead)",
-		builderRef: "builder",
+		builderRef: testNameBuilder,
 		machine:    machineWithArch("aarch64"),
 	}, {
 		name:    "no builderRef at all",
@@ -713,7 +713,7 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := &niov1alpha1.NixCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+				ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 			}
 			if tc.builderRef != "" {
 				cluster.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: tc.builderRef}
@@ -722,14 +722,14 @@ func TestCheckBuilderCoversMembers(t *testing.T) {
 			r := &NixClusterReconciler{Client: c, Scheme: scheme}
 
 			err := r.checkBuilderCoversMembers(context.Background(), cluster,
-				map[string]*niov1alpha1.Machine{"node-01": tc.machine}, groups)
+				map[string]*niov1alpha1.Machine{testMachineNode01: tc.machine}, groups)
 			if tc.wantErr && err == nil {
 				t.Fatal("expected the mismatch to be refused")
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected refusal: %v", err)
 			}
-			if tc.wantErr && !strings.Contains(err.Error(), "aarch64-linux") {
+			if tc.wantErr && !strings.Contains(err.Error(), testNixSystemAarch64Linux) {
 				t.Errorf("the error must name the system the member needs: %v", err)
 			}
 		})
@@ -824,17 +824,17 @@ var _ = Describe("NixCluster Controller", func() {
 
 	Context("S1 — deterministic, stable, sticky selection", func() {
 		It("selects the lowest names, stays stable, sticky, and refills vacancies", func() {
-			for _, n := range []string{"m-01", "m-02", "m-03", "m-04", "m-05"} {
-				makeMachine(n, map[string]string{"role": "worker"})
+			for _, n := range []string{testMachineM01, testMachineM02, testMachineM03, testMachineM04, testMachineM05} {
+				makeMachine(n, map[string]string{testLabelRole: testRoleWorker})
 			}
 			name := "sel"
 			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: niov1alpha1.NixClusterSpec{
-					Source: niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
+					Source: niov1alpha1.NixSource{GitRepo: testRepoExampleR, Ref: defaultGitRef},
 					NodeGroups: []niov1alpha1.NodeGroup{{
 						Name:     "workers",
-						Selector: metav1.LabelSelector{MatchLabels: map[string]string{"role": "worker"}},
+						Selector: metav1.LabelSelector{MatchLabels: map[string]string{testLabelRole: testRoleWorker}},
 						Count:    i32(3),
 					}},
 				},
@@ -846,43 +846,43 @@ var _ = Describe("NixCluster Controller", func() {
 			By("S1.3 initial selection = 3 lowest names, sorted")
 			_, err := r.Reconcile(ctx, nn)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(memberNames(name, "workers")).To(Equal([]string{"m-01", "m-02", "m-03"}))
+			Expect(memberNames(name, "workers")).To(Equal([]string{testMachineM01, testMachineM02, testMachineM03}))
 
 			By("S1.4 re-reconcile is identical")
 			_, err = r.Reconcile(ctx, nn)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(memberNames(name, "workers")).To(Equal([]string{"m-01", "m-02", "m-03"}))
+			Expect(memberNames(name, "workers")).To(Equal([]string{testMachineM01, testMachineM02, testMachineM03}))
 
 			By("S1.5 adding a lower name does not evict an existing member")
-			makeMachine("m-00", map[string]string{"role": "worker"})
+			makeMachine(testMachineM00, map[string]string{testLabelRole: testRoleWorker})
 			_, err = r.Reconcile(ctx, nn)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(memberNames(name, "workers")).To(Equal([]string{"m-01", "m-02", "m-03"}))
+			Expect(memberNames(name, "workers")).To(Equal([]string{testMachineM01, testMachineM02, testMachineM03}))
 
 			By("S1.6 deleting a member refills with the next sorted candidate")
 			Expect(k8sClient.Delete(ctx, &niov1alpha1.Machine{
-				ObjectMeta: metav1.ObjectMeta{Name: "m-02", Namespace: ns},
+				ObjectMeta: metav1.ObjectMeta{Name: testMachineM02, Namespace: ns},
 			})).To(Succeed())
 			_, err = r.Reconcile(ctx, nn)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(memberNames(name, "workers")).To(Equal([]string{"m-01", "m-03", "m-04"}))
+			Expect(memberNames(name, "workers")).To(Equal([]string{testMachineM01, testMachineM03, testMachineM04}))
 		})
 	})
 
 	Context("S2 — one nodeGroup per machine", func() {
 		It("claims a matching Machine in the first group only", func() {
-			makeMachine("dual", map[string]string{"role": "server", "tier": "a"})
-			makeMachine("srv", map[string]string{"role": "server"})
-			makeMachine("wrk", map[string]string{"tier": "a"})
+			makeMachine("dual", map[string]string{testLabelRole: testRoleServer, testLabelTier: "a"})
+			makeMachine("srv", map[string]string{testLabelRole: testRoleServer})
+			makeMachine("wrk", map[string]string{testLabelTier: "a"})
 
 			name := "claim"
 			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: niov1alpha1.NixClusterSpec{
-					Source: niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
+					Source: niov1alpha1.NixSource{GitRepo: testRepoExampleR, Ref: defaultGitRef},
 					NodeGroups: []niov1alpha1.NodeGroup{
-						{Name: "servers", Selector: metav1.LabelSelector{MatchLabels: map[string]string{"role": "server"}}},
-						{Name: "tierA", Selector: metav1.LabelSelector{MatchLabels: map[string]string{"tier": "a"}}},
+						{Name: "servers", Selector: metav1.LabelSelector{MatchLabels: map[string]string{testLabelRole: testRoleServer}}},
+						{Name: "tierA", Selector: metav1.LabelSelector{MatchLabels: map[string]string{testLabelTier: "a"}}},
 					},
 				},
 			}
@@ -900,17 +900,17 @@ var _ = Describe("NixCluster Controller", func() {
 
 	Context("S5 — under-provisioned", func() {
 		It("surfaces an Underprovisioned condition and selects what is available", func() {
-			makeMachine("m-01", map[string]string{"role": "worker"})
-			makeMachine("m-02", map[string]string{"role": "worker"})
+			makeMachine(testMachineM01, map[string]string{testLabelRole: testRoleWorker})
+			makeMachine(testMachineM02, map[string]string{testLabelRole: testRoleWorker})
 
 			name := "under"
 			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: niov1alpha1.NixClusterSpec{
-					Source: niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
+					Source: niov1alpha1.NixSource{GitRepo: testRepoExampleR, Ref: defaultGitRef},
 					NodeGroups: []niov1alpha1.NodeGroup{{
 						Name:     "workers",
-						Selector: metav1.LabelSelector{MatchLabels: map[string]string{"role": "worker"}},
+						Selector: metav1.LabelSelector{MatchLabels: map[string]string{testLabelRole: testRoleWorker}},
 						Count:    i32(3),
 					}},
 				},
@@ -921,7 +921,7 @@ var _ = Describe("NixCluster Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(memberNames(name, "workers")).To(Equal([]string{"m-01", "m-02"}))
+			Expect(memberNames(name, "workers")).To(Equal([]string{testMachineM01, testMachineM02}))
 
 			var c niov1alpha1.NixCluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &c)).To(Succeed())
@@ -933,18 +933,18 @@ var _ = Describe("NixCluster Controller", func() {
 
 	Context("S4 — converge NixCronJob is created and owned", func() {
 		It("creates exactly one owned <cluster>-converge NixCronJob with the node files", func() {
-			makeMachine("node-01", map[string]string{"role": "server"})
+			makeMachine(testMachineNode01, map[string]string{testLabelRole: testRoleServer})
 
 			name := "conv"
 			cluster := &niov1alpha1.NixCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: niov1alpha1.NixClusterSpec{
-					Source:    niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
-					SSHKeyRef: &niov1alpha1.SecretReference{Name: "cluster-ssh"},
+					Source:    niov1alpha1.NixSource{GitRepo: testRepoExampleR, Ref: defaultGitRef},
+					SSHKeyRef: &niov1alpha1.SecretReference{Name: testSecretNameClusterSSH},
 					AgeKeyRef: &niov1alpha1.SecretReference{Name: "cluster-age"},
 					NodeGroups: []niov1alpha1.NodeGroup{{
 						Name:     "servers",
-						Selector: metav1.LabelSelector{MatchLabels: map[string]string{"role": "server"}},
+						Selector: metav1.LabelSelector{MatchLabels: map[string]string{testLabelRole: testRoleServer}},
 						Values:   &apiextensionsv1.JSON{Raw: []byte(`{"k3s":{"role":"server"}}`)},
 					}},
 				},
@@ -958,7 +958,7 @@ var _ = Describe("NixCluster Controller", func() {
 			var cron niov1alpha1.NixCronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-converge", Namespace: ns}, &cron)).To(Succeed())
 			Expect(cron.Spec.Nix.Run).To(Equal(".#cluster-" + name))
-			Expect(cron.Spec.Nix.Args).To(Equal([]string{"converge"}))
+			Expect(cron.Spec.Nix.Args).To(Equal([]string{testClusterConvergeArg}))
 			Expect(cron.Spec.CronJobTemplate.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
 			Expect(cron.Spec.Nix.AdditionalFiles).To(HaveLen(1))
 			Expect(cron.Spec.Nix.AdditionalFiles[0].Path).To(Equal("modules/nodes/node-01.nix"))

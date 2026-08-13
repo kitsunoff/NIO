@@ -52,12 +52,12 @@ var _ = Describe("NixBuilder Controller", func() {
 		BeforeEach(func() {
 			counter++
 			name = fmt.Sprintf("builder-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			maxJobs := int32(2)
 			builder := &niov1alpha1.NixBuilder{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixBuilderSpec{
-					StoreRef: &niov1alpha1.LocalObjectReference{Name: "store"},
+					StoreRef: &niov1alpha1.LocalObjectReference{Name: testNameStore},
 					MaxJobs:  &maxJobs,
 				},
 			}
@@ -65,7 +65,7 @@ var _ = Describe("NixBuilder Controller", func() {
 		})
 
 		AfterEach(func() {
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixBuilder{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixBuilder{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}})
 		})
 
 		It("creates a single-worker StatefulSet with an emptyDir /nix and publishes the endpoint", func() {
@@ -103,9 +103,9 @@ var _ = Describe("NixBuilder Controller", func() {
 		BeforeEach(func() {
 			counter++
 			name = fmt.Sprintf("builder-pvc-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			builder := &niov1alpha1.NixBuilder{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixBuilderSpec{
 					Storage: &corev1.PersistentVolumeClaimSpec{
 						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -119,7 +119,7 @@ var _ = Describe("NixBuilder Controller", func() {
 		})
 
 		AfterEach(func() {
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixBuilder{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixBuilder{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}})
 		})
 
 		It("uses a volumeClaimTemplate for /nix", func() {
