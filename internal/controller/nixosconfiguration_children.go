@@ -113,7 +113,7 @@ func childNixSource(config *niov1alpha1.NixosConfiguration) niov1alpha1.NixSourc
 func targetHost(machine *niov1alpha1.Machine) string {
 	user := machine.Spec.SSHUser
 	if user == "" {
-		user = "root"
+		user = defaultSSHUser
 	}
 	return user + "@" + machine.Spec.Host
 }
@@ -139,7 +139,7 @@ func targetSSHPodTemplate(machine *niov1alpha1.Machine) corev1.PodTemplateSpec {
 			}},
 			Containers: []corev1.Container{{
 				Name: defaultAppContainer,
-				Env:  []corev1.EnvVar{{Name: "NIX_SSHOPTS", Value: targetNixSSHOpts}},
+				Env:  []corev1.EnvVar{{Name: envNixSSHOpts, Value: targetNixSSHOpts}},
 				VolumeMounts: []corev1.VolumeMount{{
 					Name: targetSSHVolumeName, MountPath: targetSSHMountPath, ReadOnly: true,
 				}},
@@ -163,10 +163,10 @@ func requireTargetKey(machine *niov1alpha1.Machine) error {
 // -i/--ssh-option; the target host stays the trailing positional arg.
 func installAnywhereArgs(config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) []string {
 	return []string{
-		"--flake", flakeInstallable(config.Spec.Flake),
+		anywhereFlagFlake, flakeInstallable(config.Spec.Flake),
 		"-i", targetSSHKeyPath,
-		"--ssh-option", "StrictHostKeyChecking=no",
-		"--ssh-option", "UserKnownHostsFile=/dev/null",
+		anywhereFlagSSHOption, "StrictHostKeyChecking=no",
+		anywhereFlagSSHOption, "UserKnownHostsFile=/dev/null",
 		targetHost(machine),
 	}
 }
@@ -219,8 +219,8 @@ func buildDayTwoNixCronJob(config *niov1alpha1.NixosConfiguration, machine *niov
 				Source: childNixSource(config),
 				Run:    rebuildInstallable,
 				Args: []string{
-					"switch", "--flake", flakeInstallable(config.Spec.Flake),
-					"--target-host", targetHost(machine),
+					rebuildArgSwitch, rebuildFlagFlake, flakeInstallable(config.Spec.Flake),
+					rebuildFlagTargetHost, targetHost(machine),
 				},
 				AdditionalFiles: files,
 				TriggerOnChange: ptr(true),
@@ -255,8 +255,8 @@ func buildDecommissionNixJob(config *niov1alpha1.NixosConfiguration, machine *ni
 				Source: childNixSource(config),
 				Run:    rebuildInstallable,
 				Args: []string{
-					"switch", "--flake", flakeInstallable(config.Spec.OnRemoveFlake),
-					"--target-host", targetHost(machine),
+					rebuildArgSwitch, rebuildFlagFlake, flakeInstallable(config.Spec.OnRemoveFlake),
+					rebuildFlagTargetHost, targetHost(machine),
 				},
 				AdditionalFiles: files,
 				StoreRef:        config.Spec.StoreRef,

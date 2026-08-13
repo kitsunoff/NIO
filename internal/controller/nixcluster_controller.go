@@ -404,7 +404,7 @@ func convergePodTemplate(cluster *niov1alpha1.NixCluster) corev1.PodTemplateSpec
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: clusterSSHVolumeName, MountPath: clusterSSHMountPath, ReadOnly: true,
 		})
-		env = append(env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: clusterNixSSHOpts})
+		env = append(env, corev1.EnvVar{Name: envNixSSHOpts, Value: clusterNixSSHOpts})
 	}
 	if cluster.Spec.AgeKeyRef != nil {
 		volumes = append(volumes, corev1.Volume{
@@ -448,7 +448,7 @@ func desiredConvergeCronJob(cluster *niov1alpha1.NixCluster, files []niov1alpha1
 			Nix: niov1alpha1.NixSpec{
 				Source:          cluster.Spec.Source,
 				Run:             clusterAppInstallable(cluster.Name),
-				Args:            []string{"converge"},
+				Args:            []string{clusterConvergeArg},
 				AdditionalFiles: files,
 				TriggerOnChange: ptr(true),
 				// Optional store/builder acceleration: when the NixCluster
@@ -513,9 +513,9 @@ func (r *NixClusterReconciler) suspendConvergeCronJob(
 func nixSystemForArch(arch string) string {
 	switch strings.ToLower(strings.TrimSpace(arch)) {
 	case "x86_64", "amd64":
-		return "x86_64-linux"
+		return nixSystemX8664Linux
 	case "aarch64", "arm64":
-		return "aarch64-linux"
+		return nixSystemAarch64Linux
 	default:
 		return ""
 	}

@@ -289,8 +289,8 @@ func (r *NixStoreReconciler) ensureService(ctx context.Context, store *niov1alph
 		svc.Spec.ClusterIP = corev1.ClusterIPNone
 		svc.Spec.Selector = labels
 		svc.Spec.Ports = []corev1.ServicePort{
-			{Name: "http", Port: int32(NixStoreHTTPPort), TargetPort: intstr.FromInt(NixStoreHTTPPort)},
-			{Name: "ssh", Port: int32(NixStoreSSHPort), TargetPort: intstr.FromInt(NixStoreSSHPort)},
+			{Name: portNameHTTP, Port: int32(NixStoreHTTPPort), TargetPort: intstr.FromInt(NixStoreHTTPPort)},
+			{Name: portNameSSH, Port: int32(NixStoreSSHPort), TargetPort: intstr.FromInt(NixStoreSSHPort)},
 		}
 		return controllerutil.SetControllerReference(store, svc, r.Scheme)
 	})
@@ -350,12 +350,12 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 		filterOutContainers(podSpec.InitContainers, "bootstrap")...)
 
 	serverContainer := corev1.Container{
-		Name:    "store",
+		Name:    storeContainerName,
 		Image:   image,
 		Command: []string{"sh", "-c", storeStartScript()},
-		Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: int32(NixStoreHTTPPort)}},
+		Ports:   []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: int32(NixStoreHTTPPort)}},
 		Env: []corev1.EnvVar{
-			{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},
+			{Name: envNixConfig, Value: nixConfigExperimentalFeatures},
 			{Name: "CONFIG_FILE", Value: "/etc/harmonia/config.toml"},
 		},
 		VolumeMounts: []corev1.VolumeMount{
