@@ -22,6 +22,9 @@ import (
 	"time"
 )
 
+// testSSHUser is the SSH login name used by the buildSSHConfig test cases.
+const testSSHUser = "root"
+
 func TestMockClient_CheckConnection(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -141,7 +144,7 @@ func TestNewClient(t *testing.T) {
 func TestDefaultClient_buildSSHConfig_NoAuth(t *testing.T) {
 	client := &DefaultClient{}
 	config := &Config{
-		User:    "root",
+		User:    testSSHUser,
 		Timeout: 30 * time.Second,
 	}
 
@@ -154,7 +157,7 @@ func TestDefaultClient_buildSSHConfig_NoAuth(t *testing.T) {
 func TestDefaultClient_buildSSHConfig_WithPassword(t *testing.T) {
 	client := &DefaultClient{}
 	config := &Config{
-		User:     "root",
+		User:     testSSHUser,
 		Password: "secret",
 		Timeout:  30 * time.Second,
 	}
@@ -164,8 +167,8 @@ func TestDefaultClient_buildSSHConfig_WithPassword(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	if sshConfig.User != "root" {
-		t.Errorf("User = %v, want root", sshConfig.User)
+	if sshConfig.User != testSSHUser {
+		t.Errorf("User = %v, want %v", sshConfig.User, testSSHUser)
 	}
 
 	if len(sshConfig.Auth) != 1 {
@@ -178,7 +181,7 @@ func TestDefaultClient_buildSSHConfig_WithInvalidKey(t *testing.T) {
 
 	// Test that malformed key returns error
 	config := &Config{
-		User:       "root",
+		User:       testSSHUser,
 		PrivateKey: []byte("-----BEGIN OPENSSH PRIVATE KEY-----\ninvalid\n-----END OPENSSH PRIVATE KEY-----"),
 		Timeout:    30 * time.Second,
 	}
@@ -195,7 +198,7 @@ func TestDefaultClient_buildSSHConfig_KeyWithPasswordFallback(t *testing.T) {
 	// When key is invalid but password is provided, password auth should still work
 	// But in our implementation, we fail early on invalid key
 	config := &Config{
-		User:       "root",
+		User:       testSSHUser,
 		PrivateKey: []byte("invalid key"),
 		Password:   "fallback",
 		Timeout:    30 * time.Second,
@@ -211,7 +214,7 @@ func TestDefaultClient_buildSSHConfig_KeyWithPasswordFallback(t *testing.T) {
 func TestDefaultClient_buildSSHConfig_InvalidKey(t *testing.T) {
 	client := &DefaultClient{}
 	config := &Config{
-		User:       "root",
+		User:       testSSHUser,
 		PrivateKey: []byte("not a valid key"),
 		Timeout:    30 * time.Second,
 	}

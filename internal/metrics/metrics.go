@@ -29,6 +29,15 @@ const (
 	ResultSuccess = "success"
 	// ResultFailure is the label value for failed operations.
 	ResultFailure = "failure"
+
+	// Label names. These are part of the operator's observable metrics interface:
+	// user dashboards and alerting rules match on them, so their spelling is
+	// contractual and must not change. See TestMetricDescriptorsAreStable.
+
+	// labelResult is the label name carrying a ResultSuccess/ResultFailure outcome.
+	labelResult = "result"
+	// labelOperation is the label name carrying the NixOS operation (rebuild, anywhere).
+	labelOperation = "operation"
 )
 
 var (
@@ -104,21 +113,21 @@ var (
 		Namespace: namespace,
 		Name:      "ssh_connections_total",
 		Help:      "Total number of SSH connection attempts",
-	}, []string{"result"}) // success, failure
+	}, []string{labelResult}) // success, failure
 
 	// GitClonesTotal is the total number of git clone operations.
 	GitClonesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "git_clones_total",
 		Help:      "Total number of git clone operations",
-	}, []string{"result"}) // success, failure
+	}, []string{labelResult}) // success, failure
 
 	// NixosBuildsTotal is the total number of NixOS build operations.
 	NixosBuildsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "nixos_builds_total",
 		Help:      "Total number of NixOS build operations",
-	}, []string{"operation", "result"}) // operation: rebuild/anywhere, result: success/failure
+	}, []string{labelOperation, labelResult}) // operation: rebuild/anywhere, result: success/failure
 
 	// RetriesTotal is the total number of retry attempts.
 	RetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -156,7 +165,7 @@ var (
 		Name:      "reconcile_duration_seconds",
 		Help:      "Duration of reconcile operations in seconds",
 		Buckets:   prometheus.ExponentialBuckets(0.01, 2, 10), // 10ms to ~10s
-	}, []string{"controller", "result"})
+	}, []string{"controller", labelResult})
 
 	// SSHConnectionDuration is the duration of SSH connection operations.
 	SSHConnectionDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -180,7 +189,7 @@ var (
 		Name:      "nixos_build_duration_seconds",
 		Help:      "Duration of NixOS build operations in seconds",
 		Buckets:   prometheus.ExponentialBuckets(10, 2, 10), // 10s to ~2.8 hours
-	}, []string{"operation"}) // rebuild, anywhere
+	}, []string{labelOperation}) // rebuild, anywhere
 
 	// JobDuration is the duration of apply jobs.
 	JobDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -188,7 +197,7 @@ var (
 		Name:      "job_duration_seconds",
 		Help:      "Duration of apply jobs in seconds",
 		Buckets:   prometheus.ExponentialBuckets(10, 2, 10), // 10s to ~2.8 hours
-	}, []string{"operation", "result"})
+	}, []string{labelOperation, labelResult})
 )
 
 func init() {
