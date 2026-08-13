@@ -28,8 +28,8 @@ import (
 )
 
 func TestCompositeRevisionStableAndSensitive(t *testing.T) {
-	base := compositeRevision("abc123", ".#server", []string{"--port", "8080"})
-	if base != compositeRevision("abc123", ".#server", []string{"--port", "8080"}) {
+	base := compositeRevision(testRevAbc123, testRunServer, []string{testArgPort, testArgPortValue})
+	if base != compositeRevision(testRevAbc123, testRunServer, []string{testArgPort, testArgPortValue}) {
 		t.Fatal("compositeRevision is not stable for identical inputs")
 	}
 	if !strings.HasPrefix(base, "r-") {
@@ -37,10 +37,10 @@ func TestCompositeRevisionStableAndSensitive(t *testing.T) {
 	}
 
 	cases := map[string][]any{
-		"revision change": {"def456", ".#server", []string{"--port", "8080"}},
-		"run change":      {"abc123", ".#other", []string{"--port", "8080"}},
-		"args change":     {"abc123", ".#server", []string{"--port", "9090"}},
-		"args count":      {"abc123", ".#server", []string{"--port"}},
+		"revision change": {"def456", testRunServer, []string{testArgPort, testArgPortValue}},
+		"run change":      {testRevAbc123, ".#other", []string{testArgPort, testArgPortValue}},
+		"args change":     {testRevAbc123, testRunServer, []string{testArgPort, "9090"}},
+		"args count":      {testRevAbc123, testRunServer, []string{testArgPort}},
 	}
 	for name, c := range cases {
 		got := compositeRevision(c[0].(string), c[1].(string), c[2].([]string))
@@ -57,7 +57,7 @@ func TestCompositeRevisionStableAndSensitive(t *testing.T) {
 
 func TestBuildNixConfig(t *testing.T) {
 	store := &storeInfo{substituterURL: "http://store.apps.svc:5000", publicKey: "store:AbC=="}
-	builder := &builderInfo{endpoint: "ssh-ng://root@b.apps.svc", systems: []string{"x86_64-linux"}}
+	builder := &builderInfo{endpoint: "ssh-ng://root@b.apps.svc", systems: []string{testNixSystemX8664}}
 
 	full := buildNixConfig(store, builder)
 	if !strings.Contains(full, "http://store.apps.svc:5000") || !strings.Contains(full, cacheNixosURL) {
@@ -89,8 +89,8 @@ func TestBuildNixConfig(t *testing.T) {
 }
 
 func TestRunAndBuildCommand(t *testing.T) {
-	run := runCommand(".#server", []string{"--port", "8080"}, nil)
-	want := []string{"nix", "run", ".#server", "--", "--port", "8080"}
+	run := runCommand(testRunServer, []string{testArgPort, testArgPortValue}, nil)
+	want := []string{testCmdNix, testCmdRun, testRunServer, "--", testArgPort, testArgPortValue}
 	if strings.Join(run, " ") != strings.Join(want, " ") {
 		t.Errorf("runCommand = %v, want %v", run, want)
 	}
@@ -103,8 +103,8 @@ func TestRunAndBuildCommand(t *testing.T) {
 		t.Errorf("nix flags should precede the installable: %v", noArgs)
 	}
 
-	build := buildCommand(".#server", []string{".#dep"}, nil)
-	want = []string{"nix", "build", ".#server", ".#dep"}
+	build := buildCommand(testRunServer, []string{".#dep"}, nil)
+	want = []string{testCmdNix, "build", testRunServer, ".#dep"}
 	if strings.Join(build, " ") != strings.Join(want, " ") {
 		t.Errorf("buildCommand = %v, want %v", build, want)
 	}
@@ -131,7 +131,7 @@ func baseTemplateWithProbe() corev1.PodTemplateSpec {
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name: "app",
+					Name: defaultAppContainer,
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"},
@@ -146,16 +146,16 @@ func baseTemplateWithProbe() corev1.PodTemplateSpec {
 func TestRenderPodTemplateDirectGit(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
-			Run:    ".#server",
-			Args:   []string{"--port", "8080"},
+			Source: niov1alpha1.NixSource{GitRepo: testRepoAcmeWeb, Ref: defaultGitRef},
+			Run:    testRunServer,
+			Args:   []string{testArgPort, testArgPortValue},
 			Image:  "nixos/nix:2.24.0",
 		},
-		resolvedRevision: "abc123",
+		resolvedRevision: testRevAbc123,
 		store:            &storeInfo{substituterURL: "http://store.svc:5000", publicKey: "store:k=="},
-		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc"},
+		builder:          &builderInfo{endpoint: testBuilderEndpoint},
 		kind:             "NixDeployment",
-		name:             "web",
+		name:             testNameWeb,
 	}
 	out := renderPodTemplate(in, baseTemplateWithProbe())
 
@@ -172,14 +172,14 @@ func TestRenderPodTemplateDirectGit(t *testing.T) {
 
 	// fetch-source gets NIO_GIT_REPO + NIO_REVISION (direct mode).
 	fetchEnv := envMap(out.Spec.InitContainers[1].Env)
-	if fetchEnv["NIO_GIT_REPO"] != "https://github.com/acme/web" || fetchEnv["NIO_REVISION"] != "abc123" {
+	if fetchEnv[testEnvNioGitRepo] != testRepoAcmeWeb || fetchEnv["NIO_REVISION"] != testRevAbc123 {
 		t.Errorf("fetch-source env wrong: %v", fetchEnv)
 	}
 
 	// App container: image + command + NIX_CONFIG, probe preserved.
 	var app *corev1.Container
 	for i := range out.Spec.Containers {
-		if out.Spec.Containers[i].Name == "app" {
+		if out.Spec.Containers[i].Name == defaultAppContainer {
 			app = &out.Spec.Containers[i]
 		}
 	}
@@ -195,7 +195,7 @@ func TestRenderPodTemplateDirectGit(t *testing.T) {
 	if app.ReadinessProbe == nil {
 		t.Error("user readinessProbe was dropped")
 	}
-	if envMap(app.Env)["NIX_CONFIG"] == "" {
+	if envMap(app.Env)[testEnvNixConfig] == "" {
 		t.Error("app NIX_CONFIG not set")
 	}
 
@@ -209,7 +209,7 @@ func TestRenderPodTemplateDirectGit(t *testing.T) {
 	}
 
 	// Revision label + annotation set and equal.
-	rev := compositeRevision("abc123", ".#server", []string{"--port", "8080"})
+	rev := compositeRevision(testRevAbc123, testRunServer, []string{testArgPort, testArgPortValue})
 	if out.Labels[niov1alpha1.LabelRevision] != rev {
 		t.Errorf("revision label = %q, want %q", out.Labels[niov1alpha1.LabelRevision], rev)
 	}
@@ -220,9 +220,9 @@ func TestRenderPodTemplateDirectGit(t *testing.T) {
 
 func TestRenderPodTemplateIdempotent(t *testing.T) {
 	in := renderInput{
-		spec:             niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Ref: "main"}, Run: "."},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		spec:             niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Ref: defaultGitRef}, Run: "."},
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	once := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -244,20 +244,20 @@ func TestRenderPodTemplateIdempotent(t *testing.T) {
 func TestRenderPodTemplateFluxMode(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: "GitRepository", Name: "web"}},
+			Source: niov1alpha1.NixSource{FluxSourceRef: &niov1alpha1.FluxSourceRef{Kind: testKindGitRepository, Name: testFluxSourceWeb}},
 			Run:    ".",
 		},
 		resolvedRevision: "deadbeef",
 		artifactURL:      "http://source-controller.flux-system.svc/gitrepository/apps/web/deadbeef.tar.gz",
 		kind:             "NixDeployment",
-		name:             "web",
+		name:             testNameWeb,
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
 	fetchEnv := envMap(out.Spec.InitContainers[1].Env)
 	if fetchEnv["NIO_ARTIFACT_URL"] == "" {
 		t.Errorf("flux mode fetch-source missing NIO_ARTIFACT_URL: %v", fetchEnv)
 	}
-	if _, ok := fetchEnv["NIO_GIT_REPO"]; ok {
+	if _, ok := fetchEnv[testEnvNioGitRepo]; ok {
 		t.Errorf("flux mode should not set NIO_GIT_REPO: %v", fetchEnv)
 	}
 }
@@ -288,30 +288,30 @@ func envMap(env []corev1.EnvVar) map[string]string {
 }
 
 func TestRenderPodTemplateSSHWiring(t *testing.T) {
-	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"}
+	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: testRevAbc1234}, Run: testRunX}
 
 	// Without a builder / ssh secret: no ssh volume, no NIX_SSHOPTS.
-	out := renderPodTemplate(renderInput{spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j"}, corev1.PodTemplateSpec{})
+	out := renderPodTemplate(renderInput{spec: base, resolvedRevision: testRevAbc1234, kind: kindNixJob, name: "j"}, corev1.PodTemplateSpec{})
 	for _, v := range out.Spec.Volumes {
 		if v.Name == sshVolumeName {
 			t.Fatal("ssh volume present without a builder")
 		}
 	}
 	inst := containerByName(out.Spec.InitContainers, initInstantiate)
-	if inst == nil || envMap(inst.Env)["NIX_SSHOPTS"] != "" {
+	if inst == nil || envMap(inst.Env)[testEnvNixSSHOpts] != "" {
 		t.Error("NIX_SSHOPTS set on instantiate without a builder")
 	}
 
 	// With a builder + ssh secret: ssh volume mounted, NIX_SSHOPTS on instantiate+app.
 	out = renderPodTemplate(renderInput{
-		spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j",
-		builder:       &builderInfo{endpoint: "ssh-ng://root@b.svc"},
-		sshSecretName: "store-ssh",
+		spec: base, resolvedRevision: testRevAbc1234, kind: kindNixJob, name: "j",
+		builder:       &builderInfo{endpoint: testBuilderEndpoint},
+		sshSecretName: testSecretNameStoreSSH,
 	}, corev1.PodTemplateSpec{})
 
 	hasVol := false
 	for _, v := range out.Spec.Volumes {
-		if v.Name == sshVolumeName && v.Secret != nil && v.Secret.SecretName == "store-ssh" {
+		if v.Name == sshVolumeName && v.Secret != nil && v.Secret.SecretName == testSecretNameStoreSSH {
 			hasVol = true
 		}
 	}
@@ -319,7 +319,7 @@ func TestRenderPodTemplateSSHWiring(t *testing.T) {
 		t.Error("ssh volume missing/misconfigured with a builder")
 	}
 	inst = containerByName(out.Spec.InitContainers, initInstantiate)
-	if inst == nil || envMap(inst.Env)["NIX_SSHOPTS"] == "" {
+	if inst == nil || envMap(inst.Env)[testEnvNixSSHOpts] == "" {
 		t.Error("NIX_SSHOPTS missing on instantiate with a builder")
 	}
 	mounted := false
@@ -339,7 +339,7 @@ func TestRenderPodTemplateSSHWiring(t *testing.T) {
 func TestBuildNixConfigBuilderSSHKey(t *testing.T) {
 	cfg := buildNixConfig(nil, &builderInfo{
 		endpoint:   "ssh-ng://root@builder.nio.svc",
-		systems:    []string{"aarch64-linux"},
+		systems:    []string{testNixSystemAarch64},
 		sshKeyPath: sshPrivateKeyPath,
 	})
 	want := "builders = ssh-ng://root@builder.nio.svc aarch64-linux " + sshPrivateKeyPath
@@ -351,7 +351,7 @@ func TestBuildNixConfigBuilderSSHKey(t *testing.T) {
 	}
 
 	// No key path → no trailing key on the builders line (ephemeral/older path).
-	noKey := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://x", systems: []string{"aarch64-linux"}})
+	noKey := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://x", systems: []string{testNixSystemAarch64}})
 	if strings.Contains(noKey, "aarch64-linux "+sshPrivateKeyPath) {
 		t.Errorf("builders line must not carry a key when none is set: %q", noKey)
 	}
@@ -366,28 +366,28 @@ func TestRenderAppKeepsCallerNIXSSHOPTS(t *testing.T) {
 	const targetOpts = "-i /etc/nio/target-ssh/ssh-privatekey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 	base := corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 		Containers: []corev1.Container{{
-			Name: "app",
-			Env:  []corev1.EnvVar{{Name: "NIX_SSHOPTS", Value: targetOpts}},
+			Name: defaultAppContainer,
+			Env:  []corev1.EnvVar{{Name: testEnvNixSSHOpts, Value: targetOpts}},
 		}},
 	}}
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: "main"},
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: defaultGitRef},
 			Run:    "nixpkgs#nixos-rebuild",
-			Args:   []string{"switch", "--flake", ".#web", "--target-host", "root@10.0.0.5"},
+			Args:   []string{testArgSwitch, testArgFlake, ".#web", testArgTargetHost, testTargetHost},
 		},
-		resolvedRevision: "abc1234",
-		kind:             "NixCronJob",
-		name:             "web-day2",
-		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
-		sshSecretName:    "store-ssh",
+		resolvedRevision: testRevAbc1234,
+		kind:             kindNixCronJob,
+		name:             testNameWebDayTwo,
+		builder:          &builderInfo{endpoint: testBuilderEndpoint, sshKeyPath: sshPrivateKeyPath},
+		sshSecretName:    testSecretNameStoreSSH,
 	}
 	out := renderPodTemplate(in, base)
-	app := containerByName(out.Spec.Containers, "app")
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
-	got := envMap(app.Env)["NIX_SSHOPTS"]
+	got := envMap(app.Env)[testEnvNixSSHOpts]
 	if got != targetOpts {
 		t.Errorf("app NIX_SSHOPTS was overridden\n want: %q\n got:  %q", targetOpts, got)
 	}
@@ -403,17 +403,17 @@ func TestRenderAppKeepsCallerNIXSSHOPTS(t *testing.T) {
 // is present but the caller injected nothing, so the app gets host-key options
 // only (no -i), and dispatches builds using the builders= key.
 func TestRenderAppHostKeyOptsOnlyWhenNoCallerOpts(t *testing.T) {
-	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"}
+	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: testRevAbc1234}, Run: testRunX}
 	out := renderPodTemplate(renderInput{
-		spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j",
-		builder:       &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
-		sshSecretName: "store-ssh",
+		spec: base, resolvedRevision: testRevAbc1234, kind: kindNixJob, name: "j",
+		builder:       &builderInfo{endpoint: testBuilderEndpoint, sshKeyPath: sshPrivateKeyPath},
+		sshSecretName: testSecretNameStoreSSH,
 	}, corev1.PodTemplateSpec{})
-	app := containerByName(out.Spec.Containers, "app")
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
-	got := envMap(app.Env)["NIX_SSHOPTS"]
+	got := envMap(app.Env)[testEnvNixSSHOpts]
 	if got != sshHostKeyOpts {
 		t.Errorf("app NIX_SSHOPTS = %q, want host-key opts only %q", got, sshHostKeyOpts)
 	}
@@ -426,17 +426,17 @@ func TestRenderAppHostKeyOptsOnlyWhenNoCallerOpts(t *testing.T) {
 // carries K_infra in NIX_SSHOPTS — it needs it for the store push
 // (nix copy --to ssh-ng://store), which is not covered by the builders= key.
 func TestRenderInstantiateKeepsInfraKey(t *testing.T) {
-	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"}
+	base := niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: testRevAbc1234}, Run: testRunX}
 	out := renderPodTemplate(renderInput{
-		spec: base, resolvedRevision: "abc1234", kind: "NixJob", name: "j",
-		builder:       &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
-		sshSecretName: "store-ssh",
+		spec: base, resolvedRevision: testRevAbc1234, kind: kindNixJob, name: "j",
+		builder:       &builderInfo{endpoint: testBuilderEndpoint, sshKeyPath: sshPrivateKeyPath},
+		sshSecretName: testSecretNameStoreSSH,
 	}, corev1.PodTemplateSpec{})
 	inst := containerByName(out.Spec.InitContainers, initInstantiate)
 	if inst == nil {
 		t.Fatal("instantiate container missing")
 	}
-	got := envMap(inst.Env)["NIX_SSHOPTS"]
+	got := envMap(inst.Env)[testEnvNixSSHOpts]
 	want := "-i " + sshPrivateKeyPath + " " + sshHostKeyOpts
 	if got != want {
 		t.Errorf("instantiate NIX_SSHOPTS = %q, want %q", got, want)
@@ -450,8 +450,8 @@ func TestRenderInstantiateKeepsInfraKey(t *testing.T) {
 // the target with the Machine key — not the builder key.
 func TestRenderDayTwoChildKeepsTargetKey(t *testing.T) {
 	cfg := testConfig()
-	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: "store"}
-	cfg.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: "builder"}
+	cfg.Spec.StoreRef = &niov1alpha1.LocalObjectReference{Name: testNameStore}
+	cfg.Spec.BuilderRef = &niov1alpha1.LocalObjectReference{Name: testNameBuilder}
 	cron, err := buildDayTwoNixCronJob(cfg, testMachine())
 	if err != nil {
 		t.Fatalf("buildDayTwoNixCronJob: %v", err)
@@ -459,17 +459,17 @@ func TestRenderDayTwoChildKeepsTargetKey(t *testing.T) {
 	pod := cron.Spec.CronJobTemplate.JobTemplate.Spec.Template
 	out := renderPodTemplate(renderInput{
 		spec:             cron.Spec.Nix,
-		resolvedRevision: "abc1234",
-		kind:             "NixCronJob",
+		resolvedRevision: testRevAbc1234,
+		kind:             kindNixCronJob,
 		name:             cron.Name,
-		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
-		sshSecretName:    "store-ssh",
+		builder:          &builderInfo{endpoint: testBuilderEndpoint, sshKeyPath: sshPrivateKeyPath},
+		sshSecretName:    testSecretNameStoreSSH,
 	}, pod)
-	app := containerByName(out.Spec.Containers, "app")
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
-	got := envMap(app.Env)["NIX_SSHOPTS"]
+	got := envMap(app.Env)[testEnvNixSSHOpts]
 	if !strings.Contains(got, targetSSHKeyPath) {
 		t.Errorf("rendered day-2 app NIX_SSHOPTS must use the target key %q: %q", targetSSHKeyPath, got)
 	}
@@ -477,8 +477,8 @@ func TestRenderDayTwoChildKeepsTargetKey(t *testing.T) {
 		t.Errorf("rendered day-2 app NIX_SSHOPTS must NOT use the builder key: %q", got)
 	}
 	// And the builders= line must carry the builder key so the dispatch still works.
-	if !strings.Contains(envMap(app.Env)["NIX_CONFIG"], "builders = ssh-ng://root@b.svc "+defaultNixSystems+" "+sshPrivateKeyPath) {
-		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)["NIX_CONFIG"])
+	if !strings.Contains(envMap(app.Env)[testEnvNixConfig], testBuildersLinePrefix+defaultNixSystems+" "+sshPrivateKeyPath) {
+		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)[testEnvNixConfig])
 	}
 }
 
@@ -490,38 +490,38 @@ func TestRenderDayTwoChildKeepsTargetKey(t *testing.T) {
 // build dispatch itself still authenticates.
 func TestRenderConvergeKeepsClusterKey(t *testing.T) {
 	cluster := &niov1alpha1.NixCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		ObjectMeta: metav1.ObjectMeta{Name: testNameProd, Namespace: testNamespaceInfra},
 		Spec: niov1alpha1.NixClusterSpec{
-			Source:     niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
-			SSHKeyRef:  &niov1alpha1.SecretReference{Name: "cluster-ssh"},
-			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "store"},
-			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "builder"},
+			Source:     niov1alpha1.NixSource{GitRepo: testRepoExampleProd, Ref: defaultGitRef},
+			SSHKeyRef:  &niov1alpha1.SecretReference{Name: testSecretNameClusterSSH},
+			StoreRef:   &niov1alpha1.LocalObjectReference{Name: testNameStore},
+			BuilderRef: &niov1alpha1.LocalObjectReference{Name: testNameBuilder},
 		},
 	}
 	cron := desiredConvergeCronJob(cluster, nil)
 	out := renderPodTemplate(renderInput{
 		spec:             cron.Spec.Nix,
-		resolvedRevision: "abc1234",
-		kind:             "NixCronJob",
+		resolvedRevision: testRevAbc1234,
+		kind:             kindNixCronJob,
 		name:             cron.Name,
-		builder:          &builderInfo{endpoint: "ssh-ng://root@b.svc", sshKeyPath: sshPrivateKeyPath},
-		sshSecretName:    "store-ssh",
+		builder:          &builderInfo{endpoint: testBuilderEndpoint, sshKeyPath: sshPrivateKeyPath},
+		sshSecretName:    testSecretNameStoreSSH,
 	}, cron.Spec.CronJobTemplate.JobTemplate.Spec.Template)
 
 	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
-	got := envMap(app.Env)["NIX_SSHOPTS"]
+	got := envMap(app.Env)[testEnvNixSSHOpts]
 	if got != clusterNixSSHOpts {
 		t.Errorf("converge app NIX_SSHOPTS = %q, want the cluster key opts %q", got, clusterNixSSHOpts)
 	}
 	if strings.Contains(got, sshKeyMountPath+"/") {
 		t.Errorf("converge app NIX_SSHOPTS must NOT reference the builder key: %q", got)
 	}
-	if !strings.Contains(envMap(app.Env)["NIX_CONFIG"],
-		"builders = ssh-ng://root@b.svc "+defaultNixSystems+" "+sshPrivateKeyPath) {
-		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)["NIX_CONFIG"])
+	if !strings.Contains(envMap(app.Env)[testEnvNixConfig],
+		testBuildersLinePrefix+defaultNixSystems+" "+sshPrivateKeyPath) {
+		t.Errorf("NIX_CONFIG builders line must carry the builder key: %q", envMap(app.Env)[testEnvNixConfig])
 	}
 }
 
@@ -531,9 +531,9 @@ func TestRenderConvergeKeepsClusterKey(t *testing.T) {
 // field docs must keep saying that — this test is what makes the claim checkable.
 func TestRenderStoreOnlyDoesNotPush(t *testing.T) {
 	out := renderPodTemplate(renderInput{
-		spec:             niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: "abc1234"}, Run: ".#x"},
-		resolvedRevision: "abc1234",
-		kind:             "NixCronJob",
+		spec:             niov1alpha1.NixSpec{Source: niov1alpha1.NixSource{GitRepo: "r", Rev: testRevAbc1234}, Run: testRunX},
+		resolvedRevision: testRevAbc1234,
+		kind:             kindNixCronJob,
 		name:             "j",
 		// Store resolved, no builder ⇒ resolveInfra leaves sshSecretName empty.
 		store: &storeInfo{
@@ -552,8 +552,8 @@ func TestRenderStoreOnlyDoesNotPush(t *testing.T) {
 		t.Errorf("store-only instantiate must not push into the store: %q", joined)
 	}
 	// It must still substitute FROM the store — that is the whole benefit.
-	if !strings.Contains(envMap(inst.Env)["NIX_CONFIG"], "substituters = http://store.nio.svc") {
-		t.Errorf("store-only instantiate must substitute from the store: %q", envMap(inst.Env)["NIX_CONFIG"])
+	if !strings.Contains(envMap(inst.Env)[testEnvNixConfig], "substituters = http://store.nio.svc") {
+		t.Errorf("store-only instantiate must substitute from the store: %q", envMap(inst.Env)[testEnvNixConfig])
 	}
 }
 
@@ -563,8 +563,8 @@ func TestRenderStoreOnlyDoesNotPush(t *testing.T) {
 // delegation sets max-jobs = 0, so there is no local fallback when the dispatch
 // cannot satisfy a derivation.
 func TestBuildNixConfigUnqualifiedBuilderHasNoLocalFallback(t *testing.T) {
-	cfg := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://root@b.svc"})
-	if !strings.Contains(cfg, "builders = ssh-ng://root@b.svc "+defaultNixSystems) {
+	cfg := buildNixConfig(nil, &builderInfo{endpoint: testBuilderEndpoint})
+	if !strings.Contains(cfg, testBuildersLinePrefix+defaultNixSystems) {
 		t.Errorf("an unqualified builder must be advertised as %q: %q", defaultNixSystems, cfg)
 	}
 	if !strings.Contains(cfg, "max-jobs = 0") {
@@ -617,14 +617,14 @@ func TestRenderFetchSourceHTTPSCredentials(t *testing.T) {
 		spec: niov1alpha1.NixSpec{
 			Source: niov1alpha1.NixSource{
 				GitRepo:        "https://github.com/acme/private",
-				Ref:            "main",
+				Ref:            defaultGitRef,
 				CredentialsRef: &niov1alpha1.SecretReference{Name: "gc"},
 			},
-			Run:   ".#x",
-			Image: "nixos/nix",
+			Run:   testRunX,
+			Image: testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -654,14 +654,14 @@ func TestRenderFetchSourceSSHCredentials(t *testing.T) {
 		spec: niov1alpha1.NixSpec{
 			Source: niov1alpha1.NixSource{
 				GitRepo:        "git@github.com:acme/private.git",
-				Ref:            "main",
+				Ref:            defaultGitRef,
 				CredentialsRef: &niov1alpha1.SecretReference{Name: "gc"},
 			},
-			Run:   ".#x",
-			Image: "nixos/nix",
+			Run:   testRunX,
+			Image: testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -687,12 +687,12 @@ func TestRenderFetchSourceNoCredentials(t *testing.T) {
 	// wiring in the fetch-source script.
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/pub", Ref: "main"},
-			Run:    ".#x",
-			Image:  "nixos/nix",
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/pub", Ref: defaultGitRef},
+			Run:    testRunX,
+			Image:  testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -709,16 +709,16 @@ func TestRenderFetchSourceNoCredentials(t *testing.T) {
 func TestRenderInjectFilesConfigMapAndSecret(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
-			Run:    ".#server",
-			Image:  "nixos/nix",
+			Source: niov1alpha1.NixSource{GitRepo: testRepoAcmeWeb, Ref: defaultGitRef},
+			Run:    testRunServer,
+			Image:  testImageNixosNix,
 			AdditionalFiles: []niov1alpha1.NixFile{
 				{Path: "hosts/hw.nix", ConfigMapRef: &niov1alpha1.ConfigMapKeyReference{Name: "hwcm", Key: "config"}},
-				{Path: "secret.nix", SecretRef: &niov1alpha1.SecretKeyReference{Name: "sec", Key: "token"}},
+				{Path: "secret.nix", SecretRef: &niov1alpha1.SecretKeyReference{Name: "sec", Key: testSecretKeyToken}},
 			},
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -753,7 +753,7 @@ func TestRenderInjectFilesConfigMapAndSecret(t *testing.T) {
 	// disabled"). Regression guard for that bug.
 	var nixCfg string
 	for _, e := range inject.Env {
-		if e.Name == "NIX_CONFIG" {
+		if e.Name == testEnvNixConfig {
 			nixCfg = e.Value
 		}
 	}
@@ -768,15 +768,15 @@ func TestRenderInjectFilesInline(t *testing.T) {
 	content := "{ imports = [ ]; }\n"
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
-			Run:    ".#server",
-			Image:  "nixos/nix",
+			Source: niov1alpha1.NixSource{GitRepo: testRepoAcmeWeb, Ref: defaultGitRef},
+			Run:    testRunServer,
+			Image:  testImageNixosNix,
 			AdditionalFiles: []niov1alpha1.NixFile{
 				{Path: "extra.nix", Inline: &content},
 			},
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -809,12 +809,12 @@ func TestRenderInjectFilesInline(t *testing.T) {
 func TestRenderNoInjectWithoutAdditionalFiles(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/web", Ref: "main"},
-			Run:    ".#server",
-			Image:  "nixos/nix",
+			Source: niov1alpha1.NixSource{GitRepo: testRepoAcmeWeb, Ref: defaultGitRef},
+			Run:    testRunServer,
+			Image:  testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -831,33 +831,33 @@ func TestRenderAppWrapsOpensshWhenInjectedNixSSHOpts(t *testing.T) {
 	// app container of a child NixJob. Render must preserve it and add openssh.
 	base := corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 		Containers: []corev1.Container{{
-			Name: "app",
+			Name: defaultAppContainer,
 			Env: []corev1.EnvVar{{
-				Name:  "NIX_SSHOPTS",
+				Name:  testEnvNixSSHOpts,
 				Value: "-i /etc/nio/target/ssh-privatekey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
 			}},
 		}},
 	}}
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: "main"},
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: defaultGitRef},
 			Run:    "nixpkgs#nixos-rebuild",
-			Args:   []string{"switch", "--flake", ".#web", "--target-host", "root@10.0.0.5"},
-			Image:  "nixos/nix",
+			Args:   []string{testArgSwitch, testArgFlake, ".#web", testArgTargetHost, testTargetHost},
+			Image:  testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, base)
-	app := containerByName(out.Spec.Containers, "app")
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
 	if !strings.Contains(strings.Join(app.Command, " "), "nix shell nixpkgs#openssh") {
 		t.Errorf("app SSHing to a target must be wrapped in openssh: %v", app.Command)
 	}
-	if envMap(app.Env)["NIX_SSHOPTS"] == "" {
+	if envMap(app.Env)[testEnvNixSSHOpts] == "" {
 		t.Error("injected NIX_SSHOPTS must be preserved on the app container")
 	}
 }
@@ -865,16 +865,16 @@ func TestRenderAppWrapsOpensshWhenInjectedNixSSHOpts(t *testing.T) {
 func TestRenderNoOpensshWithoutSSH(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/app", Ref: "main"},
-			Run:    ".#server",
-			Image:  "nixos/nix",
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/app", Ref: defaultGitRef},
+			Run:    testRunServer,
+			Image:  testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
-	app := containerByName(out.Spec.Containers, "app")
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
@@ -886,12 +886,12 @@ func TestRenderNoOpensshWithoutSSH(t *testing.T) {
 func TestRenderPodTemplateFlakeSubdir(t *testing.T) {
 	in := renderInput{
 		spec: niov1alpha1.NixSpec{
-			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/mono", Ref: "main", Dir: "hosts/web"},
-			Run:    ".#server",
-			Image:  "nixos/nix",
+			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/mono", Ref: defaultGitRef, Dir: testDirHostsWeb},
+			Run:    testRunServer,
+			Image:  testImageNixosNix,
 		},
-		resolvedRevision: "abc",
-		kind:             "NixJob",
+		resolvedRevision: testRevAbc,
+		kind:             kindNixJob,
 		name:             "j",
 	}
 	out := renderPodTemplate(in, corev1.PodTemplateSpec{})
@@ -903,7 +903,7 @@ func TestRenderPodTemplateFlakeSubdir(t *testing.T) {
 	if inst.WorkingDir != "/workspace/hosts/web" {
 		t.Errorf("instantiate WorkingDir = %q, want /workspace/hosts/web", inst.WorkingDir)
 	}
-	app := containerByName(out.Spec.Containers, "app")
+	app := containerByName(out.Spec.Containers, defaultAppContainer)
 	if app == nil {
 		t.Fatal("app container missing")
 	}
