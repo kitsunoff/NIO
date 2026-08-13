@@ -2,6 +2,12 @@ module github.com/kitsunoff/nixos-operator
 
 go 1.25.0
 
+// go1.26.1 and earlier carry reachable advisories in crypto/tls, crypto/x509,
+// net, net/http, net/mail, net/textproto, mime and html/template. Pinning the
+// toolchain is what makes `govulncheck ./...` clean, so CI, the release binary
+// and a local `go build` are all built by the same fixed standard library.
+toolchain go1.26.5
+
 require (
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1

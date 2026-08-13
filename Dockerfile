@@ -1,5 +1,7 @@
-# Build the manager binary
-FROM golang:1.24 AS builder
+# Build the manager binary.
+# Keep this in step with the `toolchain` directive in go.mod: the published
+# binary must be built by the same standard library that govulncheck verifies.
+FROM golang:1.26.5 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
