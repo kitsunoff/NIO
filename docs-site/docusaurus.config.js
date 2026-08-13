@@ -25,7 +25,6 @@ const config = {
   // otherwise.
   onBrokenLinks: 'throw',
   onBrokenAnchors: 'throw',
-  onBrokenMarkdownLinks: 'throw',
   onDuplicateRoutes: 'throw',
 
   markdown: {
@@ -33,6 +32,10 @@ const config = {
     // imported prose full of angle brackets and braces that MDX would try to
     // read as JSX, so every page here is .md.
     format: 'detect',
+    hooks: {
+      onBrokenMarkdownLinks: 'throw',
+      onBrokenMarkdownImages: 'throw',
+    },
   },
 
   i18n: {
