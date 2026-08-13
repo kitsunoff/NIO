@@ -110,7 +110,7 @@ var _ = Describe("NixDeployment Controller", func() {
 				}
 			}
 			Expect(app).NotTo(BeNil())
-			Expect(app.Command).To(Equal([]string{testCmdNix, testCmdRun, testRunServer, "--", testArgPort, testArgPortValue}))
+			Expect(app.Command).To(Equal([]string{testNixBinary, testNixCmdRun, testRunServer, "--", testArgPort, testArgPortValue}))
 
 			By("defaulting a surge-only strategy")
 			Expect(dep.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
@@ -150,7 +150,7 @@ var _ = Describe("NixDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
 				Name:  initInstantiate,
-				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: testReasonError}},
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: testContainerReasonError}},
 			}}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 

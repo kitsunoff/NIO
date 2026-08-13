@@ -83,10 +83,10 @@ const (
 
 	// --- Container names --------------------------------------------------
 
-	// testContainerStore is the name of the container inside the NixStore
+	// testStoreContainerName is the name of the container inside the NixStore
 	// StatefulSet. Same spelling as testNameStore, different meaning: this one
 	// is a container name, not the NixStore object's name.
-	testContainerStore = "store"
+	testStoreContainerName = "store"
 
 	// --- Machines ---------------------------------------------------------
 
@@ -107,10 +107,10 @@ const (
 	// testMachineHostFQDN is the Machine's spec.host in the machine-controller
 	// fixtures, which exercise a DNS name rather than an address.
 	testMachineHostFQDN = "test-host.example.com"
-	// testSSHUserRoot is the Machine's spec.sshUser.
-	testSSHUserRoot = "root"
+	// testDefaultSSHUser is the Machine's spec.sshUser.
+	testDefaultSSHUser = "root"
 	// testTargetHost is the user@host argument nixos-rebuild/nixos-anywhere
-	// receive; it is testSSHUserRoot at testMachineHost.
+	// receive; it is testDefaultSSHUser at testMachineHost.
 	testTargetHost = "root@10.0.0.5"
 
 	// --- Labels -----------------------------------------------------------
@@ -150,23 +150,28 @@ const (
 
 	// --- Nix --------------------------------------------------------------
 
-	testNixSystemX8664   = "x86_64-linux"
-	testNixSystemAarch64 = "aarch64-linux"
+	testNixSystemX8664Linux   = "x86_64-linux"
+	testNixSystemAarch64Linux = "aarch64-linux"
 	// testRunServer and testRunX are spec.nix.run installables.
 	testRunServer = ".#server"
 	testRunX      = ".#x"
-	// testCmdNix and testCmdRun are the leading words of the command the app
+	// testNixBinary and testNixCmdRun are the leading words of the command the app
 	// container is expected to run.
-	testCmdNix = "nix"
-	testCmdRun = "run"
-	// testArg* are command-line arguments in expected argv slices.
-	testArgPort       = "--port"
-	testArgPortValue  = "8080"
-	testArgFlake      = "--flake"
-	testArgSSHOption  = "--ssh-option"
-	testArgTargetHost = "--target-host"
-	testArgSwitch     = "switch"
-	testArgConverge   = "converge"
+	testNixBinary = "nix"
+	testNixCmdRun = "run"
+	// Command-line arguments in expected argv slices.
+	//
+	// "--flake" is spelled the same by two independent programs, so it keeps
+	// TWO constants: nixos-anywhere drives the install child, nixos-rebuild
+	// drives the day-2 child. They agree today and are free to diverge.
+	testArgPort               = "--port"
+	testArgPortValue          = "8080"
+	testAnywhereFlagFlake     = "--flake"
+	testAnywhereFlagSSHOption = "--ssh-option"
+	testRebuildFlagFlake      = "--flake"
+	testRebuildFlagTargetHost = "--target-host"
+	testRebuildArgSwitch      = "switch"
+	testClusterConvergeArg    = "converge"
 	// testImageNixosNix is the container image the fixtures set on spec.nix.image.
 	testImageNixosNix = "nixos/nix"
 	// testBuilderEndpoint is a resolved NixBuilder ssh-ng endpoint.
@@ -199,8 +204,8 @@ const (
 
 	// --- Status reasons ---------------------------------------------------
 
-	// testReasonError is a terminated-container Reason on a Pod status.
-	testReasonError = "Error"
+	// testContainerReasonError is a terminated-container Reason on a Pod status.
+	testContainerReasonError = "Error"
 	// testReasonBackoffLimitExceeded is a batch/v1 Job condition Reason.
 	testReasonBackoffLimitExceeded = "BackoffLimitExceeded"
 

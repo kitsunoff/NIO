@@ -73,7 +73,7 @@ var _ = Describe("Machine Controller", func() {
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    testMachineHostFQDN,
-					SSHUser: testSSHUserRoot,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -166,7 +166,7 @@ var _ = Describe("Machine Controller", func() {
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    testMachineHostFQDN,
-					SSHUser: testSSHUserRoot,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -243,7 +243,7 @@ var _ = Describe("Machine Controller", func() {
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    testMachineHostFQDN,
-					SSHUser: testSSHUserRoot,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: "non-existent-secret",
 					},
@@ -361,7 +361,7 @@ var _ = Describe("Machine state transitions", func() {
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    testMachineHostFQDN,
-					SSHUser: testSSHUserRoot,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},
@@ -648,7 +648,7 @@ var _ = Describe("Machine finalizer handling", func() {
 				},
 				Spec: niov1alpha1.MachineSpec{
 					Host:    testMachineHostFQDN,
-					SSHUser: testSSHUserRoot,
+					SSHUser: testDefaultSSHUser,
 					SSHKeySecretRef: &niov1alpha1.SecretReference{
 						Name: secretName,
 					},

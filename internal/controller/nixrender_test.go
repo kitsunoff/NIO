@@ -57,7 +57,7 @@ func TestCompositeRevisionStableAndSensitive(t *testing.T) {
 
 func TestBuildNixConfig(t *testing.T) {
 	store := &storeInfo{substituterURL: "http://store.apps.svc:5000", publicKey: "store:AbC=="}
-	builder := &builderInfo{endpoint: "ssh-ng://root@b.apps.svc", systems: []string{testNixSystemX8664}}
+	builder := &builderInfo{endpoint: "ssh-ng://root@b.apps.svc", systems: []string{testNixSystemX8664Linux}}
 
 	full := buildNixConfig(store, builder)
 	if !strings.Contains(full, "http://store.apps.svc:5000") || !strings.Contains(full, cacheNixosURL) {
@@ -90,7 +90,7 @@ func TestBuildNixConfig(t *testing.T) {
 
 func TestRunAndBuildCommand(t *testing.T) {
 	run := runCommand(testRunServer, []string{testArgPort, testArgPortValue}, nil)
-	want := []string{testCmdNix, testCmdRun, testRunServer, "--", testArgPort, testArgPortValue}
+	want := []string{testNixBinary, testNixCmdRun, testRunServer, "--", testArgPort, testArgPortValue}
 	if strings.Join(run, " ") != strings.Join(want, " ") {
 		t.Errorf("runCommand = %v, want %v", run, want)
 	}
@@ -104,7 +104,7 @@ func TestRunAndBuildCommand(t *testing.T) {
 	}
 
 	build := buildCommand(testRunServer, []string{".#dep"}, nil)
-	want = []string{testCmdNix, "build", testRunServer, ".#dep"}
+	want = []string{testNixBinary, "build", testRunServer, ".#dep"}
 	if strings.Join(build, " ") != strings.Join(want, " ") {
 		t.Errorf("buildCommand = %v, want %v", build, want)
 	}
@@ -339,7 +339,7 @@ func TestRenderPodTemplateSSHWiring(t *testing.T) {
 func TestBuildNixConfigBuilderSSHKey(t *testing.T) {
 	cfg := buildNixConfig(nil, &builderInfo{
 		endpoint:   "ssh-ng://root@builder.nio.svc",
-		systems:    []string{testNixSystemAarch64},
+		systems:    []string{testNixSystemAarch64Linux},
 		sshKeyPath: sshPrivateKeyPath,
 	})
 	want := "builders = ssh-ng://root@builder.nio.svc aarch64-linux " + sshPrivateKeyPath
@@ -351,7 +351,7 @@ func TestBuildNixConfigBuilderSSHKey(t *testing.T) {
 	}
 
 	// No key path → no trailing key on the builders line (ephemeral/older path).
-	noKey := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://x", systems: []string{testNixSystemAarch64}})
+	noKey := buildNixConfig(nil, &builderInfo{endpoint: "ssh-ng://x", systems: []string{testNixSystemAarch64Linux}})
 	if strings.Contains(noKey, "aarch64-linux "+sshPrivateKeyPath) {
 		t.Errorf("builders line must not carry a key when none is set: %q", noKey)
 	}
@@ -374,7 +374,7 @@ func TestRenderAppKeepsCallerNIXSSHOPTS(t *testing.T) {
 		spec: niov1alpha1.NixSpec{
 			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: defaultGitRef},
 			Run:    "nixpkgs#nixos-rebuild",
-			Args:   []string{testArgSwitch, testArgFlake, ".#web", testArgTargetHost, testTargetHost},
+			Args:   []string{testRebuildArgSwitch, testRebuildFlagFlake, ".#web", testRebuildFlagTargetHost, testTargetHost},
 		},
 		resolvedRevision: testRevAbc1234,
 		kind:             kindNixCronJob,
@@ -842,7 +842,7 @@ func TestRenderAppWrapsOpensshWhenInjectedNixSSHOpts(t *testing.T) {
 		spec: niov1alpha1.NixSpec{
 			Source: niov1alpha1.NixSource{GitRepo: "https://github.com/acme/cfg", Ref: defaultGitRef},
 			Run:    "nixpkgs#nixos-rebuild",
-			Args:   []string{testArgSwitch, testArgFlake, ".#web", testArgTargetHost, testTargetHost},
+			Args:   []string{testRebuildArgSwitch, testRebuildFlagFlake, ".#web", testRebuildFlagTargetHost, testTargetHost},
 			Image:  testImageNixosNix,
 		},
 		resolvedRevision: testRevAbc,

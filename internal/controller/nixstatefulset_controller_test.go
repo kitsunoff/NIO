@@ -133,7 +133,7 @@ var _ = Describe("NixStatefulSet Controller", func() {
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
 				Name:  initInstantiate,
-				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 2, Reason: testReasonError}},
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 2, Reason: testContainerReasonError}},
 			}}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 

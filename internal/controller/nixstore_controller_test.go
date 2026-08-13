@@ -110,7 +110,7 @@ var _ = Describe("NixStore Controller", func() {
 			Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal(nixStoreVolumeName))
 			var storeContainer *corev1.Container
 			for i := range sts.Spec.Template.Spec.Containers {
-				if sts.Spec.Template.Spec.Containers[i].Name == testContainerStore {
+				if sts.Spec.Template.Spec.Containers[i].Name == testStoreContainerName {
 					storeContainer = &sts.Spec.Template.Spec.Containers[i]
 				}
 			}

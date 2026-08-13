@@ -50,7 +50,7 @@ func testMachine() *niov1alpha1.Machine {
 		ObjectMeta: metav1.ObjectMeta{Name: "web-machine", Namespace: testNamespaceInfra},
 		Spec: niov1alpha1.MachineSpec{
 			Host:            testMachineHost,
-			SSHUser:         testSSHUserRoot,
+			SSHUser:         testDefaultSSHUser,
 			SSHKeySecretRef: &niov1alpha1.SecretReference{Name: "web-ssh"},
 		},
 	}
@@ -108,10 +108,10 @@ func TestBuildInstallNixJob(t *testing.T) {
 	// ignores NIX_SSHOPTS, so the install child must pass the identity + permissive
 	// host-key options explicitly via -i/--ssh-option, with the target host last.
 	wantArgs := []string{
-		testArgFlake, ".#worker",
+		testAnywhereFlagFlake, ".#worker",
 		"-i", targetSSHKeyPath,
-		testArgSSHOption, "StrictHostKeyChecking=no",
-		testArgSSHOption, "UserKnownHostsFile=/dev/null",
+		testAnywhereFlagSSHOption, "StrictHostKeyChecking=no",
+		testAnywhereFlagSSHOption, "UserKnownHostsFile=/dev/null",
 		testTargetHost,
 	}
 	if strings.Join(nix.Args, "\x00") != strings.Join(wantArgs, "\x00") {
