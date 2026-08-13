@@ -41,19 +41,19 @@ var _ = Describe("NixStatefulSet Controller", func() {
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
 			Recorder: record.NewFakeRecorder(30),
-			Git:      fakeGit{sha: "unused"},
+			Git:      fakeGit{sha: testRevUnused},
 		}
 	}
 
 	makeReadyStore := func(name string) {
 		store := &niov1alpha1.NixStore{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 			Spec:       niov1alpha1.NixStoreSpec{Storage: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}}},
 		}
 		Expect(k8sClient.Create(ctx, store)).To(Succeed())
 		store.Status.Phase = niov1alpha1.PhaseReady
 		store.Status.SubstituterURL = "http://" + name + ".default.svc:5000"
-		store.Status.PublicKey = name + "-1:AAAA"
+		store.Status.PublicKey = name + testStorePublicKeySuffix
 		Expect(k8sClient.Status().Update(ctx, store)).To(Succeed())
 	}
 
@@ -65,16 +65,16 @@ var _ = Describe("NixStatefulSet Controller", func() {
 			counter++
 			name = fmt.Sprintf("nss-%d", counter)
 			storeName = fmt.Sprintf("nss-store-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			makeReadyStore(storeName)
 
 			replicas := int32(3)
 			nss := &niov1alpha1.NixStatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixStatefulSetSpec{
 					Nix: niov1alpha1.NixSpec{
-						Source:   niov1alpha1.NixSource{Rev: "abcdef1234567890"},
-						Run:      ".#server",
+						Source:   niov1alpha1.NixSource{Rev: testRevAbcdef1234567890},
+						Run:      testRunServer,
 						StoreRef: &niov1alpha1.LocalObjectReference{Name: storeName},
 					},
 					StatefulSetTemplate: appsv1.StatefulSetSpec{
@@ -87,8 +87,8 @@ var _ = Describe("NixStatefulSet Controller", func() {
 		})
 
 		AfterEach(func() {
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: storeName, Namespace: "default"}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: storeName, Namespace: testNamespaceDefault}})
 		})
 
 		It("projects a StatefulSet preserving serviceName, with the rendered pod template and no maxUnavailable default", func() {
@@ -107,7 +107,7 @@ var _ = Describe("NixStatefulSet Controller", func() {
 
 			var got niov1alpha1.NixStatefulSet
 			Expect(k8sClient.Get(ctx, nn, &got)).To(Succeed())
-			Expect(got.Status.ResolvedRevision).To(Equal("abcdef1234567890"))
+			Expect(got.Status.ResolvedRevision).To(Equal(testRevAbcdef1234567890))
 			Expect(got.Status.WorkloadRef).To(Equal(name))
 			Expect(got.Finalizers).To(ContainElement(niov1alpha1.WorkloadFinalizer))
 		})
@@ -117,23 +117,23 @@ var _ = Describe("NixStatefulSet Controller", func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
-			rev := compositeRevision("abcdef1234567890", ".#server", nil)
+			rev := compositeRevision(testRevAbcdef1234567890, testRunServer, nil)
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name + "-0",
-					Namespace: "default",
+					Namespace: testNamespaceDefault,
 					Labels: map[string]string{
 						niov1alpha1.LabelWorkloadKind: kindNixStatefulSet,
 						niov1alpha1.LabelWorkloadName: name,
 						niov1alpha1.LabelRevision:     rev,
 					},
 				},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "busybox"}}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: defaultAppContainer, Image: "busybox"}}},
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
 				Name:  initInstantiate,
-				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 2, Reason: "Error"}},
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 2, Reason: testReasonError}},
 			}}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
