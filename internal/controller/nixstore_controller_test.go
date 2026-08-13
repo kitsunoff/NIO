@@ -65,16 +65,16 @@ var _ = Describe("NixStore Controller", func() {
 		BeforeEach(func() {
 			counter++
 			name = fmt.Sprintf("store-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 			store := &niov1alpha1.NixStore{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec:       niov1alpha1.NixStoreSpec{Storage: storageSpec()},
 			}
 			Expect(k8sClient.Create(ctx, store)).To(Succeed())
 		})
 
 		AfterEach(func() {
-			store := &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+			store := &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}}
 			_ = k8sClient.Delete(ctx, store)
 		})
 
@@ -84,7 +84,7 @@ var _ = Describe("NixStore Controller", func() {
 
 			By("generating an owned signing-key Secret with a valid ed25519 public key")
 			var secret corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-signing-key", Namespace: "default"}, &secret)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + testSigningKeySecretSuffix, Namespace: testNamespaceDefault}, &secret)).To(Succeed())
 			pub := string(secret.Data[SigningKeySecretPublicField])
 			priv := string(secret.Data[SigningKeySecretPrivateField])
 			Expect(pub).To(ContainSubstring(":"))
@@ -110,7 +110,7 @@ var _ = Describe("NixStore Controller", func() {
 			Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal(nixStoreVolumeName))
 			var storeContainer *corev1.Container
 			for i := range sts.Spec.Template.Spec.Containers {
-				if sts.Spec.Template.Spec.Containers[i].Name == "store" {
+				if sts.Spec.Template.Spec.Containers[i].Name == testContainerStore {
 					storeContainer = &sts.Spec.Template.Spec.Containers[i]
 				}
 			}
@@ -136,12 +136,12 @@ var _ = Describe("NixStore Controller", func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 			var first corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-signing-key", Namespace: "default"}, &first)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + testSigningKeySecretSuffix, Namespace: testNamespaceDefault}, &first)).To(Succeed())
 
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 			var second corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-signing-key", Namespace: "default"}, &second)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + testSigningKeySecretSuffix, Namespace: testNamespaceDefault}, &second)).To(Succeed())
 			Expect(second.Data[SigningKeySecretPrivateField]).To(Equal(first.Data[SigningKeySecretPrivateField]))
 		})
 	})
@@ -155,10 +155,10 @@ var _ = Describe("NixStore Controller", func() {
 			counter++
 			name = fmt.Sprintf("store-ref-%d", counter)
 			secretName = fmt.Sprintf("user-key-%d", counter)
-			nn = types.NamespacedName{Name: name, Namespace: "default"}
+			nn = types.NamespacedName{Name: name, Namespace: testNamespaceDefault}
 
 			userSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNamespaceDefault},
 				Data: map[string][]byte{
 					SigningKeySecretPublicField:  []byte("mykey-1:AAAABBBBCCCCDDDD"),
 					SigningKeySecretPrivateField: []byte("mykey-1:secret"),
@@ -167,7 +167,7 @@ var _ = Describe("NixStore Controller", func() {
 			Expect(k8sClient.Create(ctx, userSecret)).To(Succeed())
 
 			store := &niov1alpha1.NixStore{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
 				Spec: niov1alpha1.NixStoreSpec{
 					Storage:             storageSpec(),
 					SigningKeySecretRef: &niov1alpha1.SecretReference{Name: secretName},
@@ -177,8 +177,8 @@ var _ = Describe("NixStore Controller", func() {
 		})
 
 		AfterEach(func() {
-			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}})
-			_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: "default"}})
+			_ = k8sClient.Delete(ctx, &niov1alpha1.NixStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault}})
+			_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNamespaceDefault}})
 		})
 
 		It("uses the provided public key and does not generate one", func() {
@@ -190,7 +190,7 @@ var _ = Describe("NixStore Controller", func() {
 			Expect(store.Status.PublicKey).To(Equal("mykey-1:AAAABBBBCCCCDDDD"))
 
 			generated := &corev1.Secret{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: name + "-signing-key", Namespace: "default"}, generated)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: name + testSigningKeySecretSuffix, Namespace: testNamespaceDefault}, generated)
 			Expect(client.IgnoreNotFound(err)).To(Succeed())
 			Expect(err).To(HaveOccurred(), "no generated secret should exist when a ref is provided")
 		})
