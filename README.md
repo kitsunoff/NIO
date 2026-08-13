@@ -292,11 +292,10 @@ Resolved design decisions live in
 ## Known limitations
 
 - **`v1.0.0` ships with 10 advisories reachable from NIO's own code**, disclosed in
-  the release notes rather than left to be discovered. Fixing them needs a
-  dependency bump, which forces a newer toolchain, which forces a newer
-  golangci-lint, which surfaces 51 findings from linters this project already
-  enables — tracked for `v1.0.1`. The `Security` workflow reports the findings on
-  every run and is deliberately non-blocking until that chain lands.
+  its release notes rather than left to be discovered. They are fixed in `v1.0.1`
+  by bumping the affected modules and pinning the Go toolchain; the `Security`
+  workflow now blocks on `govulncheck`, so a reachable advisory fails the build
+  instead of being reported and passed over. Upgrade from `v1.0.0`.
 - **Per-member converge status is coarse.** It is derived from the run's outcome; the
   per-member JSON that converge emits is not parsed yet.
 - **A converge pod materialises every member closure in an unbounded `emptyDir`
