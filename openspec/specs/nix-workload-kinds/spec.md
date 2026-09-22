@@ -40,9 +40,9 @@ from the kind's template field, with only the operator-owned parts stamped in.
 
 ### Requirement: Minimal workloads are completed by the operator
 
-The template fields are schemaless so a workload can omit what the operator fills in:
-a missing selector is defaulted to the managed labels, and missing pod containers are
-synthesized.
+The template fields are schemaless so a workload can omit what the operator fills in.
+A missing selector SHALL be defaulted to the managed labels, and missing pod
+containers SHALL be synthesized.
 
 #### Scenario: Deployment without a selector
 
