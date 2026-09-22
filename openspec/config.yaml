@@ -1,5 +1,22 @@
 schema: spec-driven
 
+context: |
+  NIO is a Kubernetes operator (Go, kubebuilder/controller-runtime) that manages
+  NixOS hosts and clusters declaratively. API group: nio.homystack.com/v1alpha1.
+
+  Kinds: Machine, NixosConfiguration, NixCluster, NixStore, NixBuilder,
+  NixDeployment, NixJob, NixCronJob, NixStatefulSet.
+
+  Conventions:
+  - All references between objects are namespace-local by design.
+  - Controllers orchestrate child NIO workloads; they never run Nix or SSH
+    themselves.
+  - Status uses kstatus conditions (Ready, Reconciling, Stalled) plus a coarse
+    status.phase per kind.
+  - TDD is mandatory; tests live next to the code they cover
+    (internal/controller/*_test.go, envtest suite in suite_test.go).
+  - Conventional commits, English only in code, commits and docs.
+
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
