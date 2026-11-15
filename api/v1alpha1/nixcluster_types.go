@@ -64,6 +64,17 @@ type NixClusterSpec struct {
 	// +optional
 	BuilderRef *LocalObjectReference `json:"builderRef,omitempty"`
 
+	// DeletionPolicy decides what deleting the NixCluster does to the real
+	// cluster on the members. Teardown (the default) keeps the finalizer until
+	// a teardown run (`.#cluster-<name> teardown --auto-approve`) has removed the
+	// cluster from every member. Retain removes only the Kubernetes objects and
+	// leaves the members as they are. It is read at deletion time: switching a
+	// cluster that is being deleted to Retain releases it without a teardown.
+	// +kubebuilder:validation:Enum=Teardown;Retain
+	// +kubebuilder:default=Teardown
+	// +optional
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+
 	// DayTwoSchedule is the converge cadence (cron schedule).
 	// +kubebuilder:default="*/30 * * * *"
 	// +optional
@@ -106,7 +117,7 @@ type NodeGroup struct {
 // NixClusterStatus is the observed state of a NixCluster.
 type NixClusterStatus struct {
 	// Phase is a coarse, human-facing lifecycle state.
-	// +kubebuilder:validation:Enum=Ready;Converging;Degraded;Blocked
+	// +kubebuilder:validation:Enum=Ready;Converging;Degraded;Blocked;TearingDown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -118,7 +129,13 @@ type NixClusterStatus struct {
 	// +optional
 	ConvergeJobRef string `json:"convergeJobRef,omitempty"`
 
-	// Conditions: Ready, Stalled, GitSynced, Underprovisioned.
+	// Teardown reports the teardown run during deletion with deletionPolicy
+	// Teardown.
+	// +optional
+	Teardown *TeardownStatus `json:"teardown,omitempty"`
+
+	// Conditions: Ready, Stalled, GitSynced, Underprovisioned, TearingDown,
+	// TeardownFailed.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +listType=map
@@ -161,12 +178,69 @@ type MemberStatus struct {
 	Status string `json:"status,omitempty"`
 }
 
+// TeardownStatus reports the teardown run of a NixCluster being deleted.
+type TeardownStatus struct {
+	// JobRef is the name of the owned teardown NixJob.
+	// +optional
+	JobRef string `json:"jobRef,omitempty"`
+
+	// Attempts is the number of teardown NixJobs created so far.
+	// +optional
+	Attempts int32 `json:"attempts,omitempty"`
+
+	// FailedAttempts is the number of teardown runs recorded as failed. A run is
+	// recorded once; the retry backoff doubles with every recorded failure.
+	// +optional
+	FailedAttempts int32 `json:"failedAttempts,omitempty"`
+
+	// LastFailureTime is when the latest failed run was recorded. The next run
+	// is created once the backoff has elapsed from this time.
+	// +optional
+	LastFailureTime *metav1.Time `json:"lastFailureTime,omitempty"`
+
+	// Result is the overall result the latest finished run reported:
+	// success, partial, failed or cancelled. Empty when no result line could be
+	// read.
+	// +optional
+	Result string `json:"result,omitempty"`
+
+	// Message describes the latest finished run.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Members are the per-member results of the latest finished run.
+	// +optional
+	Members []TeardownMemberStatus `json:"members,omitempty"`
+}
+
+// TeardownMemberStatus is one member's entry in a teardown result.
+type TeardownMemberStatus struct {
+	// Name is the member (Machine) name.
+	Name string `json:"name"`
+
+	// Status is what the run reported for the member: Applied (the cluster was
+	// removed), Skipped (unreachable; its state is left as it is) or Failed.
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// Message is the run's message for the member, if any.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// NixCluster deletion policies.
+const (
+	DeletionPolicyTeardown = "Teardown"
+	DeletionPolicyRetain   = "Retain"
+)
+
 // NixCluster phase values.
 const (
-	NixClusterPhaseReady      = "Ready"
-	NixClusterPhaseConverging = "Converging"
-	NixClusterPhaseDegraded   = "Degraded"
-	NixClusterPhaseBlocked    = "Blocked"
+	NixClusterPhaseReady       = "Ready"
+	NixClusterPhaseConverging  = "Converging"
+	NixClusterPhaseDegraded    = "Degraded"
+	NixClusterPhaseBlocked     = "Blocked"
+	NixClusterPhaseTearingDown = "TearingDown"
 )
 
 // Per-member status values.
@@ -181,6 +255,8 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Converge",type=string,JSONPath=`.status.convergeJobRef`
+// +kubebuilder:printcolumn:name="Deletion",type=string,JSONPath=`.spec.deletionPolicy`,priority=1
+// +kubebuilder:printcolumn:name="Teardown",type=string,JSONPath=`.status.conditions[?(@.type=="TearingDown")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // NixCluster is an abstract grouping of Machines driven by one idempotent converge.
