@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	niov1alpha1 "github.com/kitsunoff/nixos-operator/api/v1alpha1"
@@ -971,3 +972,552 @@ var _ = Describe("NixCluster Controller", func() {
 		})
 	})
 })
+
+// ---------------------------------------------------------------------------
+// Teardown on deletion — pure helpers.
+// ---------------------------------------------------------------------------
+
+func TestParseClusterResult(t *testing.T) {
+	const marked = `::nixcluster:result:: {"cluster":"prod","result":"partial",` +
+		`"members":[{"name":"node-01","ip":"10.0.0.1","action":"destroyed","status":"Applied","message":"","durationSeconds":3},` +
+		`{"name":"node-02","ip":"10.0.0.2","action":"destroyed","status":"Skipped","message":"unreachable","durationSeconds":0}],` +
+		`"steps":[{"name":"k3s.drain","phase":"workloads","status":"ok","message":""}]}`
+
+	cases := []struct {
+		name       string
+		log        string
+		wantOK     bool
+		wantResult string
+		wantNames  []string
+	}{
+		{
+			name:       "marker line among merged stderr",
+			log:        "building...\n[step] k3s.drain\n" + marked + "\ncleanup done\n",
+			wantOK:     true,
+			wantResult: "partial",
+			wantNames:  []string{"node-01", "node-02"},
+		},
+		{
+			name: "bare --json object is accepted as a fallback",
+			log: "copying path...\n" +
+				`{"cluster":"prod","result":"success","members":[{"name":"node-01","status":"Applied"}],"steps":[]}` + "\n",
+			wantOK:     true,
+			wantResult: "success",
+			wantNames:  []string{"node-01"},
+		},
+		{
+			name: "the last result line wins",
+			log: `::nixcluster:result:: {"cluster":"prod","result":"failed","members":[],"steps":[]}` + "\n" +
+				`::nixcluster:result:: {"cluster":"prod","result":"success","members":[],"steps":[]}` + "\n",
+			wantOK:     true,
+			wantResult: "success",
+		},
+		{
+			name: "unrelated JSON lines are not a result",
+			log:  `{"level":"info","msg":"hello"}` + "\n",
+		},
+		{
+			name: "garbage after the marker is not a result",
+			log:  "::nixcluster:result:: {not json\n",
+		},
+		{
+			name: "empty log",
+			log:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseClusterResult(tc.log)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if got.Result != tc.wantResult {
+				t.Errorf("result = %q, want %q", got.Result, tc.wantResult)
+			}
+			names := make([]string, 0, len(got.Members))
+			for _, m := range got.Members {
+				names = append(names, m.Name)
+			}
+			if tc.wantNames != nil && !reflect.DeepEqual(names, tc.wantNames) {
+				t.Errorf("members = %v, want %v", names, tc.wantNames)
+			}
+		})
+	}
+}
+
+func TestTeardownBackoff(t *testing.T) {
+	cases := []struct {
+		failed int32
+		want   time.Duration
+	}{
+		{0, teardownBackoffBase},
+		{1, teardownBackoffBase},
+		{2, 2 * teardownBackoffBase},
+		{3, 4 * teardownBackoffBase},
+		{10, teardownBackoffMax},
+		{100, teardownBackoffMax},
+	}
+	for _, tc := range cases {
+		if got := teardownBackoff(tc.failed); got != tc.want {
+			t.Errorf("teardownBackoff(%d) = %v, want %v", tc.failed, got, tc.want)
+		}
+	}
+}
+
+func TestDesiredTeardownJob_CopiesTheConvergeChild(t *testing.T) {
+	cluster := &niov1alpha1.NixCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "infra"},
+		Spec: niov1alpha1.NixClusterSpec{
+			Source:     niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
+			SSHKeyRef:  &niov1alpha1.SecretReference{Name: "cluster-ssh"},
+			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "store"},
+			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "builder"},
+		},
+	}
+	files := []niov1alpha1.NixFile{{Path: "modules/nodes/node-01.nix", Inline: ptr("content")}}
+	cron := desiredConvergeCronJob(cluster, files)
+	// The teardown suspends the cron before copying it; neither must leak.
+	cron.Spec.Nix.Suspend = true
+	cron.Spec.CronJobTemplate.Suspend = ptr(true)
+
+	job := desiredTeardownJob(cluster, cron)
+
+	if job.Name != "prod-teardown" || job.Namespace != "infra" {
+		t.Errorf("name = %s/%s, want infra/prod-teardown", job.Namespace, job.Name)
+	}
+	if job.Spec.Nix.Run != ".#cluster-prod" {
+		t.Errorf("run = %q, want .#cluster-prod", job.Spec.Nix.Run)
+	}
+	if !reflect.DeepEqual(job.Spec.Nix.Args, []string{"teardown", "--auto-approve"}) {
+		t.Errorf("args = %v, want [teardown --auto-approve]", job.Spec.Nix.Args)
+	}
+	if job.Spec.Nix.Suspend {
+		t.Error("the teardown job must not inherit the cron's suspension")
+	}
+	if job.Spec.Nix.TriggerOnChange == nil || *job.Spec.Nix.TriggerOnChange {
+		t.Error("the teardown job must run once (triggerOnChange false)")
+	}
+	if !reflect.DeepEqual(job.Spec.Nix.AdditionalFiles, files) {
+		t.Errorf("additionalFiles = %v, want the converge node files", job.Spec.Nix.AdditionalFiles)
+	}
+	if job.Spec.Nix.StoreRef == nil || job.Spec.Nix.StoreRef.Name != "store" ||
+		job.Spec.Nix.BuilderRef == nil || job.Spec.Nix.BuilderRef.Name != "builder" {
+		t.Error("store and builder references must be carried over")
+	}
+	if job.Spec.JobTemplate == nil {
+		t.Fatal("jobTemplate must be set")
+	}
+	if job.Spec.JobTemplate.BackoffLimit == nil || *job.Spec.JobTemplate.BackoffLimit != 0 {
+		t.Error("backoffLimit must be 0: the controller owns retries")
+	}
+	assertVolume(t, job.Spec.JobTemplate.Template.Spec.Volumes, clusterSSHVolumeName, "cluster-ssh")
+	if job.Labels[niov1alpha1.LabelWorkloadName] != "prod" {
+		t.Errorf("labels = %v, want the cluster's managed labels", job.Labels)
+	}
+}
+
+// fakeJobLogs is a JobLogReader returning a canned log.
+type fakeJobLogs struct {
+	log   string
+	err   error
+	calls int
+}
+
+func (f *fakeJobLogs) JobLog(_ context.Context, _, _ string) (string, error) {
+	f.calls++
+	return f.log, f.err
+}
+
+// ---------------------------------------------------------------------------
+// Teardown on deletion — envtest.
+// ---------------------------------------------------------------------------
+
+var _ = Describe("NixCluster teardown on deletion", func() {
+	var counter int
+	ctx := context.Background()
+	var ns string
+
+	BeforeEach(func() {
+		counter++
+		ns = fmt.Sprintf("cluster-teardown-%d", counter)
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})).To(Succeed())
+	})
+
+	type fixture struct {
+		req      reconcile.Request
+		r        *NixClusterReconciler
+		logs     *fakeJobLogs
+		recorder *record.FakeRecorder
+	}
+
+	// setup creates a one-member cluster with the given policy (empty = API
+	// default) and reconciles it once, so the finalizer and the converge child
+	// exist the way they do on a live cluster.
+	setup := func(name, policy string) fixture {
+		Expect(k8sClient.Create(ctx, &niov1alpha1.Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-node-1", Namespace: ns, Labels: map[string]string{"cluster": name}},
+			Spec:       niov1alpha1.MachineSpec{Host: "10.0.0.1"},
+		})).To(Succeed())
+		Expect(k8sClient.Create(ctx, &niov1alpha1.NixCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: niov1alpha1.NixClusterSpec{
+				Source:         niov1alpha1.NixSource{GitRepo: "https://example.com/r", Ref: "main"},
+				SSHKeyRef:      &niov1alpha1.SecretReference{Name: "cluster-ssh"},
+				DeletionPolicy: policy,
+				NodeGroups: []niov1alpha1.NodeGroup{{
+					Name:     "nodes",
+					Selector: metav1.LabelSelector{MatchLabels: map[string]string{"cluster": name}},
+				}},
+			},
+		})).To(Succeed())
+		rec := record.NewFakeRecorder(50)
+		logs := &fakeJobLogs{}
+		f := fixture{
+			req:      reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}},
+			r:        &NixClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: rec, Logs: logs},
+			logs:     logs,
+			recorder: rec,
+		}
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		return f
+	}
+
+	getCluster := func(name string) (*niov1alpha1.NixCluster, error) {
+		var c niov1alpha1.NixCluster
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &c)
+		return &c, err
+	}
+	getCron := func(name string) (*niov1alpha1.NixCronJob, error) {
+		var c niov1alpha1.NixCronJob
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: convergeCronName(name), Namespace: ns}, &c)
+		return &c, err
+	}
+	getTeardownJob := func(name string) (*niov1alpha1.NixJob, error) {
+		var j niov1alpha1.NixJob
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: name + "-teardown", Namespace: ns}, &j)
+		return &j, err
+	}
+	countNixJobs := func() int {
+		var list niov1alpha1.NixJobList
+		Expect(k8sClient.List(ctx, &list, client.InNamespace(ns))).To(Succeed())
+		return len(list.Items)
+	}
+	deleteCluster := func(name string) {
+		c, err := getCluster(name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Delete(ctx, c)).To(Succeed())
+	}
+	expectGone := func(name string) {
+		_, err := getCluster(name)
+		Expect(err).To(HaveOccurred())
+		Expect(client.IgnoreNotFound(err)).To(Succeed())
+	}
+	// finishTeardownJob simulates the NixJob controller observing the run-Job.
+	finishTeardownJob := func(name, phase string) {
+		j, err := getTeardownJob(name)
+		Expect(err).NotTo(HaveOccurred())
+		j.Status.Phase = phase
+		j.Status.ActiveJob = name + "-teardown-abc123"
+		if phase == niov1alpha1.PhaseReady {
+			j.Status.Succeeded = 1
+		} else {
+			j.Status.Failed = 1
+		}
+		Expect(k8sClient.Status().Update(ctx, j)).To(Succeed())
+	}
+	resultLog := func(result, memberStatus, message string) string {
+		return "evaluating...\n" + fmt.Sprintf(
+			`::nixcluster:result:: {"cluster":"x","result":%q,"members":[{"name":"node-1","ip":"10.0.0.1","action":"destroyed","status":%q,"message":%q,"durationSeconds":1}],"steps":[]}`,
+			result, memberStatus, message) + "\n"
+	}
+
+	It("defaults the deletion policy to Teardown", func() {
+		setup("dflt", "")
+		c, err := getCluster("dflt")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Spec.DeletionPolicy).To(Equal(niov1alpha1.DeletionPolicyTeardown))
+	})
+
+	It("Retain removes the converge child and the finalizer without a teardown run", func() {
+		f := setup("keep", niov1alpha1.DeletionPolicyRetain)
+		deleteCluster("keep")
+
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		expectGone("keep")
+		_, err = getCron("keep")
+		Expect(client.IgnoreNotFound(err)).To(Succeed())
+		Expect(err).To(HaveOccurred())
+		Expect(countNixJobs()).To(BeZero())
+	})
+
+	It("tears the cluster down, records the result and then releases the finalizer", func() {
+		f := setup("happy", "")
+		deleteCluster("happy")
+
+		By("the first reconcile suspends converge and creates exactly one teardown run")
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		cron, err := getCron("happy")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cron.Spec.CronJobTemplate.Suspend).To(HaveValue(BeTrue()))
+		Expect(cron.Spec.Nix.TriggerOnChange).To(HaveValue(BeFalse()))
+
+		job, err := getTeardownJob("happy")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(job.Spec.Nix.Args).To(Equal([]string{"teardown", "--auto-approve"}))
+		Expect(job.Spec.Nix.AdditionalFiles).To(Equal(cron.Spec.Nix.AdditionalFiles))
+		Expect(metav1.IsControlledBy(job, &metav1.ObjectMeta{UID: mustUID("happy", ns)})).To(BeTrue())
+
+		c, err := getCluster("happy")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Finalizers).To(ContainElement(niov1alpha1.FinalizerName))
+		Expect(c.Status.Phase).To(Equal(niov1alpha1.NixClusterPhaseTearingDown))
+		cond := meta.FindStatusCondition(c.Status.Conditions, niov1alpha1.ConditionTearingDown)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal(niov1alpha1.ReasonTeardownRunning))
+		Expect(c.Status.Teardown).NotTo(BeNil())
+		Expect(c.Status.Teardown.JobRef).To(Equal("happy-teardown"))
+		Expect(c.Status.Teardown.Attempts).To(Equal(int32(1)))
+
+		By("reconciling while the run is in progress creates no second run")
+		for range 3 {
+			res, rerr := f.r.Reconcile(ctx, f.req)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		}
+		Expect(countNixJobs()).To(Equal(1))
+		c, err = getCluster("happy")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Status.Teardown.Attempts).To(Equal(int32(1)))
+
+		By("a successful run deletes the converge child and releases the finalizer")
+		f.logs.log = resultLog("success", "Applied", "")
+		finishTeardownJob("happy", niov1alpha1.PhaseReady)
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		expectGone("happy")
+		_, err = getCron("happy")
+		Expect(err).To(HaveOccurred())
+		Expect(f.logs.calls).To(BeNumerically(">", 0))
+	})
+
+	It("releases the finalizer on a partial result and warns about the skipped members", func() {
+		f := setup("part", "")
+		deleteCluster("part")
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		f.logs.log = resultLog("partial", "Skipped", "unreachable; its state is left as it is")
+		finishTeardownJob("part", niov1alpha1.PhaseReady)
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		expectGone("part")
+		Expect(drainEvents(f.recorder)).To(ContainElement(And(
+			ContainSubstring("Warning"), ContainSubstring("node-1"))))
+	})
+
+	It("follows the run's exit status when the result line cannot be read", func() {
+		f := setup("nolog", "")
+		deleteCluster("nolog")
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		f.logs.err = fmt.Errorf("pod is gone")
+		finishTeardownJob("nolog", niov1alpha1.PhaseReady)
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		expectGone("nolog")
+	})
+
+	It("keeps the finalizer on failure, records it once and retries after the backoff", func() {
+		f := setup("fail", "")
+		deleteCluster("fail")
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		f.logs.log = resultLog("failed", "Failed", "could not build, copy or switch to the base configuration")
+		finishTeardownJob("fail", niov1alpha1.PhaseFailed)
+
+		res, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		Expect(res.RequeueAfter).To(BeNumerically("<=", teardownBackoffBase))
+
+		c, err := getCluster("fail")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Finalizers).To(ContainElement(niov1alpha1.FinalizerName))
+		Expect(c.Status.Phase).To(Equal(niov1alpha1.NixClusterPhaseTearingDown))
+		failed := meta.FindStatusCondition(c.Status.Conditions, niov1alpha1.ConditionTeardownFailed)
+		Expect(failed).NotTo(BeNil())
+		Expect(failed.Status).To(Equal(metav1.ConditionTrue))
+		Expect(failed.Message).To(ContainSubstring("could not build, copy or switch"))
+		Expect(c.Status.Teardown.FailedAttempts).To(Equal(int32(1)))
+		Expect(c.Status.Teardown.Result).To(Equal("failed"))
+		Expect(c.Status.Teardown.Members).To(HaveLen(1))
+		Expect(c.Status.Teardown.Members[0].Status).To(Equal("Failed"))
+		tearing := meta.FindStatusCondition(c.Status.Conditions, niov1alpha1.ConditionTearingDown)
+		Expect(tearing).NotTo(BeNil())
+		Expect(tearing.Reason).To(Equal(niov1alpha1.ReasonRetryScheduled))
+
+		By("during the backoff the failure is not recorded again and the failed run is kept")
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		c, err = getCluster("fail")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Status.Teardown.FailedAttempts).To(Equal(int32(1)))
+		_, err = getTeardownJob("fail")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("once the backoff elapsed the failed run is replaced by a new one")
+		c.Status.Teardown.LastFailureTime = &metav1.Time{Time: time.Now().Add(-time.Hour)}
+		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = getTeardownJob("fail")
+		Expect(client.IgnoreNotFound(err)).To(Succeed())
+		Expect(err).To(HaveOccurred(), "the failed run is deleted first")
+
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		job, err := getTeardownJob("fail")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(job.Status.Phase).To(BeEmpty(), "a fresh run, not the failed one")
+		Expect(countNixJobs()).To(Equal(1))
+		c, err = getCluster("fail")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c.Status.Teardown.Attempts).To(Equal(int32(2)))
+		Expect(c.Finalizers).To(ContainElement(niov1alpha1.FinalizerName))
+	})
+
+	It("lets a failing teardown go when the policy is switched to Retain", func() {
+		f := setup("flip", "")
+		deleteCluster("flip")
+		_, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		f.logs.log = resultLog("failed", "Failed", "boom")
+		finishTeardownJob("flip", niov1alpha1.PhaseFailed)
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+
+		c, err := getCluster("flip")
+		Expect(err).NotTo(HaveOccurred())
+		c.Spec.DeletionPolicy = niov1alpha1.DeletionPolicyRetain
+		Expect(k8sClient.Update(ctx, c)).To(Succeed())
+
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		expectGone("flip")
+	})
+
+	It("suspends converge and waits for it before the teardown run is created", func() {
+		f := setup("wait", "")
+		cron, err := getCron("wait")
+		Expect(err).NotTo(HaveOccurred())
+
+		// The projected CronJob, not yet suspended, and an active converge Job it
+		// started — what the NixCronJob controller would have created.
+		batchCron := &batchv1.CronJob{
+			ObjectMeta: metav1.ObjectMeta{Name: cron.Name, Namespace: ns},
+			Spec: batchv1.CronJobSpec{
+				Schedule: "*/30 * * * *",
+				JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						Containers:    []corev1.Container{{Name: "app", Image: "nix"}},
+					}},
+				}},
+			},
+		}
+		Expect(controllerutilSetOwner(cron, batchCron)).To(Succeed())
+		Expect(k8sClient.Create(ctx, batchCron)).To(Succeed())
+		activeJob := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: cron.Name + "-29000000", Namespace: ns},
+			Spec:       batchCron.Spec.JobTemplate.Spec,
+		}
+		Expect(controllerutilSetOwner(batchCron, activeJob)).To(Succeed())
+		Expect(k8sClient.Create(ctx, activeJob)).To(Succeed())
+
+		deleteCluster("wait")
+
+		By("the converge child is suspended, but its CronJob has not picked it up yet")
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		cron, err = getCron("wait")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cron.Spec.CronJobTemplate.Suspend).To(HaveValue(BeTrue()))
+		Expect(countNixJobs()).To(BeZero())
+
+		By("the CronJob is suspended, but a converge run is still active")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(batchCron), batchCron)).To(Succeed())
+		batchCron.Spec.Suspend = ptr(true)
+		Expect(k8sClient.Update(ctx, batchCron)).To(Succeed())
+		res, err := f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		Expect(countNixJobs()).To(BeZero())
+		c, err := getCluster("wait")
+		Expect(err).NotTo(HaveOccurred())
+		cond := meta.FindStatusCondition(c.Status.Conditions, niov1alpha1.ConditionTearingDown)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal(niov1alpha1.ReasonWaitingForConverge))
+
+		By("the converge run is gone, so the teardown run starts")
+		Expect(k8sClient.Delete(ctx, activeJob)).To(Succeed())
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = getTeardownJob("wait")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(countNixJobs()).To(Equal(1))
+	})
+
+	It("releases the finalizer when there is no converge child to tear down", func() {
+		f := setup("bare", "")
+		cron, err := getCron("bare")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Delete(ctx, cron)).To(Succeed())
+		deleteCluster("bare")
+
+		_, err = f.r.Reconcile(ctx, f.req)
+		Expect(err).NotTo(HaveOccurred())
+		expectGone("bare")
+		Expect(countNixJobs()).To(BeZero())
+	})
+})
+
+// mustUID returns the UID of a NixCluster that still exists.
+func mustUID(name, namespace string) types.UID {
+	var c niov1alpha1.NixCluster
+	ExpectWithOffset(1, k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: name, Namespace: namespace}, &c)).To(Succeed())
+	return c.UID
+}
+
+// controllerutilSetOwner makes owner the controller of obj using the suite scheme.
+func controllerutilSetOwner(owner, obj client.Object) error {
+	return controllerutil.SetControllerReference(owner, obj, k8sClient.Scheme())
+}
+
+// drainEvents returns every event recorded so far.
+func drainEvents(rec *record.FakeRecorder) []string {
+	var out []string
+	for {
+		select {
+		case e := <-rec.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
