@@ -34,6 +34,7 @@ Describe machines, configurations and clusters as custom resources; NIO installs
 - [Install](#install)
 - [Converge one host](#converge-one-host)
 - [Converge a cluster](#converge-a-cluster)
+- [Delete a cluster](#delete-a-cluster)
 - [Nix-native workloads](#nix-native-workloads)
 - [Build acceleration](#build-acceleration)
 - [What the status actually means](#what-the-status-actually-means)
@@ -48,7 +49,7 @@ Describe machines, configurations and clusters as custom resources; NIO installs
 | --- | --- |
 | **`Machine`** | A host NIO can reach over SSH. Reports discoverability and collects facts (architecture from `uname -m`) that other kinds depend on. |
 | **`NixosConfiguration`** | Converges **one** host: optional first-time install via `nixos-anywhere`, then a day-two cron that keeps it in sync, then a decommission job on deletion. |
-| **`NixCluster`** | Selects Machines into node groups by label, maps opaque `values` onto each, and drives **one** whole-cluster converge. Ordering and post-ops live in the cluster's own flake, not in NIO. |
+| **`NixCluster`** | Selects Machines into node groups by label, maps opaque `values` onto each, and drives **one** whole-cluster converge. Ordering and post-ops live in the cluster's own flake, not in NIO. Deleting it tears the cluster down on its members first. |
 | **`NixStore`** | A shared Nix binary cache that workloads substitute from over HTTP. |
 | **`NixBuilder`** | A remote builder that workloads delegate builds to. Give it `spec.storage`, or its `/nix` dies with the pod. |
 | **`NixDeployment` / `NixJob` / `NixCronJob` / `NixStatefulSet`** | Run a flake attribute as the corresponding Kubernetes workload, pinned to a resolved revision. |
@@ -169,6 +170,56 @@ owns a single converge `NixCronJob`. Everything about *how* the cluster comes up
 ordering, joining, secrets, post-ops — lives in that flake, via
 [nixcluster](https://github.com/kitsunoff/nixcluster). NIO stays abstract: it does
 not know what k3s is.
+
+## Delete a cluster
+
+`spec.deletionPolicy` decides what `kubectl delete nixcluster` does to the
+machines:
+
+| Policy | What deletion does |
+| --- | --- |
+| `Teardown` (default) | Runs the cluster's `teardown` on every member, then removes the Kubernetes objects. The finalizer stays until the run succeeds. |
+| `Retain` | Removes only the Kubernetes objects. k3s, Incus and everything else the converge built keep running on the members. |
+
+> [!WARNING]
+> `Teardown` is the default, including for clusters created before the field
+> existed. Set `deletionPolicy: Retain` before deleting a cluster you want to keep
+> running.
+
+With `Teardown`, deletion goes through these steps:
+
+1. The converge child stops scheduling: its CronJob is suspended and trigger on
+   change is turned off. NIO waits until the CronJob reports the suspension and no
+   converge Job is still running, so converge and teardown never overlap.
+2. NIO creates one `NixJob` `<cluster>-teardown`. It is a copy of the converge child
+   — same source, node files, store, builder, SSH and age keys — that runs
+   `.#cluster-<name> teardown --auto-approve`. The flake must provide that command;
+   [nixcluster](https://github.com/kitsunoff/nixcluster) does.
+3. When the run succeeds, NIO records the `::nixcluster:result::` line from the pod
+   log in `status.teardown`, deletes the converge child and removes the finalizer.
+   A `partial` result (a member did not answer SSH and was skipped) also counts as
+   success, with a `TeardownPartial` warning event naming the skipped members.
+4. When the run fails, the finalizer stays and `TeardownFailed` carries the message.
+   The failed `NixJob` is kept so you can read its log. After a backoff (30 seconds,
+   doubling per failure, at most 10 minutes) NIO deletes it and starts a new run.
+   There is no attempt limit: every teardown step is safe to run again.
+
+```text
+$ kubectl --namespace apps get nixcluster prod
+NAME   PHASE         CONVERGE        TEARDOWN         AGE
+prod   TearingDown   prod-converge   RetryScheduled   2d
+```
+
+A teardown that can never succeed — the flake has no `teardown`, or the machines are
+gone — blocks deletion until you choose to leave the members as they are:
+
+```sh
+kubectl --namespace apps patch nixcluster prod --type merge \
+  --patch '{"spec":{"deletionPolicy":"Retain"}}'
+```
+
+The policy is read at deletion time, so the patch releases the cluster on the next
+reconcile, also in the middle of a teardown run.
 
 ## Nix-native workloads
 
