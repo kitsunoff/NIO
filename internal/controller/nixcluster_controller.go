@@ -86,13 +86,21 @@ type NixClusterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// Logs reads the teardown run's pod log for its result line. Optional: when
+	// nil, the teardown outcome follows the run's exit status alone.
+	Logs JobLogReader
 }
 
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixcronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=nio.homystack.com,resources=nixjobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=machines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups=nio.homystack.com,resources=nixbuilders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -764,24 +772,6 @@ func (r *NixClusterReconciler) fail(
 	return ctrl.Result{}, cause
 }
 
-// reconcileRemoving deletes the converge cron (owner GC also covers it) and
-// clears the finalizer. Node teardown / decommission is deferred (design "Out").
-func (r *NixClusterReconciler) reconcileRemoving(ctx context.Context, cluster *niov1alpha1.NixCluster) (ctrl.Result, error) {
-	cron := &niov1alpha1.NixCronJob{
-		ObjectMeta: metav1.ObjectMeta{Name: convergeCronName(cluster.Name), Namespace: cluster.Namespace},
-	}
-	if err := r.Delete(ctx, cron); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-	if controllerutil.ContainsFinalizer(cluster, niov1alpha1.FinalizerName) {
-		controllerutil.RemoveFinalizer(cluster, niov1alpha1.FinalizerName)
-		if err := r.Update(ctx, cluster); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-	return ctrl.Result{}, nil
-}
-
 // findClustersForMachine enqueues every NixCluster in the changed Machine's
 // namespace (any could select it — selectors are label-based, not indexable).
 func (r *NixClusterReconciler) findClustersForMachine(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -803,6 +793,7 @@ func (r *NixClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&niov1alpha1.NixCluster{}).
 		Owns(&niov1alpha1.NixCronJob{}).
+		Owns(&niov1alpha1.NixJob{}).
 		Watches(
 			&niov1alpha1.Machine{},
 			handler.EnqueueRequestsFromMapFunc(r.findClustersForMachine),

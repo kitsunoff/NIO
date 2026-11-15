@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1073,8 +1074,8 @@ func TestDesiredTeardownJob_CopiesTheConvergeChild(t *testing.T) {
 		Spec: niov1alpha1.NixClusterSpec{
 			Source:     niov1alpha1.NixSource{GitRepo: "https://example.com/prod", Ref: "main"},
 			SSHKeyRef:  &niov1alpha1.SecretReference{Name: "cluster-ssh"},
-			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "store"},
-			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "builder"},
+			StoreRef:   &niov1alpha1.LocalObjectReference{Name: "td-store"},
+			BuilderRef: &niov1alpha1.LocalObjectReference{Name: "td-builder"},
 		},
 	}
 	files := []niov1alpha1.NixFile{{Path: "modules/nodes/node-01.nix", Inline: ptr("content")}}
@@ -1103,8 +1104,8 @@ func TestDesiredTeardownJob_CopiesTheConvergeChild(t *testing.T) {
 	if !reflect.DeepEqual(job.Spec.Nix.AdditionalFiles, files) {
 		t.Errorf("additionalFiles = %v, want the converge node files", job.Spec.Nix.AdditionalFiles)
 	}
-	if job.Spec.Nix.StoreRef == nil || job.Spec.Nix.StoreRef.Name != "store" ||
-		job.Spec.Nix.BuilderRef == nil || job.Spec.Nix.BuilderRef.Name != "builder" {
+	if job.Spec.Nix.StoreRef == nil || job.Spec.Nix.StoreRef.Name != "td-store" ||
+		job.Spec.Nix.BuilderRef == nil || job.Spec.Nix.BuilderRef.Name != "td-builder" {
 		t.Error("store and builder references must be carried over")
 	}
 	if job.Spec.JobTemplate == nil {
@@ -1474,7 +1475,7 @@ var _ = Describe("NixCluster teardown on deletion", func() {
 		Expect(cond.Reason).To(Equal(niov1alpha1.ReasonWaitingForConverge))
 
 		By("the converge run is gone, so the teardown run starts")
-		Expect(k8sClient.Delete(ctx, activeJob)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, activeJob, client.PropagationPolicy(metav1.DeletePropagationBackground))).To(Succeed())
 		_, err = f.r.Reconcile(ctx, f.req)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = getTeardownJob("wait")
@@ -1519,5 +1520,31 @@ func drainEvents(rec *record.FakeRecorder) []string {
 		default:
 			return out
 		}
+	}
+}
+
+func TestClientsetJobLogReader(t *testing.T) {
+	older := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "run-old", Namespace: "infra", Labels: map[string]string{batchv1.JobNameLabel: "run"},
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+	}}
+	newer := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "run-new", Namespace: "infra", Labels: map[string]string{batchv1.JobNameLabel: "run"},
+		CreationTimestamp: metav1.NewTime(time.Now()),
+	}}
+	r := ClientsetJobLogReader{Clientset: k8sfake.NewClientset(older, newer)}
+
+	log, err := r.JobLog(context.Background(), "infra", "run")
+	if err != nil {
+		t.Fatalf("JobLog: %v", err)
+	}
+	// The fake clientset serves a fixed body for any pod; reaching it proves a
+	// pod of the Job was found and its log requested.
+	if log == "" {
+		t.Error("expected the pod log body")
+	}
+
+	if _, err := r.JobLog(context.Background(), "infra", "other"); err == nil {
+		t.Error("a Job without pods must be an error, not an empty log")
 	}
 }

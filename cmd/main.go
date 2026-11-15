@@ -29,6 +29,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -257,10 +258,18 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NixCronJob")
 		os.Exit(1)
 	}
+	// Uncached: the NixCluster controller reads one teardown pod log per run,
+	// which does not justify an informer over every pod in the cluster.
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create clientset")
+		os.Exit(1)
+	}
 	if err := (&controller.NixClusterReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("nixcluster-controller"),
+		Logs:     controller.ClientsetJobLogReader{Clientset: clientset},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NixCluster")
 		os.Exit(1)
