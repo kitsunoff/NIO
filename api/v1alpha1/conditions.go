@@ -51,6 +51,14 @@ const (
 	// ConditionUnderprovisioned indicates a nodeGroup has fewer matching Machines
 	// than its requested count (provisioning is deferred; the gap is surfaced).
 	ConditionUnderprovisioned = "Underprovisioned"
+
+	// ConditionTearingDown is True while a NixCluster with deletionPolicy
+	// Teardown is being deleted and its teardown run has not succeeded yet.
+	ConditionTearingDown = "TearingDown"
+
+	// ConditionTeardownFailed is True after a teardown run failed, until a later
+	// run succeeds. The finalizer stays while it is True.
+	ConditionTeardownFailed = "TeardownFailed"
 )
 
 // NixCluster-specific reasons.
@@ -59,6 +67,14 @@ const (
 	ReasonFullyProvisioned  = "FullyProvisioned"
 	ReasonSelectionComplete = "SelectionComplete"
 	ReasonInvalidNodeFile   = "InvalidNodeFile"
+
+	// Teardown reasons.
+	ReasonTearingDown        = "TearingDown"
+	ReasonWaitingForConverge = "WaitingForConverge"
+	ReasonTeardownRunning    = "Running"
+	ReasonRetryScheduled     = "RetryScheduled"
+	ReasonTeardownFailed     = "TeardownFailed"
+	ReasonJobNotOwned        = "JobNotOwned"
 	// ReasonConverging is shared with the NixosConfiguration orchestrator block
 	// below (both set a "Converging" phase reason); declared once there.
 )

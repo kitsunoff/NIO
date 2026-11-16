@@ -21,6 +21,13 @@ spec:
     - jsonPath: .status.convergeJobRef
       name: Converge
       type: string
+    - jsonPath: .spec.deletionPolicy
+      name: Deletion
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="TearingDown")].reason
+      name: Teardown
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -91,6 +98,19 @@ spec:
               dayTwoSchedule:
                 default: '*/30 * * * *'
                 description: DayTwoSchedule is the converge cadence (cron schedule).
+                type: string
+              deletionPolicy:
+                default: Teardown
+                description: |-
+                  DeletionPolicy decides what deleting the NixCluster does to the real
+                  cluster on the members. Teardown (the default) keeps the finalizer until
+                  a teardown run (`.#cluster-<name> teardown --auto-approve`) has removed the
+                  cluster from every member. Retain removes only the Kubernetes objects and
+                  leaves the members as they are. It is read at deletion time: switching a
+                  cluster that is being deleted to Retain releases it without a teardown.
+                enum:
+                - Teardown
+                - Retain
                 type: string
               nodeGroups:
                 description: |-
@@ -296,7 +316,9 @@ spec:
             description: NixClusterStatus is the observed state of a NixCluster.
             properties:
               conditions:
-                description: 'Conditions: Ready, Stalled, GitSynced, Underprovisioned.'
+                description: |-
+                  Conditions: Ready, Stalled, GitSynced, Underprovisioned, TearingDown,
+                  TeardownFailed.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -412,7 +434,66 @@ spec:
                 - Converging
                 - Degraded
                 - Blocked
+                - TearingDown
                 type: string
+              teardown:
+                description: |-
+                  Teardown reports the teardown run during deletion with deletionPolicy
+                  Teardown.
+                properties:
+                  attempts:
+                    description: Attempts is the number of teardown NixJobs created
+                      so far.
+                    format: int32
+                    type: integer
+                  failedAttempts:
+                    description: |-
+                      FailedAttempts is the number of teardown runs recorded as failed. A run is
+                      recorded once; the retry backoff doubles with every recorded failure.
+                    format: int32
+                    type: integer
+                  jobRef:
+                    description: JobRef is the name of the owned teardown NixJob.
+                    type: string
+                  lastFailureTime:
+                    description: |-
+                      LastFailureTime is when the latest failed run was recorded. The next run
+                      is created once the backoff has elapsed from this time.
+                    format: date-time
+                    type: string
+                  members:
+                    description: Members are the per-member results of the latest
+                      finished run.
+                    items:
+                      description: TeardownMemberStatus is one member's entry in a
+                        teardown result.
+                      properties:
+                        message:
+                          description: Message is the run's message for the member,
+                            if any.
+                          type: string
+                        name:
+                          description: Name is the member (Machine) name.
+                          type: string
+                        status:
+                          description: |-
+                            Status is what the run reported for the member: Applied (the cluster was
+                            removed), Skipped (unreachable; its state is left as it is) or Failed.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  message:
+                    description: Message describes the latest finished run.
+                    type: string
+                  result:
+                    description: |-
+                      Result is the overall result the latest finished run reported:
+                      success, partial, failed or cancelled. Empty when no result line could be
+                      read.
+                    type: string
+                type: object
             type: object
         type: object
     served: true

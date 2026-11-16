@@ -21,9 +21,15 @@ COPY . .
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+# The manager resolves mutable refs by running `git ls-remote`
+# (internal/controller/nixresolve.go), so the runtime image needs git, plus ssh
+# for ssh remotes. A distroless image has neither, and every NixCluster or
+# workload that tracks a branch stalls with `exec: "git": executable file not
+# found in $PATH`. The version calls fail the build if either tool is missing.
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates git openssh-client \
+    && git --version \
+    && ssh -V
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532

@@ -16,6 +16,11 @@
 #     converge instead of merely slowing it down.
 #   - storeRef adds the store as a substituter and supplies the SSH identity used
 #     to reach the builder.
+#
+# deletionPolicy decides what deleting this object does to the machines:
+#   - Teardown (default): runs `.#cluster-prod teardown --auto-approve` against
+#     every member and keeps the finalizer until that run succeeds.
+#   - Retain: removes only the Kubernetes objects; the cluster keeps running.
 apiVersion: nio.homystack.com/v1alpha1
 kind: NixCluster
 metadata:
@@ -36,6 +41,7 @@ spec:
   builderRef:
     name: linux-builder
   dayTwoSchedule: "*/30 * * * *"
+  deletionPolicy: Teardown
   nodeGroups:
     - name: control-plane
       selector:
