@@ -179,7 +179,8 @@ func runCommand(run string, args, nixFlags []string) []string {
 
 // buildCommand builds the instantiate init's `nix build <Run> <Prebuild...>`.
 func buildCommand(run string, prebuild, nixFlags []string) []string {
-	cmd := []string{"nix", "build"}
+	cmd := make([]string, 0, 2+len(nixFlags)+1+len(prebuild))
+	cmd = append(cmd, "nix", "build")
 	cmd = append(cmd, nixFlags...)
 	cmd = append(cmd, run)
 	cmd = append(cmd, prebuild...)
