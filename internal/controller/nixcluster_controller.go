@@ -404,7 +404,7 @@ func convergePodTemplate(cluster *niov1alpha1.NixCluster) corev1.PodTemplateSpec
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: clusterSSHVolumeName, MountPath: clusterSSHMountPath, ReadOnly: true,
 		})
-		env = append(env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: clusterNixSSHOpts})
+		env = append(env, corev1.EnvVar{Name: envNixSSHOpts, Value: clusterNixSSHOpts})
 	}
 	if cluster.Spec.AgeKeyRef != nil {
 		volumes = append(volumes, corev1.Volume{

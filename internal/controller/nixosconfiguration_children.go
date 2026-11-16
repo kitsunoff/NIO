@@ -139,7 +139,7 @@ func targetSSHPodTemplate(machine *niov1alpha1.Machine) corev1.PodTemplateSpec {
 			}},
 			Containers: []corev1.Container{{
 				Name: defaultAppContainer,
-				Env:  []corev1.EnvVar{{Name: "NIX_SSHOPTS", Value: targetNixSSHOpts}},
+				Env:  []corev1.EnvVar{{Name: envNixSSHOpts, Value: targetNixSSHOpts}},
 				VolumeMounts: []corev1.VolumeMount{{
 					Name: targetSSHVolumeName, MountPath: targetSSHMountPath, ReadOnly: true,
 				}},
@@ -163,7 +163,7 @@ func requireTargetKey(machine *niov1alpha1.Machine) error {
 // -i/--ssh-option; the target host stays the trailing positional arg.
 func installAnywhereArgs(config *niov1alpha1.NixosConfiguration, machine *niov1alpha1.Machine) []string {
 	return []string{
-		"--flake", flakeInstallable(config.Spec.Flake),
+		flagFlake, flakeInstallable(config.Spec.Flake),
 		"-i", targetSSHKeyPath,
 		"--ssh-option", "StrictHostKeyChecking=no",
 		"--ssh-option", "UserKnownHostsFile=/dev/null",
@@ -219,7 +219,7 @@ func buildDayTwoNixCronJob(config *niov1alpha1.NixosConfiguration, machine *niov
 				Source: childNixSource(config),
 				Run:    rebuildInstallable,
 				Args: []string{
-					"switch", "--flake", flakeInstallable(config.Spec.Flake),
+					"switch", flagFlake, flakeInstallable(config.Spec.Flake),
 					"--target-host", targetHost(machine),
 				},
 				AdditionalFiles: files,
@@ -255,7 +255,7 @@ func buildDecommissionNixJob(config *niov1alpha1.NixosConfiguration, machine *ni
 				Source: childNixSource(config),
 				Run:    rebuildInstallable,
 				Args: []string{
-					"switch", "--flake", flakeInstallable(config.Spec.OnRemoveFlake),
+					"switch", flagFlake, flakeInstallable(config.Spec.OnRemoveFlake),
 					"--target-host", targetHost(machine),
 				},
 				AdditionalFiles: files,

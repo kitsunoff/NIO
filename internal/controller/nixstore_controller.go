@@ -290,7 +290,7 @@ func (r *NixStoreReconciler) ensureService(ctx context.Context, store *niov1alph
 		svc.Spec.Selector = labels
 		svc.Spec.Ports = []corev1.ServicePort{
 			{Name: "http", Port: int32(NixStoreHTTPPort), TargetPort: intstr.FromInt(NixStoreHTTPPort)},
-			{Name: "ssh", Port: int32(NixStoreSSHPort), TargetPort: intstr.FromInt(NixStoreSSHPort)},
+			{Name: sshPortName, Port: int32(NixStoreSSHPort), TargetPort: intstr.FromInt(NixStoreSSHPort)},
 		}
 		return controllerutil.SetControllerReference(store, svc, r.Scheme)
 	})
@@ -355,7 +355,7 @@ func (r *NixStoreReconciler) desiredStatefulSet(store *niov1alpha1.NixStore) *ap
 		Command: []string{"sh", "-c", storeStartScript()},
 		Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: int32(NixStoreHTTPPort)}},
 		Env: []corev1.EnvVar{
-			{Name: "NIX_CONFIG", Value: "experimental-features = nix-command flakes"},
+			{Name: envNixConfig, Value: nixExperimentalFeatures},
 			{Name: "CONFIG_FILE", Value: "/etc/harmonia/config.toml"},
 		},
 		VolumeMounts: []corev1.VolumeMount{
