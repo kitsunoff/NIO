@@ -383,7 +383,7 @@ func (r *NixClusterReconciler) finishTeardown(
 	meta.RemoveStatusCondition(&cluster.Status.Conditions, niov1alpha1.ConditionTeardownFailed)
 	if err := r.Status().Update(ctx, cluster); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -540,13 +540,13 @@ func markTearingDown(cluster *niov1alpha1.NixCluster, reason, msg string) {
 }
 
 // updateTeardownStatus writes the status and requeues after the given delay;
-// a conflict requeues at once.
+// a conflict requeues after conflictRequeue.
 func (r *NixClusterReconciler) updateTeardownStatus(
 	ctx context.Context, cluster *niov1alpha1.NixCluster, after time.Duration,
 ) (ctrl.Result, error) {
 	if err := r.Status().Update(ctx, cluster); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		return ctrl.Result{}, err
 	}
