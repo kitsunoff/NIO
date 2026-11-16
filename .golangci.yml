@@ -22,6 +22,13 @@ linters:
     - unparam
     - unused
   settings:
+    goconst:
+      # goconst >= 1.10 also counts strings inside composite literals. In
+      # test files those are table fixtures (revisions, flake refs, names)
+      # that read best inline next to the assertion, so they are skipped.
+      # The option is a goconst setting rather than an exclusion rule
+      # because occurrences are counted across the whole package.
+      ignore-tests: true
     misspell:
       # Nix domain terms that misspell wrongly flags as English typos.
       ignore-rules:
