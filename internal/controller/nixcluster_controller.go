@@ -227,7 +227,7 @@ func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if err := r.Status().Update(ctx, &cluster); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		log.Error(err, "failed to update NixCluster status")
 		return ctrl.Result{}, err
@@ -404,7 +404,7 @@ func convergePodTemplate(cluster *niov1alpha1.NixCluster) corev1.PodTemplateSpec
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: clusterSSHVolumeName, MountPath: clusterSSHMountPath, ReadOnly: true,
 		})
-		env = append(env, corev1.EnvVar{Name: "NIX_SSHOPTS", Value: clusterNixSSHOpts})
+		env = append(env, corev1.EnvVar{Name: envNixSSHOpts, Value: clusterNixSSHOpts})
 	}
 	if cluster.Spec.AgeKeyRef != nil {
 		volumes = append(volumes, corev1.Volume{

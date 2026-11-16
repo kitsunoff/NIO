@@ -111,7 +111,7 @@ func (r *NixStatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if err := r.Status().Update(ctx, &nss); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		log.Error(err, "failed to update NixStatefulSet status")
 		return ctrl.Result{}, err

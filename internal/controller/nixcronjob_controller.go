@@ -126,7 +126,7 @@ func (r *NixCronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if err := r.Status().Update(ctx, &ncj); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		return ctrl.Result{}, err
 	}

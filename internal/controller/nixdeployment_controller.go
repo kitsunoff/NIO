@@ -120,7 +120,7 @@ func (r *NixDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if err := r.Status().Update(ctx, &nd); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		log.Error(err, "failed to update NixDeployment status")
 		return ctrl.Result{}, err
