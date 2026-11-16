@@ -126,7 +126,7 @@ func (r *NixBuilderReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if err := r.Status().Update(ctx, &builder); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		log.Error(err, "failed to update NixBuilder status")
 		return ctrl.Result{}, err

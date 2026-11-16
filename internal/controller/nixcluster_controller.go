@@ -227,7 +227,7 @@ func (r *NixClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if err := r.Status().Update(ctx, &cluster); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		log.Error(err, "failed to update NixCluster status")
 		return ctrl.Result{}, err

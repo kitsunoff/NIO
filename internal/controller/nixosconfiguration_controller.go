@@ -43,6 +43,11 @@ const (
 	// RequeueInterval is the default requeue interval for pending operations.
 	RequeueInterval = 30 * time.Second
 
+	// conflictRequeue is the delay before retrying a reconcile whose update
+	// lost an optimistic-concurrency race. The conflict is expected, not an
+	// error, so it is retried on a short fixed delay against a fresh read.
+	conflictRequeue = time.Second
+
 	// MaxInstallRetries bounds the Installing phase before holding in Degraded.
 	MaxInstallRetries = 3
 
@@ -109,7 +114,7 @@ func (r *NixosConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.R
 		controllerutil.AddFinalizer(&config, niov1alpha1.FinalizerName)
 		if err := r.Update(ctx, &config); err != nil {
 			if apierrors.IsConflict(err) {
-				return ctrl.Result{Requeue: true}, nil
+				return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 			}
 			return ctrl.Result{}, err
 		}
@@ -121,7 +126,7 @@ func (r *NixosConfigurationReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	if err := r.Status().Update(ctx, &config); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -273,7 +278,7 @@ func (r *NixosConfigurationReconciler) reconcileDayTwo(ctx context.Context, conf
 			"Day-2 convergence healthy; configuration applied", true, gitSynced)
 		if err := r.writeBackMachineStatus(ctx, config, machine); err != nil {
 			if apierrors.IsConflict(err) {
-				return ctrl.Result{Requeue: true}, nil
+				return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 			}
 			return ctrl.Result{}, err
 		}
@@ -421,7 +426,7 @@ func (r *NixosConfigurationReconciler) finalize(ctx context.Context, config *nio
 	controllerutil.RemoveFinalizer(config, niov1alpha1.FinalizerName)
 	if err := r.Update(ctx, config); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: conflictRequeue}, nil
 		}
 		return ctrl.Result{}, err
 	}
